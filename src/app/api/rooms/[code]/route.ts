@@ -13,6 +13,9 @@ import {
   resetRoomToLobby,
   kickPlayer,
   transferHost,
+  renamePlayer,
+  addPlaylistToRoom,
+  removePlaylistFromRoom,
 } from "@/lib/roomStore";
 
 export const dynamic = "force-dynamic";
@@ -260,6 +263,66 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         }
         return NextResponse.json(
           { success: true, room: transferResult.room },
+          { headers: NO_CACHE_HEADERS }
+        );
+      }
+
+      case "rename_player": {
+        if (!playerId || !body.name) {
+          return NextResponse.json(
+            { success: false, error: "Nombre no especificado" },
+            { status: 400, headers: NO_CACHE_HEADERS }
+          );
+        }
+        const renameResult = await renamePlayer(code, playerId, body.name);
+        if (!renameResult.success) {
+          return NextResponse.json(
+            { success: false, error: renameResult.error },
+            { status: 400, headers: NO_CACHE_HEADERS }
+          );
+        }
+        return NextResponse.json(
+          { success: true, room: renameResult.room },
+          { headers: NO_CACHE_HEADERS }
+        );
+      }
+
+      case "add_playlist": {
+        if (!playerId || !body.playlist) {
+          return NextResponse.json(
+            { success: false, error: "Datos de playlist incompletos" },
+            { status: 400, headers: NO_CACHE_HEADERS }
+          );
+        }
+        const addResult = await addPlaylistToRoom(code, playerId, body.playlist);
+        if (!addResult.success) {
+          return NextResponse.json(
+            { success: false, error: addResult.error },
+            { status: 400, headers: NO_CACHE_HEADERS }
+          );
+        }
+        return NextResponse.json(
+          { success: true, room: addResult.room },
+          { headers: NO_CACHE_HEADERS }
+        );
+      }
+
+      case "remove_playlist": {
+        if (!playerId || !body.playlistId) {
+          return NextResponse.json(
+            { success: false, error: "ID de playlist no especificado" },
+            { status: 400, headers: NO_CACHE_HEADERS }
+          );
+        }
+        const removeResult = await removePlaylistFromRoom(code, playerId, body.playlistId);
+        if (!removeResult.success) {
+          return NextResponse.json(
+            { success: false, error: removeResult.error },
+            { status: 400, headers: NO_CACHE_HEADERS }
+          );
+        }
+        return NextResponse.json(
+          { success: true, room: removeResult.room },
           { headers: NO_CACHE_HEADERS }
         );
       }

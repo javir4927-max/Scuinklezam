@@ -36,6 +36,8 @@ import {
   Check,
   ExternalLink,
   Copy,
+  Pencil,
+  Loader2,
 } from "lucide-react";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
 import { RoomState, Player, GameMode, GuessType, RoundOption } from "@/lib/roomStore";
@@ -201,6 +203,16 @@ function PlayArenaContent() {
   const [optionImageErrors, setOptionImageErrors] = useState<Record<string, boolean>>({});
   const [newArtistInput, setNewArtistInput] = useState<string>("");
   const [newThemeProposal, setNewThemeProposal] = useState<string>("");
+
+  // Player Inline Name Edit State
+  const [isEditingName, setIsEditingName] = useState<boolean>(false);
+  const [editNameInput, setEditNameInput] = useState<string>("");
+  const [isSavingName, setIsSavingName] = useState<boolean>(false);
+
+  // Playlist Import State
+  const [playlistUrlInput, setPlaylistUrlInput] = useState<string>("");
+  const [isImportingPlaylist, setIsImportingPlaylist] = useState<boolean>(false);
+  const [playlistImportError, setPlaylistImportError] = useState<string | null>(null);
 
   // Artist Autocomplete State
   const [artistSuggestions, setArtistSuggestions] = useState<ArtistSuggestion[]>([]);
@@ -385,12 +397,27 @@ function PlayArenaContent() {
           const wasKicked = currentRoom.kickedPlayerIds && currentRoom.kickedPlayerIds.includes(playerId);
           const stillInRoom = currentRoom.players.some((p) => p.id === playerId);
 
-          if (wasKicked || (!stillInRoom && currentRoom.status === "lobby")) {
+          if (wasKicked) {
             audioPlayer.stop();
             setRoom(null);
             setRoomCode("");
             setErrorMessage("Has sido expulsado de la sala por el anfitrión.");
             return;
+          }
+
+          if (!stillInRoom && currentRoom.status === "lobby") {
+            // Player temporarily missing from players list (e.g. Redis replication lag).
+            // Do NOT kick: automatically re-send background join PATCH to re-sync
+            fetch(`/api/rooms/${roomCode}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "join",
+                playerId,
+                name: playerName || "Jugador",
+                spotifyConnected,
+              }),
+            }).catch(() => {});
           }
 
           setRoom(currentRoom);
@@ -715,6 +742,112 @@ function PlayArenaContent() {
       }
     } catch (err) {
       console.error("Error proposing theme:", err);
+    }
+  };
+
+  // Rename Current Player
+  const handleRenamePlayer = async () => {
+    const clean = editNameInput.trim();
+    if (!clean || clean.length < 2 || !roomCode || !playerId) {
+      setIsEditingName(false);
+      return;
+    }
+    setIsSavingName(true);
+    try {
+      const res = await fetch(`/api/rooms/${roomCode}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "rename_player",
+          playerId,
+          name: clean,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.room) {
+        setRoom(data.room);
+        setPlayerName(clean);
+        sessionStorage.setItem("scuinklezam_player_name", clean);
+      }
+    } catch (err) {
+      console.error("Error renaming player:", err);
+    } finally {
+      setIsSavingName(false);
+      setIsEditingName(false);
+    }
+  };
+
+  // Import Playlist by Spotify URL
+  const handleImportPlaylist = async () => {
+    const url = playlistUrlInput.trim();
+    if (!url || !roomCode || !playerId) return;
+
+    setIsImportingPlaylist(true);
+    setPlaylistImportError(null);
+
+    try {
+      const res = await fetch("/api/spotify/playlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+
+      if (!res.ok || !data.success || !data.tracks || data.tracks.length === 0) {
+        setPlaylistImportError(data.error || "No se pudieron obtener canciones válidas de esta playlist.");
+        return;
+      }
+
+      const patchRes = await fetch(`/api/rooms/${roomCode}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "add_playlist",
+          playerId,
+          playlist: {
+            id: data.id,
+            name: data.name,
+            imageUrl: data.imageUrl,
+            trackCount: data.trackCount,
+            tracks: data.tracks,
+          },
+        }),
+      });
+
+      const patchData = await patchRes.json();
+      if (patchData.success && patchData.room) {
+        setRoom(patchData.room);
+        setPlaylistUrlInput("");
+      } else {
+        setPlaylistImportError(patchData.error || "Error al asociar la playlist a la sala.");
+      }
+    } catch (err: any) {
+      console.error("Error importing playlist:", err);
+      setPlaylistImportError("Error de conexión al importar la playlist.");
+    } finally {
+      setIsImportingPlaylist(false);
+    }
+  };
+
+  // Remove Playlist from Room
+  const handleRemovePlaylist = async (playlistId: string) => {
+    if (!roomCode || !playerId) return;
+    try {
+      const res = await fetch(`/api/rooms/${roomCode}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "remove_playlist",
+          playerId,
+          playlistId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.room) {
+        setRoom(data.room);
+      }
+    } catch (err) {
+      console.error("Error removing playlist:", err);
     }
   };
 
@@ -1552,9 +1685,9 @@ function PlayArenaContent() {
                                 }),
                               });
                             }}
-                            className="text-zinc-400 hover:text-red-400 ml-1 cursor-pointer"
+                            className="text-zinc-400 hover:text-red-400 ml-1 cursor-pointer flex items-center"
                           >
-                            ×
+                            <X className="w-3.5 h-3.5" />
                           </button>
                         </span>
                       ))}
@@ -1654,14 +1787,113 @@ function PlayArenaContent() {
                       </div>
                     )}
 
-                    <div className="pt-1 flex items-center justify-between border-t border-emerald-500/10 text-xs text-zinc-400">
-                      <span>¿Quieres usar un enlace público de Spotify?</span>
-                      <button
-                        onClick={() => setShowSpotifyModal(true)}
-                        className="text-goblinLime hover:underline font-bold text-xs cursor-pointer"
-                      >
-                        Pegar enlace público →
-                      </button>
+                    {/* Dedicated Spotify Playlist Import Section */}
+                    <div className="pt-3 border-t border-emerald-500/15 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-bold text-zinc-300 flex items-center gap-1.5">
+                          <Link2 className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Importar Playlist por Enlace de Spotify</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setShowSpotifyModal(true)}
+                          className="text-[11px] text-zinc-400 hover:text-goblinLime underline cursor-pointer"
+                        >
+                          Ver explorador
+                        </button>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={playlistUrlInput}
+                          onChange={(e) => setPlaylistUrlInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleImportPlaylist();
+                          }}
+                          placeholder="Pega enlace de Playlist (ej. https://open.spotify.com/playlist/...)"
+                          className="flex-1 px-3.5 py-2 rounded-xl bg-black/60 border border-emerald-500/30 text-white text-xs focus:outline-none focus:border-goblinLime placeholder:text-zinc-500"
+                        />
+                        <button
+                          type="button"
+                          disabled={isImportingPlaylist || !playlistUrlInput.trim()}
+                          onClick={handleImportPlaylist}
+                          className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-black font-extrabold text-xs transition cursor-pointer flex items-center gap-1.5 shrink-0"
+                        >
+                          {isImportingPlaylist ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>Importando...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Link2 className="w-3.5 h-3.5" />
+                              <span>Importar</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      {playlistImportError && (
+                        <div className="p-2.5 rounded-xl bg-red-950/40 border border-red-500/30 text-red-300 text-xs flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                          <span>{playlistImportError}</span>
+                        </div>
+                      )}
+
+                      {/* Green confirmation cards for imported playlists */}
+                      {room.playlists && room.playlists.length > 0 && (
+                        <div className="space-y-2 pt-1">
+                          <div className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                            <Music2 className="w-3 h-3 text-emerald-400" />
+                            <span>Playlists añadidas a la partida ({room.playlists.length})</span>
+                          </div>
+                          <div className="space-y-2">
+                            {room.playlists.map((pl) => (
+                              <div
+                                key={pl.id}
+                                className="p-3 rounded-2xl bg-emerald-950/80 border border-emerald-500/50 flex items-center justify-between gap-3 shadow-[0_0_15px_rgba(16,185,129,0.12)]"
+                              >
+                                <div className="flex items-center gap-3 min-w-0">
+                                  {pl.imageUrl ? (
+                                    <img
+                                      src={pl.imageUrl}
+                                      alt={pl.name}
+                                      className="w-10 h-10 rounded-xl object-cover border border-emerald-400/40 shrink-0"
+                                    />
+                                  ) : (
+                                    <div className="w-10 h-10 rounded-xl bg-emerald-900/60 border border-emerald-500/30 flex items-center justify-center shrink-0">
+                                      <Music2 className="w-5 h-5 text-emerald-400" />
+                                    </div>
+                                  )}
+                                  <div className="min-w-0">
+                                    <div className="font-bold text-xs text-white truncate flex items-center gap-2">
+                                      <span className="truncate">{pl.name}</span>
+                                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-semibold shrink-0">
+                                        {pl.trackCount} temas
+                                      </span>
+                                    </div>
+                                    <div className="text-[10px] text-zinc-400 truncate">
+                                      Aportada por {pl.addedByPlayerName || (pl.addedByPlayerId === playerId ? "ti" : "un jugador")}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {(isHost || pl.addedByPlayerId === playerId) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemovePlaylist(pl.id)}
+                                    className="p-1.5 rounded-lg bg-black/40 hover:bg-red-500/20 text-zinc-400 hover:text-red-400 transition cursor-pointer shrink-0"
+                                    title="Eliminar playlist de la partida"
+                                  >
+                                    <X className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1695,20 +1927,71 @@ function PlayArenaContent() {
                             {player.name.substring(0, 2).toUpperCase()}
                           </div>
                           <div>
-                            <div className="flex items-center gap-1.5 text-sm font-bold text-white">
-                              <span>{player.name}</span>
-                              {player.isHost && (
-                                <Crown className="w-3.5 h-3.5 text-amber-400 inline" />
-                              )}
-                              {player.isBot && (
-                                <span className="text-[10px] px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-300 font-normal">
-                                  BOT
-                                </span>
-                              )}
-                              {player.id === playerId && (
-                                <span className="text-xs text-goblinLime">(Tú)</span>
-                              )}
-                            </div>
+                            {player.id === playerId && isEditingName ? (
+                              <div className="flex items-center gap-1.5 py-0.5">
+                                <input
+                                  type="text"
+                                  value={editNameInput}
+                                  onChange={(e) => setEditNameInput(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") handleRenamePlayer();
+                                    if (e.key === "Escape") setIsEditingName(false);
+                                  }}
+                                  className="px-2 py-0.5 text-xs rounded-lg bg-black/70 border border-emerald-400 text-white focus:outline-none w-28"
+                                  autoFocus
+                                  maxLength={20}
+                                />
+                                <button
+                                  type="button"
+                                  disabled={isSavingName}
+                                  onClick={handleRenamePlayer}
+                                  className="p-1 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black cursor-pointer transition"
+                                  title="Guardar nombre"
+                                >
+                                  {isSavingName ? (
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <Check className="w-3 h-3" />
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setIsEditingName(false)}
+                                  className="p-1 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 cursor-pointer transition"
+                                  title="Cancelar"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5 text-sm font-bold text-white">
+                                <span>{player.name}</span>
+                                {player.isHost && (
+                                  <Crown className="w-3.5 h-3.5 text-amber-400 inline" />
+                                )}
+                                {player.isBot && (
+                                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-300 font-normal">
+                                    BOT
+                                  </span>
+                                )}
+                                {player.id === playerId && (
+                                  <>
+                                    <span className="text-xs text-goblinLime">(Tú)</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditNameInput(player.name);
+                                        setIsEditingName(true);
+                                      }}
+                                      className="p-1 rounded-md hover:bg-emerald-500/20 text-zinc-400 hover:text-emerald-300 transition cursor-pointer"
+                                      title="Cambiar mi nombre"
+                                    >
+                                      <Pencil className="w-3.5 h-3.5" />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            )}
                             {player.spotifyBadge ? (
                               <div
                                 className="inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full bg-[#1DB954]/20 border border-[#1DB954]/40 text-[#1DB954] font-semibold truncate max-w-[200px]"
@@ -1743,9 +2026,9 @@ function PlayArenaContent() {
                               <button
                                 onClick={() => handleKickPlayer(player.id, player.name)}
                                 title="Expulsar Jugador (Kick)"
-                                className="p-1 rounded-lg bg-red-500/15 hover:bg-red-500/30 text-red-400 font-bold text-xs transition cursor-pointer"
+                                className="p-1 rounded-lg bg-red-500/15 hover:bg-red-500/30 text-red-400 font-bold text-xs transition cursor-pointer flex items-center justify-center"
                               >
-                                ✕
+                                <X className="w-3.5 h-3.5" />
                               </button>
                             </div>
                           )}

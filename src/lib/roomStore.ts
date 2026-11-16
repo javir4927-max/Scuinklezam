@@ -61,6 +61,16 @@ export interface RoundData {
   contributedByPlayerName?: string;
 }
 
+export interface RoomPlaylist {
+  id: string;
+  name: string;
+  imageUrl?: string;
+  trackCount: number;
+  addedByPlayerId: string;
+  addedByPlayerName?: string;
+  tracks: SpotifyTrackItem[];
+}
+
 export interface RoomState {
   code: string;
   hostId: string;
@@ -80,6 +90,7 @@ export interface RoomState {
   players: Player[];
   themeProposals: ThemeProposal[];
   rounds: RoundData[];
+  playlists?: RoomPlaylist[];
   kickedPlayerIds: string[];
   createdAt: number;
   lastActive: number;
@@ -242,6 +253,7 @@ export async function createRoom(
     players: [hostPlayer],
     themeProposals: [...DEFAULT_THEME_PROPOSALS],
     rounds: [],
+    playlists: [],
     kickedPlayerIds: [],
     createdAt: Date.now(),
     lastActive: Date.now(),
@@ -254,6 +266,7 @@ export async function createRoom(
 /**
  * Gets a room by code and cleans up timed-out players/advances auto states.
  * Strictly read-only for room players (never adds, renames, or kicks during polling).
+ * Rutinary GET polling updates in-memory state and ONLY saves to Redis if phase actually progressed.
  */
 export async function getRoom(code: string, activePlayerId?: string): Promise<RoomState | null> {
   const upperCode = code.toUpperCase().trim();
@@ -275,36 +288,28 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
   if (!room) return null;
 
   const now = Date.now();
-  let changed = false;
+  room.lastActive = now;
 
-  if (now - room.lastActive > 1000) {
-    room.lastActive = now;
-    changed = true;
-  }
-
-  // Heartbeat update for active player (strictly updates timestamp if already present in room)
+  // Heartbeat update in-memory for active player
   if (activePlayerId) {
     const player = room.players.find((p) => p.id === activePlayerId);
     if (player) {
-      if (player.lastSeen !== now || !player.isOnline) {
-        player.lastSeen = now;
-        player.isOnline = true;
-        changed = true;
-      }
+      player.lastSeen = now;
+      player.isOnline = true;
     }
   }
 
-  // Update online status: offline if no heartbeat in 45s (except bots)
+  // Update online status in-memory: offline if no heartbeat in 45s (except bots)
   room.players.forEach((p) => {
     if (!p.isBot && now - p.lastSeen > 45000 && p.isOnline) {
       p.isOnline = false;
-      changed = true;
     }
   });
 
   // State machine progression check
   const progressed = checkRoomStateProgression(room);
-  if (progressed || changed) {
+  // Strictly only persist to Redis if state machine advanced phases
+  if (progressed) {
     await saveRoom(room);
   }
 
@@ -608,6 +613,108 @@ export async function injectSpotifyTracksToRoom(
 }
 
 /**
+ * Renames a player in the room (and updates room name if host).
+ */
+export async function renamePlayer(
+  code: string,
+  playerId: string,
+  newName: string
+): Promise<{ success: boolean; room?: RoomState; error?: string }> {
+  const room = await getRoom(code);
+  if (!room) return { success: false, error: "Sala no encontrada." };
+
+  const cleanName = newName.trim();
+  if (!cleanName || cleanName.length < 2) {
+    return { success: false, error: "El nombre debe tener al menos 2 caracteres." };
+  }
+
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) return { success: false, error: "Jugador no encontrado en la sala." };
+
+  player.name = cleanName.slice(0, 24);
+
+  // If host and room name is default pattern, update room name as well
+  if (player.isHost && (room.name.startsWith("Sala de ") || !room.name)) {
+    room.name = `Sala de ${player.name}`;
+  }
+
+  await saveRoom(room);
+  return { success: true, room };
+}
+
+/**
+ * Adds an imported playlist to the room's music collection.
+ */
+export async function addPlaylistToRoom(
+  code: string,
+  playerId: string,
+  playlist: {
+    id: string;
+    name: string;
+    imageUrl?: string;
+    trackCount?: number;
+    tracks: SpotifyTrackItem[];
+  }
+): Promise<{ success: boolean; room?: RoomState; error?: string }> {
+  const room = await getRoom(code);
+  if (!room) return { success: false, error: "Sala no encontrada." };
+
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) return { success: false, error: "Jugador no encontrado." };
+
+  if (!room.playlists) room.playlists = [];
+
+  // Filter out any duplicate playlist id
+  room.playlists = room.playlists.filter((p) => p.id !== playlist.id);
+
+  // Filter valid tracks
+  const validTracks = (playlist.tracks || []).filter(
+    (t) => t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl
+  );
+
+  const newPlaylist: RoomPlaylist = {
+    id: playlist.id,
+    name: playlist.name || "Playlist de Spotify",
+    imageUrl: playlist.imageUrl,
+    trackCount: validTracks.length > 0 ? validTracks.length : (playlist.trackCount || 0),
+    addedByPlayerId: playerId,
+    addedByPlayerName: player.name,
+    tracks: validTracks,
+  };
+
+  room.playlists.push(newPlaylist);
+  await saveRoom(room);
+  return { success: true, room };
+}
+
+/**
+ * Removes an imported playlist from the room.
+ */
+export async function removePlaylistFromRoom(
+  code: string,
+  playerId: string,
+  playlistId: string
+): Promise<{ success: boolean; room?: RoomState; error?: string }> {
+  const room = await getRoom(code);
+  if (!room) return { success: false, error: "Sala no encontrada." };
+
+  if (!room.playlists) room.playlists = [];
+
+  const targetPlaylist = room.playlists.find((p) => p.id === playlistId);
+  if (!targetPlaylist) return { success: true, room };
+
+  // Host can remove any playlist; otherwise player can only remove their own
+  const isHost = room.hostId === playerId;
+  if (!isHost && targetPlaylist.addedByPlayerId !== playerId) {
+    return { success: false, error: "No tienes permiso para eliminar esta playlist." };
+  }
+
+  room.playlists = room.playlists.filter((p) => p.id !== playlistId);
+  await saveRoom(room);
+  return { success: true, room };
+}
+
+/**
  * Proposes a new theme/genre for the lobby vote.
  */
 export async function proposeTheme(code: string, playerId: string, label: string): Promise<boolean> {
@@ -707,7 +814,22 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
 
   const pool: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
 
-  // Build song pool based on Game Mode
+  // 1. Gather tracks from room's imported playlists
+  if (room.playlists && room.playlists.length > 0) {
+    for (const pl of room.playlists) {
+      if (pl.tracks && pl.tracks.length > 0) {
+        pl.tracks.forEach((track) => {
+          pool.push({
+            track,
+            playerId: pl.addedByPlayerId,
+            playerName: pl.addedByPlayerName,
+          });
+        });
+      }
+    }
+  }
+
+  // 2. Build song pool based on Game Mode
   if (room.gameMode === "blend" || room.gameMode === "who_listens") {
     // Taste Blend: Gather from all players equally
     let totalArtistsContributed = 0;
