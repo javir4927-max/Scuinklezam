@@ -66,12 +66,12 @@ const FEATURE_TRACKS: SpotifyTrackItem[] = [
 
 export default function BentoFeatures({ onOpenMiniQuiz }: BentoFeaturesProps) {
   const { isConnected, playlists } = useSpotifyAuth();
-  const [lucasScore, setLucasScore] = useState<number>(47180);
+  const [playerScore, setPlayerScore] = useState<number>(47180);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [savedFeedback, setSavedFeedback] = useState<Record<string, string>>({});
 
   const bumpOdometer = () => {
-    setLucasScore((prev) => prev + 95);
+    setPlayerScore((prev) => prev + 95);
     playSynthNote(659.25);
   };
 
@@ -237,11 +237,11 @@ export default function BentoFeatures({ onOpenMiniQuiz }: BentoFeaturesProps) {
               <div className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-emerald-950/80 border border-emerald-500/50">
                 <div className="flex items-center gap-3">
                   <span className="font-bold text-goblinLime w-5">5</span>
-                  <span className="font-bold text-white">Lucas (Tú)</span>
+                  <span className="font-bold text-white">Tú</span>
                   <span className="text-xs text-emerald-300 font-semibold">Rango Esmeralda</span>
                 </div>
                 <span className="font-mono font-extrabold text-goblinLime text-base">
-                  {lucasScore.toLocaleString()}
+                  {playerScore.toLocaleString()}
                 </span>
               </div>
             </div>

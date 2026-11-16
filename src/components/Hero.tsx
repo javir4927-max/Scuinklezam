@@ -156,7 +156,7 @@ export default function Hero({ onOpenMiniQuiz }: HeroProps) {
                         <Crown className="w-3 h-3 text-amber-300" />
                       </span>
                       <div>
-                        <div className="font-bold text-white">Lucas</div>
+                        <div className="font-bold text-white">Anfitrión</div>
                         <div className="text-[11px] text-emerald-400">Respuesta correcta +94</div>
                       </div>
                     </div>
@@ -240,7 +240,7 @@ export default function Hero({ onOpenMiniQuiz }: HeroProps) {
               <div className="space-y-1.5 text-[11px]">
                 <div className="flex items-center justify-between py-1 px-2 rounded bg-emerald-950/70 border border-emerald-500/40">
                   <span>
-                    <strong>1 Lucas (Tú)</strong> · <span className="text-emerald-400">Acierto +94</span>
+                    <strong>1 Tú</strong> · <span className="text-emerald-400">Acierto +94</span>
                   </span>
                   <span className="font-mono font-bold text-goblinLime">518pts</span>
                 </div>

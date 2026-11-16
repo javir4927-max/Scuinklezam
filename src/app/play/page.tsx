@@ -288,25 +288,28 @@ function PlayArenaContent() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // 1. Initialize Player Identity from LocalStorage / Spotify
+  // 1. Initialize Player Identity from SessionStorage / Spotify (isolated per tab)
   useEffect(() => {
-    let localId = localStorage.getItem("scuinklezam_player_id") || localStorage.getItem("squinkle_player_id");
-    let localName = localStorage.getItem("scuinklezam_player_name") || localStorage.getItem("squinkle_player_name") || "";
+    if (typeof window === "undefined") return;
+
+    let localId = sessionStorage.getItem("scuinklezam_player_id");
+    let localName = sessionStorage.getItem("scuinklezam_player_name") || "";
 
     if (!localId) {
-      localId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      localStorage.setItem("scuinklezam_player_id", localId);
+      localId =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `usr_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      sessionStorage.setItem("scuinklezam_player_id", localId);
     }
     setPlayerId(localId);
 
     if (spotifyAuthUser?.displayName) {
-      if (!localName || localName === "Lucas") {
-        localName = spotifyAuthUser.displayName;
-        localStorage.setItem("scuinklezam_player_name", localName);
-      }
+      localName = spotifyAuthUser.displayName;
+      sessionStorage.setItem("scuinklezam_player_name", localName);
     }
 
-    setPlayerName(localName || "Lucas");
+    setPlayerName(localName);
   }, [spotifyAuthUser]);
 
   // Handler for Injecting Spotify Tracks & Stats into current Room
@@ -325,6 +328,7 @@ function PlayArenaContent() {
       const res = await fetch(`/api/rooms/${roomCode}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({
           action: "inject_spotify_tracks",
           playerId,
@@ -346,21 +350,26 @@ function PlayArenaContent() {
   const artistQuery = searchParams.get("artist");
 
   useEffect(() => {
-    if (initialRoomQuery && playerId && playerName && !room) {
+    if (initialRoomQuery && playerId && !room) {
       handleJoinRoom(initialRoomQuery.toUpperCase());
-    } else if ((createQuery === "true" || artistQuery) && playerId && playerName && !room) {
+    } else if ((createQuery === "true" || artistQuery) && playerId && !room) {
       handleCreateRoom(artistQuery || undefined);
     }
-  }, [initialRoomQuery, createQuery, artistQuery, playerId, playerName]);
+  }, [initialRoomQuery, createQuery, artistQuery, playerId]);
 
-  // 3. Real-time Room Polling Engine (Every 1000ms)
+  // 3. Real-time Room Polling Engine (Every 1000ms with strict anti-cache)
   useEffect(() => {
     if (!roomCode) return;
 
     let isMounted = true;
     const fetchRoom = async () => {
       try {
-        const res = await fetch(`/api/rooms/${roomCode}?playerId=${playerId}`);
+        const res = await fetch(`/api/rooms/${roomCode}?playerId=${playerId}&t=${Date.now()}`, {
+          cache: "no-store",
+          headers: {
+            "Cache-Control": "no-cache",
+          },
+        });
         if (!res.ok) {
           if (res.status === 404 && isMounted) {
             setErrorMessage("La sala no existe o ha expirado.");
@@ -369,14 +378,14 @@ function PlayArenaContent() {
           return;
         }
         const data = await res.json();
-        if (data.success && isMounted) {
+        if (data.success && isMounted && data.room) {
           const currentRoom: RoomState = data.room;
 
           // Check if current player was kicked by host
           const wasKicked = currentRoom.kickedPlayerIds && currentRoom.kickedPlayerIds.includes(playerId);
           const stillInRoom = currentRoom.players.some((p) => p.id === playerId);
 
-          if (wasKicked || (room && !stillInRoom)) {
+          if (wasKicked || (!stillInRoom && currentRoom.status === "lobby")) {
             audioPlayer.stop();
             setRoom(null);
             setRoomCode("");
@@ -398,7 +407,17 @@ function PlayArenaContent() {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [roomCode, playerId, room]);
+  }, [roomCode, playerId]);
+
+  // Smooth local ticker to update seconds on screen between polling cycles
+  const [, setTicker] = useState<number>(Date.now());
+  useEffect(() => {
+    if (!room || (room.status !== "countdown" && room.status !== "playing")) return;
+    const interval = setInterval(() => {
+      setTicker(Date.now());
+    }, 500);
+    return () => clearInterval(interval);
+  }, [room?.status]);
 
   // 4. Synchronized Audio Playback and State Transitions
   useEffect(() => {
@@ -483,22 +502,22 @@ function PlayArenaContent() {
 
   // --- ACTIONS ---
 
-  // Create Room
+  // Create Room (0 initial artists by default)
   const handleCreateRoom = async (initialArtist?: string) => {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const tastes = initialArtist
-        ? [initialArtist, "Bad Bunny", "The Weeknd"]
-        : ["Bad Bunny", "The Weeknd", "Dua Lipa"];
+      const tastes = initialArtist ? [initialArtist.trim()] : [];
+      const hostDisplayName = playerName.trim() || (spotifyAuthUser?.displayName || "Anfitrión");
 
       const res = await fetch("/api/rooms", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({
-          hostName: playerName.trim() || "Lucas",
+          hostName: hostDisplayName,
           hostId: playerId,
-          roomName: `Sala de ${playerName.trim() || "Lucas"}`,
+          roomName: `Sala de ${hostDisplayName}`,
           initialArtists: tastes,
         }),
       });
@@ -516,7 +535,7 @@ function PlayArenaContent() {
     }
   };
 
-  // Join Room
+  // Join Room (0 initial artists by default)
   const handleJoinRoom = async (codeToJoin: string) => {
     const cleanCode = codeToJoin.trim().toUpperCase();
     if (!cleanCode) return;
@@ -525,14 +544,17 @@ function PlayArenaContent() {
     setErrorMessage(null);
 
     try {
+      const guestDisplayName = playerName.trim() || (spotifyAuthUser?.displayName || "Invitado");
+
       const res = await fetch(`/api/rooms/${cleanCode}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({
           action: "join",
           playerId,
-          name: playerName.trim() || "Invitado",
-          favoriteArtists: ["Taylor Swift", "Coldplay", "Bad Bunny"],
+          name: guestDisplayName,
+          favoriteArtists: [],
           spotifyConnected: spotifyConnected,
         }),
       });
@@ -886,18 +908,32 @@ function PlayArenaContent() {
   const isHost = currentMe?.isHost ?? false;
   const currentRound = room?.rounds[room.currentRound - 1];
 
-  // Synchronized Timer Remaining calculation
+  // Synchronized Timer Remaining calculation based authoritatively on server timestamps
   const getSecondsRemaining = () => {
-    if (!room?.roundStartTime) return 15;
-    const elapsed = Math.floor((Date.now() - room.roundStartTime) / 1000);
-    return Math.max(0, 15 - elapsed);
+    if (!room) return 15;
+    const now = Date.now();
+    if (room.roundEndsAt) {
+      return Math.max(0, Math.ceil((room.roundEndsAt - now) / 1000));
+    }
+    if (room.roundStartTime) {
+      const elapsed = Math.floor((now - room.roundStartTime) / 1000);
+      return Math.max(0, (room.roundDuration || 15) - elapsed);
+    }
+    return 15;
   };
   const secondsLeft = getSecondsRemaining();
 
   const getCountdownSeconds = () => {
-    if (!room?.countdownStartTime) return 3;
-    const elapsed = Math.floor((Date.now() - room.countdownStartTime) / 1000);
-    return Math.max(1, 3 - elapsed);
+    if (!room) return 3;
+    const now = Date.now();
+    if (room.countdownEndsAt) {
+      return Math.max(1, Math.ceil((room.countdownEndsAt - now) / 1000));
+    }
+    if (room.countdownStartTime) {
+      const elapsed = Math.floor((now - room.countdownStartTime) / 1000);
+      return Math.max(1, 3 - elapsed);
+    }
+    return 3;
   };
   const countdownSec = getCountdownSeconds();
 
@@ -964,7 +1000,7 @@ function PlayArenaContent() {
               style={{ backgroundColor: currentMe?.avatarColor || "#10B981" }}
             />
             <span className="font-bold text-white max-w-[100px] truncate">
-              {playerName || "Lucas"}
+              {playerName || (spotifyAuthUser?.displayName || "Jugador")}
             </span>
             {isHost && (
               <span title="Anfitrión">
@@ -985,9 +1021,10 @@ function PlayArenaContent() {
             </div>
             <button
               onClick={() => setErrorMessage(null)}
-              className="text-red-400 hover:text-white font-bold"
+              className="text-red-400 hover:text-white transition p-1"
+              title="Cerrar"
             >
-              ✕
+              <X className="w-4 h-4" />
             </button>
           </div>
         )}
@@ -1017,9 +1054,9 @@ function PlayArenaContent() {
                 value={playerName}
                 onChange={(e) => {
                   setPlayerName(e.target.value);
-                  localStorage.setItem("scuinklezam_player_name", e.target.value);
+                  sessionStorage.setItem("scuinklezam_player_name", e.target.value);
                 }}
-                placeholder="Ej. Lucas, Maya, Juan..."
+                placeholder="Ej. Alex, Sofía, Juan..."
                 maxLength={20}
                 className="w-full px-4 py-3 rounded-xl bg-black/60 border border-emerald-500/30 text-white font-bold text-sm focus:outline-none focus:border-goblinLime transition"
               />

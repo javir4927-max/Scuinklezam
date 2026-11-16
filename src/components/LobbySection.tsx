@@ -83,7 +83,7 @@ export default function LobbySection({ onOpenMiniQuiz }: LobbySectionProps) {
           <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-emerald-500/15">
               <div>
-                <h3 className="font-display font-bold text-xl text-white">Sala de Lucas</h3>
+                <h3 className="font-display font-bold text-xl text-white">Sala Multijugador</h3>
                 <span className="inline-block mt-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-950 border border-emerald-500/30 text-emerald-300">
                   Sala Privada Gratuita
                 </span>
@@ -128,7 +128,7 @@ export default function LobbySection({ onOpenMiniQuiz }: LobbySectionProps) {
                 <div className="text-xs font-bold uppercase tracking-wider text-emerald-400 mb-3">Jugadores en Sala (4)</div>
                 <div className="space-y-2.5 text-sm">
                   <div className="flex items-center justify-between">
-                    <span className="font-semibold text-white">Lucas (Anfitrión)</span>
+                    <span className="font-semibold text-white">Anfitrión (Tú)</span>
                     <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
                       <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>En línea
                     </span>
@@ -190,11 +190,11 @@ export default function LobbySection({ onOpenMiniQuiz }: LobbySectionProps) {
                 Ver Demostración Rápida
               </button>
               <Link
-                href="/play?room=K7QP"
+                href="/play?create=true"
                 className="flex-1 py-3 rounded-xl bg-emerald-950/80 hover:bg-emerald-900 border border-goblinLime/40 font-extrabold text-goblinLime text-xs transition text-center flex items-center justify-center gap-2"
               >
                 <Gamepad2 className="w-4 h-4 text-goblinLime" />
-                <span>Entrar a Sala Real (K7QP)</span>
+                <span>Crear Sala Multijugador</span>
               </Link>
             </div>
           </div>
@@ -255,7 +255,7 @@ export default function LobbySection({ onOpenMiniQuiz }: LobbySectionProps) {
               <div className="text-xs font-bold uppercase text-emerald-400 mb-2">Clasificación en Vivo</div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                 <div className="p-2 rounded-lg bg-white/[0.03]">
-                  <strong>1 Lucas (Tú)</strong>
+                  <strong>1 Tú</strong>
                   <br />
                   <span className="text-zinc-400">Escuchando… 0pts</span>
                 </div>
@@ -278,11 +278,11 @@ export default function LobbySection({ onOpenMiniQuiz }: LobbySectionProps) {
             </div>
 
             <Link
-              href="/play?room=K7QP"
+              href="/play?create=true"
               className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime font-extrabold text-black text-sm shadow-lg shadow-emerald-500/25 hover:opacity-95 transition text-center flex items-center justify-center gap-2"
             >
               <Headphones className="w-5 h-5 text-black" />
-              <span>¡Jugar Partida Completa en Vivo!</span>
+              <span>¡Crear Sala y Jugar en Vivo!</span>
             </Link>
           </div>
         )}

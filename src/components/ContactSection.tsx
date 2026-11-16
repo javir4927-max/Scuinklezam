@@ -45,7 +45,7 @@ export default function ContactSection() {
               required
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              placeholder="Ej. Lucas o tu apodo gamer"
+              placeholder="Ej. Alex o tu apodo gamer"
               className="w-full px-4 py-3 rounded-xl bg-[#08120B] border border-emerald-500/20 text-white text-sm focus:outline-none focus:border-goblinLime"
             />
           </div>

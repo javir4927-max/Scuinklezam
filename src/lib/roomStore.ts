@@ -70,9 +70,13 @@ export interface RoomState {
   guessType: GuessType;
   totalRounds: number;
   currentRound: number;
+  roundDuration?: number;
   roundStartTime: number;
+  roundEndsAt?: number;
   revealStartTime?: number;
+  revealEndsAt?: number;
   countdownStartTime?: number;
+  countdownEndsAt?: number;
   players: Player[];
   themeProposals: ThemeProposal[];
   rounds: RoundData[];
@@ -201,9 +205,11 @@ export async function createRoom(
     existing = await getRoom(code);
   }
 
+  const cleanHostName = hostName.trim() || "Anfitrión";
+
   const hostPlayer: Player = {
     id: hostId,
-    name: hostName.trim() || "Lucas",
+    name: cleanHostName,
     avatarColor: "#10B981",
     isHost: true,
     isReady: true,
@@ -213,7 +219,7 @@ export async function createRoom(
     favoriteArtists:
       initialArtists && initialArtists.length > 0
         ? initialArtists.slice(0, 3)
-        : ["Bad Bunny", "The Weeknd", "Dua Lipa"],
+        : [],
     spotifyConnected: false,
     score: 0,
     streak: 0,
@@ -225,12 +231,13 @@ export async function createRoom(
   const newRoom: RoomState = {
     code,
     hostId,
-    name: roomName ? roomName.trim() : `Sala de ${hostPlayer.name}`,
+    name: roomName ? roomName.trim() : `Sala de ${cleanHostName}`,
     status: "lobby",
     gameMode: "blend",
     guessType: "song",
     totalRounds: 10,
     currentRound: 1,
+    roundDuration: 15,
     roundStartTime: 0,
     players: [hostPlayer],
     themeProposals: [...DEFAULT_THEME_PROPOSALS],
@@ -246,6 +253,7 @@ export async function createRoom(
 
 /**
  * Gets a room by code and cleans up timed-out players/advances auto states.
+ * Strictly read-only for room players (never adds, renames, or kicks during polling).
  */
 export async function getRoom(code: string, activePlayerId?: string): Promise<RoomState | null> {
   const upperCode = code.toUpperCase().trim();
@@ -264,80 +272,6 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
     }
   }
 
-  // Auto-seed canonical K7QP demo room if requested and not yet present
-  if (!room && upperCode === "K7QP") {
-    room = {
-      code: "K7QP",
-      hostId: "host_lucas",
-      name: "Sala Ranked Pro",
-      status: "lobby",
-      gameMode: "blend",
-      guessType: "song",
-      totalRounds: 10,
-      currentRound: 1,
-      roundStartTime: 0,
-      players: [
-        {
-          id: "host_lucas",
-          name: "Lucas",
-          avatarColor: "#10B981",
-          isHost: true,
-          isReady: true,
-          isOnline: true,
-          isBot: false,
-          lastSeen: Date.now(),
-          favoriteArtists: ["Bad Bunny", "The Weeknd", "Dua Lipa"],
-          spotifyConnected: false,
-          score: 0,
-          streak: 0,
-          lives: 3,
-          currentAnswer: null,
-          votedTheme: null,
-        },
-        {
-          id: "bot_maya",
-          name: "Maya",
-          avatarColor: "#10B981",
-          isHost: false,
-          isReady: true,
-          isOnline: true,
-          isBot: true,
-          lastSeen: Date.now(),
-          favoriteArtists: ["Billie Eilish", "Dua Lipa", "Olivia Rodrigo"],
-          spotifyConnected: false,
-          score: 0,
-          streak: 0,
-          lives: 3,
-          currentAnswer: null,
-          votedTheme: null,
-        },
-        {
-          id: "bot_leo",
-          name: "Leo",
-          avatarColor: "#F59E0B",
-          isHost: false,
-          isReady: true,
-          isOnline: true,
-          isBot: true,
-          lastSeen: Date.now(),
-          favoriteArtists: ["Drake", "Kendrick Lamar", "Travis Scott"],
-          spotifyConnected: false,
-          score: 0,
-          streak: 0,
-          lives: 3,
-          currentAnswer: null,
-          votedTheme: null,
-        },
-      ],
-      themeProposals: [...DEFAULT_THEME_PROPOSALS],
-      rounds: [],
-      kickedPlayerIds: [],
-      createdAt: Date.now(),
-      lastActive: Date.now(),
-    };
-    await saveRoom(room);
-  }
-
   if (!room) return null;
 
   const now = Date.now();
@@ -348,7 +282,7 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
     changed = true;
   }
 
-  // Heartbeat update for active player
+  // Heartbeat update for active player (strictly updates timestamp if already present in room)
   if (activePlayerId) {
     const player = room.players.find((p) => p.id === activePlayerId);
     if (player) {
@@ -378,19 +312,23 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
 }
 
 /**
- * Progresses room state based on timers and player responses.
+ * Progresses room state authoritatively based on timestamps and player responses.
+ * Strictly guarantees rooms NEVER loop back to "lobby" automatically.
  */
-function checkRoomStateProgression(room: RoomState): boolean {
+export function checkRoomStateProgression(room: RoomState): boolean {
   const now = Date.now();
   let changed = false;
 
-  // 1. COUNTDOWN -> PLAYING (3.5 seconds)
-  if (room.status === "countdown" && room.countdownStartTime) {
-    if (now - room.countdownStartTime >= 3500) {
+  // 1. COUNTDOWN -> PLAYING (when now >= countdownEndsAt)
+  if (room.status === "countdown") {
+    const endsAt = room.countdownEndsAt || (room.countdownStartTime ? room.countdownStartTime + 3500 : now);
+    if (now >= endsAt) {
       room.status = "playing";
       room.roundStartTime = now;
+      room.roundEndsAt = now + (room.roundDuration || 15) * 1000;
       room.countdownStartTime = undefined;
-      // Reset players currentAnswer for round 1
+      room.countdownEndsAt = undefined;
+      // Reset players currentAnswer for round
       room.players.forEach((p) => {
         p.currentAnswer = null;
       });
@@ -400,17 +338,20 @@ function checkRoomStateProgression(room: RoomState): boolean {
     }
   }
 
-  // 2. PLAYING -> ROUND_REVEAL (15 seconds elapsed OR all online players answered)
-  if (room.status === "playing" && room.roundStartTime) {
-    const elapsed = now - room.roundStartTime;
+  // 2. PLAYING -> ROUND_REVEAL (when now >= roundEndsAt OR all active players answered)
+  if (room.status === "playing") {
+    const endsAt = room.roundEndsAt || (room.roundStartTime ? room.roundStartTime + 15500 : now);
     const activePlayers = room.players.filter((p) => p.isOnline || p.isBot);
     const allAnswered =
       activePlayers.length > 0 &&
       activePlayers.every((p) => p.currentAnswer !== null);
 
-    if (elapsed >= 15500 || allAnswered) {
+    if (now >= endsAt || allAnswered) {
       room.status = "round_reveal";
       room.revealStartTime = now;
+      room.revealEndsAt = now + 4000;
+      room.roundStartTime = 0;
+      room.roundEndsAt = undefined;
 
       // Score any player who didn't answer before time ran out
       const currentRoundData = room.rounds[room.currentRound - 1];
@@ -428,14 +369,18 @@ function checkRoomStateProgression(room: RoomState): boolean {
     }
   }
 
-  // 3. ROUND_REVEAL -> NEXT ROUND or FINISHED (4 seconds)
-  if (room.status === "round_reveal" && room.revealStartTime) {
-    if (now - room.revealStartTime >= 4000) {
+  // 3. ROUND_REVEAL -> NEXT ROUND or FINISHED (when now >= revealEndsAt)
+  if (room.status === "round_reveal") {
+    const endsAt = room.revealEndsAt || (room.revealStartTime ? room.revealStartTime + 4000 : now);
+    if (now >= endsAt) {
       room.revealStartTime = undefined;
+      room.revealEndsAt = undefined;
+
       if (room.currentRound < room.rounds.length) {
         room.currentRound += 1;
         room.status = "playing";
         room.roundStartTime = now;
+        room.roundEndsAt = now + (room.roundDuration || 15) * 1000;
         room.players.forEach((p) => {
           p.currentAnswer = null;
         });
@@ -514,19 +459,6 @@ export async function joinRoom(
     return { success: false, error: "Has sido expulsado de esta sala por el anfitrión." };
   }
 
-  // If canonical demo room K7QP host is still placeholder "host_lucas", claim it for the first human visitor
-  if (code === "K7QP" && room.hostId === "host_lucas") {
-    const hostIdx = room.players.findIndex((p) => p.id === "host_lucas");
-    if (hostIdx >= 0) {
-      room.players[hostIdx].id = playerData.id;
-      room.players[hostIdx].name = playerData.name.trim() || "Lucas";
-      room.players[hostIdx].lastSeen = Date.now();
-      room.hostId = playerData.id;
-      await saveRoom(room);
-      return { success: true, room };
-    }
-  }
-
   // Check if player is already in room
   const existingIndex = room.players.findIndex((p) => p.id === playerData.id);
   const colors = ["#10B981", "#84CC16", "#F59E0B", "#06B6D4", "#EC4899", "#8B5CF6", "#14B8A6"];
@@ -560,7 +492,7 @@ export async function joinRoom(
       favoriteArtists:
         playerData.favoriteArtists && playerData.favoriteArtists.length > 0
           ? playerData.favoriteArtists.slice(0, 3)
-          : ["Taylor Swift", "Coldplay", "Bad Bunny"],
+          : [],
       spotifyConnected: !!playerData.spotifyConnected,
       score: 0,
       streak: 0,
@@ -759,16 +691,26 @@ export async function changeRoomSettings(
  * Starts the game: builds balanced rounds, initializes players, starts countdown.
  * GUARANTEES 100% of rounds have verified audio preview and artwork.
  */
-export async function startRoomGame(code: string, hostId: string): Promise<{ success: boolean; error?: string }> {
+export async function startRoomGame(code: string, hostId: string): Promise<{ success: boolean; room?: RoomState; error?: string }> {
   const room = await getRoom(code);
   if (!room) return { success: false, error: "Sala no encontrada." };
   if (room.hostId !== hostId) return { success: false, error: "Solo el anfitrión puede iniciar la partida." };
+
+  // If already in countdown or playing, return current room state idempotently
+  if (room.status === "countdown" || room.status === "playing" || room.status === "round_reveal") {
+    return { success: true, room };
+  }
+
+  if (room.status !== "lobby") {
+    return { success: false, error: "La sala no se encuentra en el lobby." };
+  }
 
   const pool: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
 
   // Build song pool based on Game Mode
   if (room.gameMode === "blend" || room.gameMode === "who_listens") {
     // Taste Blend: Gather from all players equally
+    let totalArtistsContributed = 0;
     for (const player of room.players) {
       // Prioritize directly injected Spotify tracks if available
       if (player.injectedTracks && player.injectedTracks.length > 0) {
@@ -781,17 +723,25 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
         });
       }
 
-      const tastes = player.favoriteArtists.length > 0 ? player.favoriteArtists : ["Pop Hits"];
-      for (const artist of tastes) {
-        const found = await searchVerifiedTracks(artist, 6);
-        found.forEach((track) => {
-          pool.push({
-            track,
-            playerId: player.id,
-            playerName: player.name,
+      if (player.favoriteArtists && player.favoriteArtists.length > 0) {
+        totalArtistsContributed += player.favoriteArtists.length;
+        for (const artist of player.favoriteArtists) {
+          const found = await searchVerifiedTracks(artist, 6);
+          found.forEach((track) => {
+            pool.push({
+              track,
+              playerId: player.id,
+              playerName: player.name,
+            });
           });
-        });
+        }
       }
+    }
+
+    // If 0 artists were selected across all players, generate from Top Hits Global without touching player favoriteArtists!
+    if (totalArtistsContributed === 0 && pool.length === 0) {
+      const globalHits = await searchVerifiedTracks("Top Hits Global", room.totalRounds + 6);
+      globalHits.forEach((track) => pool.push({ track }));
     }
   } else if (room.gameMode === "vote") {
     // Highest voted theme
@@ -838,7 +788,7 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
   // Minimum required pool: totalRounds + 4
   const minRequired = room.totalRounds + 4;
   if (validUniquePool.length < minRequired) {
-    const emergencyTracks = await searchVerifiedTracks("Top Hits 2024", minRequired - validUniquePool.length + 5);
+    const emergencyTracks = await searchVerifiedTracks("Top Hits Global", minRequired - validUniquePool.length + 5);
     for (const et of emergencyTracks) {
       if (validUniquePool.length >= minRequired) break;
       const titleKey = `${et.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${et.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
@@ -915,13 +865,20 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
     p.currentAnswer = null;
   });
 
+  const now = Date.now();
   room.rounds = rounds;
   room.currentRound = 1;
+  room.roundDuration = 15;
   room.status = "countdown";
-  room.countdownStartTime = Date.now();
+  room.countdownStartTime = now;
+  room.countdownEndsAt = now + 3500;
+  room.roundStartTime = 0;
+  room.roundEndsAt = undefined;
+  room.revealStartTime = undefined;
+  room.revealEndsAt = undefined;
 
   await saveRoom(room);
-  return { success: true };
+  return { success: true, room };
 }
 
 /**
@@ -1005,8 +962,11 @@ export async function resetRoomToLobby(code: string, hostId: string): Promise<bo
   room.currentRound = 1;
   room.rounds = [];
   room.roundStartTime = 0;
+  room.roundEndsAt = undefined;
   room.revealStartTime = undefined;
+  room.revealEndsAt = undefined;
   room.countdownStartTime = undefined;
+  room.countdownEndsAt = undefined;
 
   room.players.forEach((p) => {
     p.score = 0;
