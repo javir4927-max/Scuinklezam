@@ -9,6 +9,7 @@ import { resolveAudioStream } from "./musicService";
 
 export type { SpotifyTrackItem, SpotifyUserProfile };
 export { FALLBACK_SPOTIFY_TRACKS };
+export { resolveSpotifyRedirectUri, resolveSpotifyOrigin } from "./spotify";
 
 // Bypass local Windows certificate verification issues for iTunes and Spotify APIs
 if (typeof process !== "undefined" && process.env) {
