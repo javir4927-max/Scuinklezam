@@ -46,10 +46,16 @@ export interface ThemeProposal {
   votes: string[];
 }
 
+export interface RoundOption {
+  title: string;
+  artist: string;
+  artworkUrl: string;
+}
+
 export interface RoundData {
   roundNumber: number;
   targetTrack: SpotifyTrackItem;
-  options: string[];
+  options: (RoundOption | string)[];
   correctIndex: number;
   contributedByPlayerId?: string;
   contributedByPlayerName?: string;
@@ -870,21 +876,23 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
     const otherTracks = shuffledPool.filter((u) => u.track.id !== target.id);
     const shuffledOthers = [...otherTracks].sort(() => 0.5 - Math.random()).slice(0, 3);
 
-    // Option text depends on guessType
-    let correctText = target.title;
-    let distractorTexts = shuffledOthers.map((o) => o.track.title);
+    const correctOption: RoundOption = {
+      title: target.title,
+      artist: target.artist,
+      artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+    };
 
-    if (room.guessType === "artist") {
-      correctText = target.artist;
-      distractorTexts = shuffledOthers.map((o) => o.track.artist);
-    } else if (room.guessType === "both") {
-      correctText = `${target.title} — ${target.artist}`;
-      distractorTexts = shuffledOthers.map((o) => `${o.track.title} — ${o.track.artist}`);
-    }
+    const distractorOptions: RoundOption[] = shuffledOthers.map((o) => ({
+      title: o.track.title,
+      artist: o.track.artist,
+      artworkUrl: o.track.artworkUrl || getFallbackArtwork(o.track.title, o.track.artist),
+    }));
 
     // Merge & shuffle options
-    const options = [correctText, ...distractorTexts].sort(() => 0.5 - Math.random());
-    const correctIndex = options.indexOf(correctText);
+    const options: RoundOption[] = [correctOption, ...distractorOptions].sort(() => 0.5 - Math.random());
+    const correctIndex = options.findIndex(
+      (opt) => opt.title === correctOption.title && opt.artist === correctOption.artist
+    );
 
     rounds.push({
       roundNumber: i + 1,

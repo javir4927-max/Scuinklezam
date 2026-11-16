@@ -35,9 +35,58 @@ import {
   RotateCcw,
   Check,
   ExternalLink,
+  Copy,
 } from "lucide-react";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
-import { RoomState, Player, GameMode, GuessType } from "@/lib/roomStore";
+import { RoomState, Player, GameMode, GuessType, RoundOption } from "@/lib/roomStore";
+
+// Universal clipboard copy fallback
+async function copyToClipboard(text: string): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (err) {
+    console.warn("[Clipboard API failed, trying execCommand fallback]", err);
+  }
+
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.top = "-9999px";
+    textarea.style.opacity = "0";
+    textarea.setAttribute("readonly", "");
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const successful = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return successful;
+  } catch (err) {
+    console.error("[Clipboard execCommand fallback failed]", err);
+    return false;
+  }
+}
+
+function normalizeRoundOption(opt: RoundOption | string): RoundOption {
+  if (typeof opt === "string") {
+    const parts = opt.split(" — ");
+    return {
+      title: parts[0] || opt,
+      artist: parts[1] || "",
+      artworkUrl: getFallbackArtwork(parts[0] || opt, parts[1] || ""),
+    };
+  }
+  return {
+    title: opt?.title || "Canción",
+    artist: opt?.artist || "",
+    artworkUrl: opt?.artworkUrl || getFallbackArtwork(opt?.title || "Canción", opt?.artist || ""),
+  };
+}
 import SpotifyConnectModal from "@/components/SpotifyConnectModal";
 import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
 
@@ -147,7 +196,9 @@ function PlayArenaContent() {
   const [showInviteModal, setShowInviteModal] = useState<boolean>(false);
   const [showTasteModal, setShowTasteModal] = useState<boolean>(false);
   const [showSpotifyModal, setShowSpotifyModal] = useState<boolean>(false);
+  const [copiedCode, setCopiedCode] = useState<boolean>(false);
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
+  const [optionImageErrors, setOptionImageErrors] = useState<Record<string, boolean>>({});
   const [newArtistInput, setNewArtistInput] = useState<string>("");
   const [newThemeProposal, setNewThemeProposal] = useState<string>("");
 
@@ -811,14 +862,23 @@ function PlayArenaContent() {
     }
   };
 
-  // Copy Room Link to Clipboard
-  const handleCopyLink = () => {
-    if (typeof window !== "undefined" && navigator.clipboard) {
-      const fullUrl = `${window.location.origin}/play?room=${roomCode}`;
-      navigator.clipboard.writeText(fullUrl);
-      setCopiedLink(true);
-      setTimeout(() => setCopiedLink(false), 2000);
-    }
+  // Robust Universal Clipboard Copy for Room Code
+  const handleCopyRoomCode = async (codeToCopy?: string) => {
+    const code = codeToCopy || room?.code || roomCode;
+    if (!code) return;
+    await copyToClipboard(code);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
+  };
+
+  // Robust Universal Clipboard Copy for Room Invite Link
+  const handleCopyLink = async () => {
+    const code = room?.code || roomCode;
+    if (!code) return;
+    const fullUrl = `${window.location.origin}/play?room=${code}`;
+    await copyToClipboard(fullUrl);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
   };
 
   // Current Player & Host status
@@ -1041,18 +1101,51 @@ function PlayArenaContent() {
 
               {/* Code & Actions Box */}
               <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-2 bg-black/60 px-4 py-2.5 rounded-2xl border border-emerald-500/30">
+                {/* Room Code Badge (Entire container is clickable) */}
+                <button
+                  type="button"
+                  onClick={() => handleCopyRoomCode(room.code)}
+                  title="Haz clic para copiar el código de la sala"
+                  className="flex items-center gap-2.5 bg-black/60 hover:bg-emerald-950/40 px-4 py-2.5 rounded-2xl border border-emerald-500/30 hover:border-emerald-400/60 transition cursor-pointer group"
+                >
                   <span className="text-xs uppercase text-zinc-400 font-bold">Código:</span>
                   <span className="font-mono font-black text-2xl tracking-widest text-goblinLime">
                     {room.code}
                   </span>
-                  <button
-                    onClick={handleCopyLink}
-                    className="ml-2 px-3 py-1.5 rounded-xl bg-goblinPrimary hover:bg-emerald-400 text-black font-black text-xs transition"
-                  >
-                    {copiedLink ? "¡Copiado!" : "Copiar"}
-                  </button>
-                </div>
+                  <span className="ml-1.5 flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold group-hover:bg-emerald-500/30 transition">
+                    {copiedCode ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>¡Código copiado!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Copiar código</span>
+                      </>
+                    )}
+                  </span>
+                </button>
+
+                {/* Direct Link Copy Button */}
+                <button
+                  type="button"
+                  onClick={handleCopyLink}
+                  title="Copiar enlace directo de invitación"
+                  className="px-3.5 py-2.5 rounded-2xl bg-white/[0.06] hover:bg-white/[0.1] border border-emerald-500/30 text-white font-bold text-xs transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  {copiedLink ? (
+                    <>
+                      <Check className="w-4 h-4 text-emerald-400" />
+                      <span className="text-emerald-300">¡Enlace copiado!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Link2 className="w-4 h-4 text-emerald-400" />
+                      <span>Copiar enlace</span>
+                    </>
+                  )}
+                </button>
 
                 <button
                   onClick={handleAddBot}
@@ -1859,11 +1952,13 @@ function PlayArenaContent() {
             )}
 
             {/* 4 Quiz Options Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {currentRound.options.map((optText, optIdx) => {
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 sm:gap-4">
+              {currentRound.options.map((opt, optIdx) => {
+                const optData = normalizeRoundOption(opt);
                 const isSelected = selectedOption === optIdx;
                 const isCorrect = optIdx === currentRound.correctIndex;
                 const isReveal = room.status === "round_reveal";
+                const imgKey = `play_${room.currentRound}_${optIdx}`;
 
                 let cardStyle =
                   "bg-[#102218] border-emerald-500/20 hover:border-goblinLime text-white";
@@ -1886,20 +1981,55 @@ function PlayArenaContent() {
 
                 return (
                   <button
-                    key={optIdx}
+                    key={`${room.currentRound}_${optData.title}_${optIdx}`}
                     onClick={() => handleAnswer(optIdx)}
                     disabled={selectedOption !== null || isReveal}
-                    className={`p-5 rounded-2xl border text-left font-bold text-sm sm:text-base transition cursor-pointer flex items-center justify-between ${cardStyle} disabled:cursor-default`}
+                    className={`flex items-center justify-between gap-3.5 p-2.5 sm:p-3 rounded-xl border text-left transition-all ${cardStyle} ${
+                      selectedOption !== null || isReveal ? "cursor-default" : "cursor-pointer"
+                    }`}
                   >
-                    <div className="flex items-center gap-3">
-                      <span className="w-7 h-7 rounded-lg bg-black/40 flex items-center justify-center font-mono text-xs text-zinc-400 border border-white/10">
-                        {optIdx + 1}
-                      </span>
-                      <span>{optText}</span>
+                    {/* Left: Artwork Container + Center: Title & Artist */}
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-lg overflow-hidden shrink-0 bg-emerald-950/80 border border-white/10 relative flex items-center justify-center">
+                        {optionImageErrors[imgKey] ? (
+                          <Music2 className="w-5 h-5 text-emerald-400" />
+                        ) : (
+                          <img
+                            src={optData.artworkUrl}
+                            alt={optData.title}
+                            referrerPolicy="no-referrer"
+                            onError={() =>
+                              setOptionImageErrors((prev) => ({
+                                ...prev,
+                                [imgKey]: true,
+                              }))
+                            }
+                            className="w-full h-full object-cover"
+                          />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold text-sm sm:text-base text-white line-clamp-1">
+                          {optData.title}
+                        </div>
+                        <div className="text-xs text-zinc-400 line-clamp-1">
+                          {optData.artist}
+                        </div>
+                      </div>
                     </div>
 
-                    {isReveal && isCorrect && <Check className="w-5 h-5 text-emerald-400" />}
-                    {isReveal && isSelected && !isCorrect && <X className="w-5 h-5 text-rose-400" />}
+                    {/* Right: Shortcut badge or Check / X */}
+                    <div className="shrink-0 ml-2">
+                      {isReveal && isCorrect ? (
+                        <Check className="w-5 h-5 text-emerald-400" />
+                      ) : isReveal && isSelected && !isCorrect ? (
+                        <X className="w-5 h-5 text-rose-400" />
+                      ) : (
+                        <span className="w-7 h-7 rounded-lg bg-black/40 flex items-center justify-center font-mono text-xs text-zinc-400 border border-white/10">
+                          {optIdx + 1}
+                        </span>
+                      )}
+                    </div>
                   </button>
                 );
               })}
@@ -2178,10 +2308,12 @@ function PlayArenaContent() {
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-[#0B1710] border border-emerald-500/30 rounded-3xl max-w-md w-full p-6 sm:p-8 space-y-5 shadow-2xl relative">
             <button
+              type="button"
               onClick={() => setShowInviteModal(false)}
-              className="absolute top-5 right-5 text-zinc-400 hover:text-white font-bold text-lg"
+              className="absolute top-5 right-5 text-zinc-400 hover:text-white transition p-1 cursor-pointer"
+              title="Cerrar"
             >
-              ✕
+              <X className="w-5 h-5" />
             </button>
 
             <div className="text-center space-y-1">
@@ -2194,15 +2326,29 @@ function PlayArenaContent() {
               </p>
             </div>
 
-            {/* Code Box */}
-            <div className="bg-black/60 p-4 rounded-2xl border border-emerald-500/30 text-center">
-              <div className="text-[11px] font-bold uppercase text-emerald-400">
-                Código de Sala
+            {/* Clickable Room Code Box */}
+            <button
+              type="button"
+              onClick={() => handleCopyRoomCode(room.code)}
+              className="w-full bg-black/60 hover:bg-emerald-950/40 p-4 rounded-2xl border border-emerald-500/30 hover:border-emerald-400/60 transition text-center cursor-pointer group"
+              title="Haz clic para copiar el código de sala"
+            >
+              <div className="text-[11px] font-bold uppercase text-emerald-400 flex items-center justify-center gap-1.5">
+                <span>Código de Sala</span>
+                {copiedCode ? (
+                  <span className="text-emerald-300 font-bold ml-1 flex items-center gap-1">
+                    <Check className="w-3.5 h-3.5 text-emerald-400" /> ¡Código copiado!
+                  </span>
+                ) : (
+                  <span className="text-zinc-400 text-[10px] ml-1 group-hover:text-emerald-300 transition flex items-center gap-1">
+                    <Copy className="w-3 h-3" /> Clic para copiar
+                  </span>
+                )}
               </div>
               <div className="font-mono font-black text-4xl tracking-widest text-goblinLime my-1">
                 {room.code}
               </div>
-            </div>
+            </button>
 
             {/* Direct Link Box */}
             <div className="flex gap-2">
@@ -2213,13 +2359,24 @@ function PlayArenaContent() {
                     ? `${window.location.origin}/play?room=${room.code}`
                     : `/play?room=${room.code}`
                 }
-                className="flex-1 px-3 py-2 rounded-xl bg-black/60 border border-emerald-500/20 text-xs font-mono text-zinc-300"
+                className="flex-1 px-3 py-2 rounded-xl bg-black/60 border border-emerald-500/20 text-xs font-mono text-zinc-300 select-all"
               />
               <button
+                type="button"
                 onClick={handleCopyLink}
-                className="px-4 py-2 rounded-xl bg-goblinPrimary text-black font-extrabold text-xs hover:bg-emerald-400 transition"
+                className="px-4 py-2 rounded-xl bg-goblinPrimary text-black font-extrabold text-xs hover:bg-emerald-400 transition flex items-center gap-1.5 cursor-pointer shrink-0"
               >
-                {copiedLink ? "¡Copiado!" : "Copiar"}
+                {copiedLink ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-black" />
+                    <span>¡Enlace copiado!</span>
+                  </>
+                ) : (
+                  <>
+                    <Link2 className="w-3.5 h-3.5 text-black" />
+                    <span>Copiar</span>
+                  </>
+                )}
               </button>
             </div>
 

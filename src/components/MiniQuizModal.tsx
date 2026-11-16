@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Play, Volume2, Timer, Sparkles, Heart, ExternalLink, Crown } from "lucide-react";
+import { Play, Volume2, Timer, Sparkles, Heart, ExternalLink, Crown, Check, X, Music2 } from "lucide-react";
 import { playSynthNote } from "@/lib/audio";
 import { audioPlayer, AudioPlayerState } from "@/lib/audioPlayer";
 import { SpotifyTrackItem, FALLBACK_SPOTIFY_TRACKS, getFallbackArtwork } from "@/lib/spotifyTypes";
@@ -13,10 +13,28 @@ interface MiniQuizModalProps {
   onClose: () => void;
 }
 
+export interface QuizRoundOption {
+  title: string;
+  artist: string;
+  artworkUrl: string;
+}
+
 interface QuizRoundData {
   correctTrack: SpotifyTrackItem;
-  options: string[];
+  options: (QuizRoundOption | string)[];
   correctIndex: number;
+}
+
+function normalizeQuizOption(opt: QuizRoundOption | string): QuizRoundOption {
+  if (typeof opt === "string") {
+    const parts = opt.split(" — ");
+    return {
+      title: parts[0] || opt,
+      artist: parts[1] || "",
+      artworkUrl: getFallbackArtwork(parts[0] || opt, parts[1] || ""),
+    };
+  }
+  return opt;
 }
 
 export default function MiniQuizModal({
@@ -34,6 +52,7 @@ export default function MiniQuizModal({
   const [isFinished, setIsFinished] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [savedFeedback, setSavedFeedback] = useState<string | null>(null);
+  const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
   const [audioState, setAudioState] = useState<AudioPlayerState>({
     isPlaying: false,
     isBlocked: false,
@@ -72,13 +91,25 @@ export default function MiniQuizModal({
     for (let i = 0; i < count; i++) {
       const correct = shuffled[i];
       const others = shuffled.filter((t) => t.id !== correct.id);
-      const distractors = others
+      const distractors: QuizRoundOption[] = others
         .sort(() => 0.5 - Math.random())
         .slice(0, 3)
-        .map((t) => t.title);
+        .map((t) => ({
+          title: t.title,
+          artist: t.artist,
+          artworkUrl: t.artworkUrl || getFallbackArtwork(t.title, t.artist),
+        }));
 
-      const options = [correct.title, ...distractors].sort(() => 0.5 - Math.random());
-      const correctIndex = options.indexOf(correct.title);
+      const correctOption: QuizRoundOption = {
+        title: correct.title,
+        artist: correct.artist,
+        artworkUrl: correct.artworkUrl || getFallbackArtwork(correct.title, correct.artist),
+      };
+
+      const options: QuizRoundOption[] = [correctOption, ...distractors].sort(() => 0.5 - Math.random());
+      const correctIndex = options.findIndex(
+        (o) => o.title === correctOption.title && o.artist === correctOption.artist
+      );
 
       generated.push({
         correctTrack: {
@@ -98,6 +129,7 @@ export default function MiniQuizModal({
     setIsFinished(false);
     setScore(0);
     setIsLoading(false);
+    setFailedImages({});
 
     if (generated[0]?.correctTrack?.previewUrl) {
       audioPlayer.playTrack(generated[0].correctTrack.previewUrl);
@@ -438,33 +470,76 @@ export default function MiniQuizModal({
             {/* 4 Interactive Options */}
             <div className="space-y-2.5">
               {currentRound.options.map((opt, idx) => {
+                const optData = normalizeQuizOption(opt);
+                const isCorrect = idx === currentRound.correctIndex;
+                const isSelected = idx === answeredIdx;
+                const imgKey = `mini_${currentRoundIdx}_${idx}`;
+
                 let btnStyle =
-                  "w-full flex items-center justify-between px-4 py-3.5 rounded-xl bg-white/[0.04] hover:bg-emerald-950/50 border border-emerald-500/15 hover:border-goblinLime text-sm font-semibold text-white transition cursor-pointer";
+                  "w-full flex items-center justify-between gap-3.5 p-2.5 sm:p-3 rounded-xl bg-white/[0.04] hover:bg-emerald-950/50 border border-emerald-500/15 hover:border-goblinLime text-white transition-all cursor-pointer";
 
                 if (isRevealing) {
-                  if (idx === currentRound.correctIndex) {
+                  if (isCorrect) {
                     btnStyle =
-                      "w-full flex items-center justify-between px-4 py-3.5 rounded-xl bg-[#22C55E]/20 border-2 border-[#22C55E] text-sm font-extrabold text-white shadow-lg shadow-emerald-500/20";
-                  } else if (idx === answeredIdx) {
+                      "w-full flex items-center justify-between gap-3.5 p-2.5 sm:p-3 rounded-xl bg-[#22C55E]/20 border-2 border-[#22C55E] text-white shadow-lg shadow-emerald-500/20";
+                  } else if (isSelected) {
                     btnStyle =
-                      "w-full flex items-center justify-between px-4 py-3.5 rounded-xl bg-[#EF4444]/20 border-2 border-[#EF4444] text-sm font-extrabold text-white";
+                      "w-full flex items-center justify-between gap-3.5 p-2.5 sm:p-3 rounded-xl bg-[#EF4444]/20 border-2 border-[#EF4444] text-white";
                   } else {
                     btnStyle =
-                      "w-full flex items-center justify-between px-4 py-3.5 rounded-xl bg-white/[0.02] border border-white/5 text-sm font-medium text-zinc-500 opacity-60";
+                      "w-full flex items-center justify-between gap-3.5 p-2.5 sm:p-3 rounded-xl bg-white/[0.02] border border-white/5 opacity-60";
                   }
                 }
 
                 return (
                   <button
-                    key={`${currentRoundIdx}_${opt}_${idx}`}
+                    key={`${currentRoundIdx}_${optData.title}_${idx}`}
                     onClick={() => handleAnswer(idx)}
                     className={btnStyle}
                     disabled={isRevealing}
                   >
-                    <span className="truncate pr-2">{opt}</span>
-                    <kbd className="px-2 py-0.5 text-xs rounded bg-white/10 font-mono text-zinc-300 shrink-0">
-                      {idx + 1}
-                    </kbd>
+                    {/* Left: Artwork & Center: Title + Artist */}
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-lg overflow-hidden shrink-0 bg-emerald-950/80 border border-white/10 relative flex items-center justify-center">
+                        {failedImages[imgKey] ? (
+                          <Music2 className="w-5 h-5 text-emerald-400" />
+                        ) : (
+                          <img
+                            src={optData.artworkUrl}
+                            alt={optData.title}
+                            referrerPolicy="no-referrer"
+                            onError={() =>
+                              setFailedImages((prev) => ({
+                                ...prev,
+                                [imgKey]: true,
+                              }))
+                            }
+                            className="w-full h-full object-cover"
+                          />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1 text-left">
+                        <div className="font-semibold text-sm sm:text-base text-white line-clamp-1">
+                          {optData.title}
+                        </div>
+                        <div className="text-xs text-zinc-400 line-clamp-1">
+                          {optData.artist}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right: Keyboard shortcut badge or Check/X icon */}
+                    <div className="shrink-0 ml-2">
+                      {isRevealing && isCorrect ? (
+                        <Check className="w-5 h-5 text-emerald-400" />
+                      ) : isRevealing && isSelected && !isCorrect ? (
+                        <X className="w-5 h-5 text-rose-400" />
+                      ) : (
+                        <kbd className="px-2 py-1 text-xs rounded-md bg-white/10 font-mono text-zinc-300">
+                          {idx + 1}
+                        </kbd>
+                      )}
+                    </div>
                   </button>
                 );
               })}
