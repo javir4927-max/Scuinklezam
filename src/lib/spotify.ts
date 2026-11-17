@@ -1,7 +1,7 @@
 /**
  * Single source of truth for resolving Spotify OAuth Redirect URIs and Origins.
  * Prevents 'INVALID_CLIENT: Not matching configuration' and 'redirect_uri_mismatch'
- * across localhost, Vercel preview/production, and custom tunnels (e.g. cloudflared).
+ * across localhost, fixed ngrok tunnel, Vercel preview/production, and custom domains.
  */
 
 export function resolveSpotifyRedirectUri(request: Request): string {
@@ -16,13 +16,18 @@ export function resolveSpotifyRedirectUri(request: Request): string {
     return "http://127.0.0.1:3000/api/auth/spotify/callback";
   }
 
-  // 2. Vercel deployments (production or preview branches like *.vercel.app)
+  // 2. Fixed ngrok host domain
+  if (cleanHost.includes("echo-both-mullets.ngrok-free.dev")) {
+    return "https://echo-both-mullets.ngrok-free.dev/api/auth/spotify/callback";
+  }
+
+  // 3. Vercel deployments (production or preview branches like *.vercel.app)
   // Strictly the canonical authorized domain configured in Spotify Developers Dashboard
   if (cleanHost.endsWith(".vercel.app")) {
     return "https://scuinklezam-zz38.vercel.app/api/auth/spotify/callback";
   }
 
-  // 3. Any other domain (such as .trycloudflare.com or custom domains)
+  // 4. Any other domain (such as custom tunnels or domains)
   const proto = request.headers.get("x-forwarded-proto") || "https";
   return `${proto}://${host}/api/auth/spotify/callback`;
 }
@@ -39,6 +44,10 @@ export function resolveSpotifyOrigin(request: Request): string {
 
   if (cleanHost.includes("localhost") || cleanHost.includes("127.0.0.1") || !cleanHost) {
     return "http://127.0.0.1:3000";
+  }
+
+  if (cleanHost.includes("echo-both-mullets.ngrok-free.dev")) {
+    return "https://echo-both-mullets.ngrok-free.dev";
   }
 
   if (cleanHost.endsWith(".vercel.app")) {
