@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   X,
   Flame,
@@ -44,7 +45,12 @@ export default function SpotifyStatsWrappedModal({
   onClose,
 }: SpotifyStatsWrappedModalProps) {
   const { isConnected, user } = useSpotifyAuth();
+  const [mounted, setMounted] = useState<boolean>(false);
   const [timeRange, setTimeRange] = useState<TimeRangeKey>("short_term");
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const [tracks, setTracks] = useState<SpotifyTrackItem[]>([]);
   const [artists, setArtists] = useState<ArtistStatItem[]>([]);
@@ -178,7 +184,7 @@ export default function SpotifyStatsWrappedModal({
     }
   };
 
-  if (!isOpen) return null;
+  if (!isOpen || !mounted) return null;
 
   // Compute Hero #1 (Top Artist)
   const topArtist = artists.length > 0 ? artists[0] : null;
@@ -221,120 +227,112 @@ export default function SpotifyStatsWrappedModal({
 
   return (
     <>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
-        <div className="relative w-full max-w-4xl max-h-[92vh] flex flex-col bg-[#060D09] border border-emerald-500/30 rounded-3xl shadow-2xl overflow-hidden text-white font-sans">
-          {/* Header Bar */}
-          <div className="flex items-center justify-between px-5 sm:px-7 py-4 border-b border-emerald-500/20 bg-[#0B1710]/90 backdrop-blur-md shrink-0">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-2xl bg-emerald-950/80 border border-emerald-500/30 flex items-center justify-center text-goblinLime shadow-md">
-                <Sparkles className="w-5 h-5 text-emerald-400" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-display font-black text-lg sm:text-xl text-white tracking-tight">
-                    Tu Wrapped de Spotify
-                  </span>
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-400/40 text-[10px] font-black uppercase text-goblinLime tracking-wider">
-                    En Vivo
-                  </span>
+      {createPortal(
+        <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md overflow-y-auto flex items-center justify-center p-4 sm:p-6 animate-in fade-in duration-200">
+          <div className="relative w-full max-w-4xl bg-zinc-950 border border-emerald-500/25 rounded-3xl shadow-2xl overflow-hidden max-h-[88vh] flex flex-col my-auto text-white font-sans">
+            {/* Cabecera fija interna */}
+            <div className="sticky top-0 z-10 bg-zinc-950/95 backdrop-blur-md border-b border-white/10 p-4 sm:p-6 space-y-3 shrink-0">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-2xl bg-emerald-950/80 border border-emerald-500/30 flex items-center justify-center text-goblinLime shadow-md shrink-0">
+                    <Sparkles className="w-5 h-5 text-emerald-400" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-display font-black text-lg sm:text-xl text-white tracking-tight truncate">
+                        Tu Wrapped de Spotify
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-400/40 text-[10px] font-black uppercase text-goblinLime tracking-wider shrink-0">
+                        En Vivo
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-400 truncate max-w-[220px] sm:max-w-md">
+                      {user?.displayName ? `Perfil de ${user.displayName}` : "Resumen visual de tus gustos musicales"}
+                    </p>
+                  </div>
                 </div>
-                <p className="text-xs text-zinc-400 truncate max-w-[240px] sm:max-w-md">
-                  {user?.displayName ? `Perfil de ${user.displayName}` : "Resumen visual de tus gustos musicales"}
-                </p>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  {/* Botón Ver stats a detalle en cabecera */}
+                  <button
+                    type="button"
+                    onClick={() => setShowDetailModal(true)}
+                    className="inline-flex items-center gap-2 px-3 sm:px-3.5 py-1.5 rounded-xl bg-zinc-800/90 hover:bg-zinc-700 text-zinc-100 border border-white/10 text-xs font-semibold transition cursor-pointer shadow-sm hover:border-emerald-500/40"
+                  >
+                    <BarChart3 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span className="hidden sm:inline">Ver stats a detalle</span>
+                    <span className="sm:hidden">Detalle</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="w-9 h-9 rounded-full bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white flex items-center justify-center transition cursor-pointer border border-white/10 shrink-0"
+                    aria-label="Cerrar"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Selector de periodos */}
+              <div className="flex items-center gap-2 overflow-x-auto scrollbar-none pt-1">
+                <button
+                  type="button"
+                  onClick={() => setTimeRange("recent")}
+                  className={`px-3 sm:px-3.5 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shrink-0 ${
+                    timeRange === "recent"
+                      ? "bg-goblinPrimary text-black shadow-md shadow-emerald-900/40 font-black"
+                      : "bg-white/[0.04] text-zinc-300 hover:text-white hover:bg-white/[0.08] border border-white/10"
+                  }`}
+                >
+                  <Clock className="w-3.5 h-3.5" />
+                  <span>Esta Semana</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setTimeRange("short_term")}
+                  className={`px-3 sm:px-3.5 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shrink-0 ${
+                    timeRange === "short_term"
+                      ? "bg-goblinPrimary text-black shadow-md shadow-emerald-900/40 font-black"
+                      : "bg-white/[0.04] text-zinc-300 hover:text-white hover:bg-white/[0.08] border border-white/10"
+                  }`}
+                >
+                  <Flame className="w-3.5 h-3.5" />
+                  <span>Último Mes</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setTimeRange("medium_term")}
+                  className={`px-3 sm:px-3.5 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shrink-0 ${
+                    timeRange === "medium_term"
+                      ? "bg-goblinPrimary text-black shadow-md shadow-emerald-900/40 font-black"
+                      : "bg-white/[0.04] text-zinc-300 hover:text-white hover:bg-white/[0.08] border border-white/10"
+                  }`}
+                >
+                  <Calendar className="w-3.5 h-3.5" />
+                  <span>6 Meses</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setTimeRange("long_term")}
+                  className={`px-3 sm:px-3.5 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shrink-0 ${
+                    timeRange === "long_term"
+                      ? "bg-goblinPrimary text-black shadow-md shadow-emerald-900/40 font-black"
+                      : "bg-white/[0.04] text-zinc-300 hover:text-white hover:bg-white/[0.08] border border-white/10"
+                  }`}
+                >
+                  <Crown className="w-3.5 h-3.5" />
+                  <span>Año / Historia</span>
+                </button>
               </div>
             </div>
 
-            <div className="flex items-center gap-2.5">
-              {/* Botón Ver stats a detalle en cabecera */}
-              <button
-                type="button"
-                onClick={() => setShowDetailModal(true)}
-                className="hidden sm:inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-zinc-800/90 hover:bg-zinc-700 text-zinc-100 border border-white/10 text-xs font-semibold transition cursor-pointer shadow-sm hover:border-emerald-500/40"
-              >
-                <BarChart3 className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Ver stats a detalle</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={onClose}
-                className="w-9 h-9 rounded-full bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white flex items-center justify-center transition cursor-pointer border border-white/10"
-                aria-label="Cerrar"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-          </div>
-
-          {/* Time Range Pills Selector */}
-          <div className="px-5 sm:px-7 py-3 border-b border-emerald-500/15 bg-black/40 flex items-center justify-between gap-3 overflow-x-auto shrink-0 scrollbar-none">
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setTimeRange("recent")}
-                className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shrink-0 ${
-                  timeRange === "recent"
-                    ? "bg-goblinPrimary text-black shadow-md shadow-emerald-900/40 font-black"
-                    : "bg-white/[0.04] text-zinc-300 hover:text-white hover:bg-white/[0.08] border border-white/10"
-                }`}
-              >
-                <Clock className="w-3.5 h-3.5" />
-                <span>Esta Semana</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setTimeRange("short_term")}
-                className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shrink-0 ${
-                  timeRange === "short_term"
-                    ? "bg-goblinPrimary text-black shadow-md shadow-emerald-900/40 font-black"
-                    : "bg-white/[0.04] text-zinc-300 hover:text-white hover:bg-white/[0.08] border border-white/10"
-                }`}
-              >
-                <Flame className="w-3.5 h-3.5" />
-                <span>Último Mes</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setTimeRange("medium_term")}
-                className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shrink-0 ${
-                  timeRange === "medium_term"
-                    ? "bg-goblinPrimary text-black shadow-md shadow-emerald-900/40 font-black"
-                    : "bg-white/[0.04] text-zinc-300 hover:text-white hover:bg-white/[0.08] border border-white/10"
-                }`}
-              >
-                <Calendar className="w-3.5 h-3.5" />
-                <span>Últimos 6 Meses</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setTimeRange("long_term")}
-                className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shrink-0 ${
-                  timeRange === "long_term"
-                    ? "bg-goblinPrimary text-black shadow-md shadow-emerald-900/40 font-black"
-                    : "bg-white/[0.04] text-zinc-300 hover:text-white hover:bg-white/[0.08] border border-white/10"
-                }`}
-              >
-                <Crown className="w-3.5 h-3.5" />
-                <span>Histórico (Top Anual)</span>
-              </button>
-            </div>
-
-            {/* Mobile Ver stats a detalle shortcut */}
-            <button
-              type="button"
-              onClick={() => setShowDetailModal(true)}
-              className="sm:hidden text-xs font-bold text-goblinLime hover:underline flex items-center gap-1 shrink-0"
-            >
-              <BarChart3 className="w-3.5 h-3.5" />
-              <span>50 Top</span>
-            </button>
-          </div>
-
-          {/* Main Content Area */}
-          <div className="flex-1 overflow-y-auto p-5 sm:p-7 space-y-7">
+            {/* Cuerpo desplazable */}
+            <div className="overflow-y-auto p-4 sm:p-6 space-y-6 flex-1">
             {!isConnected ? (
               /* State: Not connected to Spotify */
               <div className="py-12 text-center space-y-5 max-w-md mx-auto">
@@ -736,7 +734,9 @@ export default function SpotifyStatsWrappedModal({
             )}
           </div>
         </div>
-      </div>
+      </div>,
+      document.body
+    )}
 
       {/* Sub-modal: Detailed 50 Tracks & Artists List */}
       <SpotifyStatsDetailModal

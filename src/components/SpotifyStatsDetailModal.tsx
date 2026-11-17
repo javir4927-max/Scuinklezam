@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   X,
   Flame,
@@ -36,7 +37,12 @@ export default function SpotifyStatsDetailModal({
   onClose,
   userDisplayName,
 }: SpotifyStatsDetailModalProps) {
+  const [mounted, setMounted] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<"top_tracks" | "recently_played" | "top_artists">("top_tracks");
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
   const [timeRange, setTimeRange] = useState<"long_term" | "medium_term" | "short_term">("long_term");
 
   const [tracks, setTracks] = useState<SpotifyTrackItem[]>([]);
@@ -160,14 +166,14 @@ export default function SpotifyStatsDetailModal({
     }
   };
 
-  if (!isOpen) return null;
+  if (!isOpen || !mounted) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5">
-      <div className="bg-[#0B1710] border border-emerald-500/30 rounded-3xl max-w-2xl w-full flex flex-col max-h-[90vh] shadow-2xl relative overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+  return createPortal(
+    <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md overflow-y-auto flex items-center justify-center p-4 sm:p-6 animate-in fade-in duration-200">
+      <div className="relative w-full max-w-2xl bg-zinc-950 border border-emerald-500/25 rounded-3xl shadow-2xl overflow-hidden max-h-[88vh] flex flex-col my-auto text-white">
         
         {/* Header */}
-        <div className="p-4 sm:p-5 border-b border-emerald-500/20 flex items-center justify-between shrink-0 bg-[#060D09]">
+        <div className="sticky top-0 z-10 p-4 sm:p-6 border-b border-white/10 flex items-center justify-between shrink-0 bg-zinc-950/95 backdrop-blur-md">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-emerald-950/80 border border-emerald-500/30 flex items-center justify-center text-goblinLime">
               <BarChart3 className="w-4 h-4" />
@@ -484,6 +490,7 @@ export default function SpotifyStatsDetailModal({
           <span className="text-emerald-500/80 font-medium">Scuinklezam × Spotify API</span>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

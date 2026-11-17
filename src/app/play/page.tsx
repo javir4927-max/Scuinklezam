@@ -2749,7 +2749,7 @@ function PlayArenaContent() {
                     key={`${room.currentRound}_${optData.title}_${optIdx}`}
                     onClick={() => handleAnswer(optIdx)}
                     disabled={selectedOption !== null || isReveal}
-                    className={`flex items-center justify-between gap-3.5 p-2.5 sm:p-3 rounded-xl border text-left transition-all relative overflow-visible ${cardStyle} ${
+                    className={`flex items-center justify-between gap-3.5 p-2.5 sm:p-3 rounded-xl border text-left transition-all relative overflow-visible min-h-[52px] sm:min-h-[60px] text-sm sm:text-base ${cardStyle} ${
                       selectedOption !== null || isReveal ? "cursor-default" : "cursor-pointer"
                     }`}
                   >

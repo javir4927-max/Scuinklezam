@@ -967,7 +967,7 @@ export default function RankedArenaPage() {
 
                 <div className="flex flex-col md:flex-row items-center md:items-start gap-8 relative z-10">
                   {/* Large Circular Artist Photo */}
-                  <div className="relative group shrink-0">
+                  <div className="relative group shrink-0 mx-auto md:mx-0">
                     <img
                       src={artistSheetData.photoUrl}
                       alt={artistSheetData.artistName}
@@ -989,48 +989,48 @@ export default function RankedArenaPage() {
                       </h1>
                     </div>
 
-                    {/* 4 Stats in a row */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3 max-w-2xl">
-                      <div className="p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center">
-                        <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5">
+                    {/* 4 Stats in a compact 4-column row */}
+                    <div className="grid grid-cols-4 gap-1.5 sm:gap-3 max-w-2xl">
+                      <div className="p-2 sm:p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center">
+                        <span className="text-[8px] sm:text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5 truncate">
                           PUESTO
                         </span>
-                        <div className="text-base sm:text-xl font-black text-white">
+                        <div className="text-xs sm:text-xl font-black text-white">
                           {artistSheetData.userStats.userRank ? `#${artistSheetData.userStats.userRank}` : "-"}
-                          <span className="text-xs text-zinc-400 font-normal"> / {artistSheetData.userStats.totalPlayers}</span>
+                          <span className="text-[9px] sm:text-xs text-zinc-400 font-normal"> / {artistSheetData.userStats.totalPlayers}</span>
                         </div>
                       </div>
 
-                      <div className="p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center">
-                        <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5">
+                      <div className="p-2 sm:p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center">
+                        <span className="text-[8px] sm:text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5 truncate">
                           PUNTOS
                         </span>
-                        <div className="text-base sm:text-xl font-black text-goblinLime">
-                          {artistSheetData.userStats.totalPoints.toLocaleString()} <span className="text-xs text-zinc-400 font-normal">pts</span>
+                        <div className="text-xs sm:text-xl font-black text-goblinLime">
+                          {artistSheetData.userStats.totalPoints.toLocaleString()} <span className="text-[9px] sm:text-xs text-zinc-400 font-normal">pts</span>
                         </div>
                       </div>
 
-                      <div className="p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center">
-                        <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5">
+                      <div className="p-2 sm:p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center">
+                        <span className="text-[8px] sm:text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5 truncate">
                           QUIZZES
                         </span>
-                        <div className="text-base sm:text-xl font-black text-emerald-400">
+                        <div className="text-xs sm:text-xl font-black text-emerald-400">
                           {artistSheetData.userStats.quizzesPlayed}
                         </div>
                       </div>
 
-                      <div className="p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center">
-                        <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5">
-                          MEJOR PUNTUACIÓN
+                      <div className="p-2 sm:p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center">
+                        <span className="text-[8px] sm:text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5 truncate">
+                          MEJOR
                         </span>
-                        <div className="text-base sm:text-xl font-black text-emerald-400">
-                          {artistSheetData.userStats.bestScore} <span className="text-xs text-zinc-400 font-normal">/ 1000</span>
+                        <div className="text-xs sm:text-xl font-black text-emerald-400">
+                          {artistSheetData.userStats.bestScore} <span className="text-[9px] sm:text-xs text-zinc-400 font-normal">/ 1k</span>
                         </div>
                       </div>
                     </div>
 
                     {/* Action Button: Continuar (if quizzesPlayed > 0) or Jugar (if 0) */}
-                    <div className="pt-2">
+                    <div className="pt-2 w-full flex justify-center md:justify-start">
                       <button
                         type="button"
                         onClick={() =>

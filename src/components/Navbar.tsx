@@ -52,8 +52,8 @@ export default function Navbar({
   };
 
   return (
-    <header className="sticky top-0 z-50 h-[72px] bg-[#060D09]/85 backdrop-blur-xl border-b border-emerald-500/15">
-      <div className="max-w-[1200px] mx-auto h-full px-4 sm:px-6 flex items-center justify-between gap-4">
+    <header className="sticky top-0 z-50 bg-[#060D09]/85 backdrop-blur-xl border-b border-emerald-500/15">
+      <div className="max-w-[1200px] mx-auto h-[64px] lg:h-[72px] px-4 sm:px-6 flex items-center justify-between gap-4">
         {/* Bloque Izquierdo (Marca — Scuinklezam sin espacios) */}
         <div className="flex items-center gap-3">
           <Link href="/" className="flex items-center gap-2.5 group shrink-0">
@@ -254,15 +254,43 @@ export default function Navbar({
           <GlobalVolumeControl />
         </div>
 
-        {/* Menú Móvil Button (lg:hidden) */}
+        {/* Controles Móvil Derecho (< lg) */}
         <div className="flex items-center gap-2 lg:hidden">
+          {/* Quick Sound/Mute Toggle */}
           <GlobalVolumeControl compact />
-          <Link
-            href="/play"
-            className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gradient-to-r from-emerald-500 to-lime-500 text-zinc-950 shadow-sm"
-          >
-            Jugar
-          </Link>
+
+          {/* Avatar del usuario (JaviTZ) o botón Spotify */}
+          {isConnected && user ? (
+            <Link
+              href="/perfil"
+              className="flex items-center gap-1.5 p-1 rounded-full bg-[#102218] border border-emerald-500/40 hover:border-goblinLime transition"
+              title={user.displayName}
+            >
+              {user.avatarUrl ? (
+                <img
+                  src={user.avatarUrl}
+                  alt={user.displayName}
+                  className="w-6 h-6 rounded-full object-cover border border-emerald-400"
+                />
+              ) : (
+                <div className="w-6 h-6 rounded-full bg-emerald-800 text-white font-bold text-[10px] flex items-center justify-center">
+                  {user.displayName.charAt(0).toUpperCase()}
+                </div>
+              )}
+            </Link>
+          ) : (
+            <a
+              href="/api/auth/spotify/login"
+              className="p-1.5 rounded-full bg-[#102218] border border-[#1DB954]/50 text-[#1DB954] hover:scale-105 transition"
+              title="Conectar Spotify"
+            >
+              <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z" />
+              </svg>
+            </a>
+          )}
+
+          {/* Menú Desplegable Hamburguesa */}
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
             className="p-2 rounded-xl text-zinc-300 hover:text-white bg-white/[0.04] border border-emerald-500/20"
@@ -271,6 +299,62 @@ export default function Navbar({
             {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
         </div>
+      </div>
+
+      {/* Segunda barra horizontal limpia para móvil (< lg) */}
+      <div className="flex items-center gap-2 overflow-x-auto scrollbar-none px-4 py-2 border-t border-white/5 lg:hidden bg-[#060D09]/95 text-xs">
+        <Link
+          href="/"
+          className={`whitespace-nowrap px-3 py-1 rounded-full transition shrink-0 ${
+            activeRoute === "home"
+              ? "bg-emerald-500/20 border border-emerald-400 text-goblinLime font-bold"
+              : "text-zinc-300 hover:text-white"
+          }`}
+        >
+          Inicio
+        </Link>
+        <Link
+          href="/play"
+          className={`whitespace-nowrap px-3 py-1 rounded-full font-semibold flex items-center gap-1.5 transition shrink-0 ${
+            activeRoute === "play"
+              ? "bg-emerald-500/25 border border-emerald-400 text-goblinLime shadow-sm"
+              : "bg-emerald-500/10 border border-emerald-500/20 text-emerald-300"
+          }`}
+        >
+          <Users className="w-3.5 h-3.5 text-emerald-400" />
+          <span>Multijugador</span>
+        </Link>
+        <Link
+          href="/ranked"
+          className={`whitespace-nowrap px-3 py-1 rounded-full font-semibold flex items-center gap-1.5 transition shrink-0 ${
+            activeRoute === "ranked"
+              ? "bg-amber-500/25 border border-amber-400 text-amber-300 shadow-sm"
+              : "bg-amber-500/10 border border-amber-500/20 text-amber-300"
+          }`}
+        >
+          <Trophy className="w-3.5 h-3.5 text-amber-400" />
+          <span>Ranked</span>
+        </Link>
+        <Link
+          href="/perfil"
+          className={`whitespace-nowrap px-3 py-1 rounded-full transition flex items-center gap-1.5 shrink-0 ${
+            activeRoute === "perfil"
+              ? "bg-emerald-500/20 border border-emerald-400 text-goblinLime font-bold"
+              : "text-zinc-300 hover:text-white"
+          }`}
+        >
+          <User className="w-3.5 h-3.5 text-goblinLime" />
+          <span>Mi Perfil</span>
+        </Link>
+        {onOpenMiniQuiz && (
+          <button
+            onClick={handleQuizClick}
+            className="whitespace-nowrap px-3 py-1 rounded-full text-zinc-300 hover:text-goblinLime transition flex items-center gap-1.5 shrink-0 cursor-pointer"
+          >
+            <Play className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Miniquiz</span>
+          </button>
+        )}
       </div>
 
       {/* Mobile Drawer */}
