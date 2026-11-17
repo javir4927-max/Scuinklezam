@@ -39,6 +39,15 @@ export interface Player {
   votedTheme: string | null;
 }
 
+export interface VotingCandidate {
+  id: string;
+  name: string;
+  description: string;
+  query: string;
+  icon: string;
+  votes: string[];
+}
+
 export interface ThemeProposal {
   id: string;
   label: string;
@@ -75,7 +84,7 @@ export interface RoomState {
   code: string;
   hostId: string;
   name: string;
-  status: "lobby" | "countdown" | "playing" | "round_reveal" | "finished";
+  status: "lobby" | "countdown" | "voting" | "playing" | "round_reveal" | "finished";
   gameMode: GameMode;
   guessType: GuessType;
   totalRounds: number;
@@ -87,6 +96,11 @@ export interface RoomState {
   revealEndsAt?: number;
   countdownStartTime?: number;
   countdownEndsAt?: number;
+  votingStartTime?: number;
+  votingEndsAt?: number;
+  votingCandidates?: VotingCandidate[];
+  candidateRounds?: Record<string, RoundData[]>;
+  winningTheme?: string;
   players: Player[];
   themeProposals: ThemeProposal[];
   rounds: RoundData[];
@@ -122,6 +136,149 @@ export const redis =
 
 const ROOM_KEY_PREFIX = "scuinklezam:room:";
 const ROOM_TTL_SECONDS = 7200; // 2 hours expiration
+
+export const DEMOCRATIC_VOTING_CATALOG = [
+  {
+    id: "top50_es",
+    name: "Top 50 España",
+    description: "Los mayores éxitos sonando ahora mismo en las listas españolas",
+    query: "Quevedo Saiko Bad Bunny Aitana",
+    icon: "Flame",
+  },
+  {
+    id: "virales_2026",
+    name: "Virales 2026",
+    description: "Los himnos más virales y pegadizos del panorama actual",
+    query: "Top Hits 2026 Virales España",
+    icon: "Zap",
+  },
+  {
+    id: "virales_2025",
+    name: "Virales 2025",
+    description: "Los temas que rompieron las redes y no pudiste parar de cantar",
+    query: "Gata Only Si Antes Te Hubiera Conocido Espresso",
+    icon: "Sparkles",
+  },
+  {
+    id: "virales_2024",
+    name: "Virales 2024",
+    description: "El año de Columbia, Holanda y los grandes bombazos urbanos",
+    query: "Columbia Quevedo Holanda Jhayco LALA Myke Towers",
+    icon: "Trophy",
+  },
+  {
+    id: "hits_mundial",
+    name: "Hits Mundial",
+    description: "Los números 1 del planeta que arrasan en todos los festivales",
+    query: "The Weeknd Dua Lipa Bruno Mars Billie Eilish",
+    icon: "Globe",
+  },
+  {
+    id: "reggaeton",
+    name: "Reggaetón",
+    description: "Puro perreo duro y clásicos del reggaetón desde PR para el mundo",
+    query: "Bad Bunny Feid Daddy Yankee Don Omar",
+    icon: "Flame",
+  },
+  {
+    id: "pop_actual",
+    name: "Pop Actual",
+    description: "Las estrellas del pop global que dominan las listas mundiales",
+    query: "Olivia Rodrigo Taylor Swift Sabrina Carpenter Ariana Grande",
+    icon: "Heart",
+  },
+  {
+    id: "popular_mainstream",
+    name: "Popular / Mainstream",
+    description: "Las canciones que todo el mundo conoce de principio a fin",
+    query: "Rosalía C. Tangana Bizarrap Manuel Turizo",
+    icon: "Crown",
+  },
+  {
+    id: "under_urbano",
+    name: "Under / Urbano",
+    description: "El sonido de culto de las islas y la calle con barras infinitas",
+    query: "Cruz Cafuné Delaossa Recycled J Abhir Soto Asa",
+    icon: "Headphones",
+  },
+  {
+    id: "rap_hiphop",
+    name: "Rap / Hip-Hop",
+    description: "Los titanes del rap mundial y beats legendarios",
+    query: "Kendrick Lamar Eminem Drake Travis Scott",
+    icon: "Skull",
+  },
+  {
+    id: "trap_espanol",
+    name: "Trap En Español",
+    description: "El movimiento que revolucionó la música hispana a golpe de 808",
+    query: "Duki Khea Neo Pistea Ysy A Eladio Carrión",
+    icon: "Zap",
+  },
+  {
+    id: "clasicos_2010s",
+    name: "Clásicos 2010s",
+    description: "Nostalgia pura con los temazos que marcaron una década inolvidable",
+    query: "Avicii David Guetta Calvin Harris Rihanna Pitbull",
+    icon: "RotateCcw",
+  },
+  {
+    id: "electronica_club",
+    name: "Electrónica / Club",
+    description: "Beats enérgicos, house bailable y ritmos de pista para no parar",
+    query: "Fred Again Peggy Gou Fisher Bizarrap Club",
+    icon: "Music2",
+  },
+  {
+    id: "rnb_afro",
+    name: "R&B / Afro",
+    description: "Groove sedoso, afrobeats caribeños y vibras envolventes",
+    query: "Rema Burna Boy Ayra Starr SZA Frank Ocean",
+    icon: "Sparkles",
+  },
+];
+
+export function buildRoundsFromTracks(tracks: SpotifyTrackItem[], totalRounds: number): RoundData[] {
+  const valid = tracks.filter((t) => t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl);
+  const catalog = valid.length >= 4 ? valid : FALLBACK_SPOTIFY_TRACKS;
+  const shuffled = [...catalog].sort(() => 0.5 - Math.random());
+  const count = Math.min(totalRounds, shuffled.length);
+  const rounds: RoundData[] = [];
+
+  for (let i = 0; i < count; i++) {
+    const target = shuffled[i];
+    const others = shuffled.filter((t) => t.id !== target.id);
+    const distractors: RoundOption[] = others
+      .sort(() => 0.5 - Math.random())
+      .slice(0, 3)
+      .map((t) => ({
+        title: t.title,
+        artist: t.artist,
+        artworkUrl: t.artworkUrl || getFallbackArtwork(t.title, t.artist),
+      }));
+
+    const correctOption: RoundOption = {
+      title: target.title,
+      artist: target.artist,
+      artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+    };
+
+    const options: RoundOption[] = [correctOption, ...distractors].sort(() => 0.5 - Math.random());
+    const correctIndex = options.findIndex((o) => o.title === correctOption.title && o.artist === correctOption.artist);
+
+    rounds.push({
+      roundNumber: i + 1,
+      targetTrack: {
+        ...target,
+        artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+      },
+      options,
+      correctIndex: correctIndex >= 0 ? correctIndex : 0,
+    });
+  }
+
+  return rounds;
+}
 
 /**
  * Persists room state in Upstash Redis and in-memory cache.
@@ -323,6 +480,40 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
 export function checkRoomStateProgression(room: RoomState): boolean {
   const now = Date.now();
   let changed = false;
+
+  // 0. VOTING -> COUNTDOWN (when now >= votingEndsAt OR all active players voted)
+  if (room.status === "voting") {
+    const endsAt = room.votingEndsAt || (room.votingStartTime ? room.votingStartTime + 10000 : now);
+    const activePlayers = room.players.filter((p) => p.isOnline || p.isBot);
+    const allVoted =
+      activePlayers.length > 0 &&
+      activePlayers.every((p) => p.votedTheme !== null);
+
+    if (now >= endsAt || allVoted) {
+      let winningCandidate = room.votingCandidates?.[0];
+      if (room.votingCandidates && room.votingCandidates.length > 0) {
+        const sorted = [...room.votingCandidates].sort((a, b) => b.votes.length - a.votes.length);
+        const maxVotes = sorted[0].votes.length;
+        const topTied = sorted.filter((c) => c.votes.length === maxVotes);
+        winningCandidate = topTied[Math.floor(Math.random() * topTied.length)];
+      }
+
+      const winnerName = winningCandidate?.name || "Top 50 España";
+      room.winningTheme = winnerName;
+
+      if (winningCandidate && room.candidateRounds && room.candidateRounds[winningCandidate.id]) {
+        room.rounds = room.candidateRounds[winningCandidate.id];
+      }
+
+      room.status = "countdown";
+      room.countdownStartTime = now;
+      room.countdownEndsAt = now + 3500;
+      room.votingStartTime = undefined;
+      room.votingEndsAt = undefined;
+      room.currentRound = 1;
+      changed = true;
+    }
+  }
 
   // 1. COUNTDOWN -> PLAYING (when now >= countdownEndsAt)
   if (room.status === "countdown") {
@@ -823,6 +1014,60 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
     return { success: false, error: "La sala no se encuentra en el lobby." };
   }
 
+  // DEMOCRATIC VOTING MODE: Launch 10-second live voting phase
+  if (room.gameMode === "vote") {
+    const shuffledCatalog = [...DEMOCRATIC_VOTING_CATALOG].sort(() => 0.5 - Math.random());
+    const candidates: VotingCandidate[] = shuffledCatalog.slice(0, 4).map((c) => ({
+      id: c.id,
+      name: c.name,
+      description: c.description,
+      query: c.query,
+      icon: c.icon,
+      votes: [],
+    }));
+
+    // Pre-fetch and assemble verified rounds for all 4 candidate themes in parallel
+    const candidateRounds: Record<string, RoundData[]> = {};
+    await Promise.all(
+      candidates.map(async (cand) => {
+        try {
+          const tracks = await searchVerifiedTracks(cand.query, room.totalRounds + 6);
+          candidateRounds[cand.id] = buildRoundsFromTracks(tracks, room.totalRounds);
+        } catch {
+          candidateRounds[cand.id] = buildRoundsFromTracks(FALLBACK_SPOTIFY_TRACKS, room.totalRounds);
+        }
+      })
+    );
+
+    const now = Date.now();
+    room.status = "voting";
+    room.votingStartTime = now;
+    room.votingEndsAt = now + 10000; // 10 seconds!
+    room.votingCandidates = candidates;
+    room.candidateRounds = candidateRounds;
+    room.winningTheme = undefined;
+    room.currentRound = 1;
+    room.roundDuration = 15;
+    room.players.forEach((p) => {
+      p.score = 0;
+      p.streak = 0;
+      p.lives = 3;
+      p.currentAnswer = null;
+      p.votedTheme = null;
+    });
+
+    // Simulate realistic bot votes
+    const bots = room.players.filter((p) => p.isBot);
+    bots.forEach((bot) => {
+      const randomCand = candidates[Math.floor(Math.random() * candidates.length)];
+      bot.votedTheme = randomCand.id;
+      randomCand.votes.push(bot.id);
+    });
+
+    await saveRoom(room);
+    return { success: true, room };
+  }
+
   const pool: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
 
   // 1. Gather tracks from room's imported playlists
@@ -911,18 +1156,6 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
       const globalHits = await searchVerifiedTracks("Top Hits Global", room.totalRounds + 6);
       globalHits.forEach((track) => pool.push({ track }));
     }
-  } else if (room.gameMode === "vote") {
-    // Highest voted theme
-    let bestProposal = room.themeProposals[0];
-    let maxVotes = -1;
-    for (const prop of room.themeProposals) {
-      if (prop.votes.length > maxVotes) {
-        maxVotes = prop.votes.length;
-        bestProposal = prop;
-      }
-    }
-    const found = await searchVerifiedTracks(bestProposal?.label || "Pop Hits", room.totalRounds + 8);
-    found.forEach((track) => pool.push({ track }));
   } else if (room.gameMode === "top50") {
     const found = await searchVerifiedTracks("Global Top 50 Hits", room.totalRounds + 8);
     found.forEach((track) => pool.push({ track }));

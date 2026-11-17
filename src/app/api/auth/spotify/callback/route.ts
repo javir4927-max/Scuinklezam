@@ -64,18 +64,37 @@ export async function GET(request: Request) {
 
     const data = await response.json();
 
-    // Determine target redirect url
-    let returnTo = cookieStore.get("spotify_return_to")?.value;
-    let targetUrl = `${origin}/play?spotify=connected`;
-
-    if (returnTo) {
-      if (returnTo.startsWith("/")) {
-        const separator = returnTo.includes("?") ? "&" : "?";
-        targetUrl = `${origin}${returnTo}${returnTo.includes("spotify=connected") ? "" : `${separator}spotify=connected`}`;
-      } else if (returnTo.startsWith("http://") || returnTo.startsWith("https://")) {
-        const separator = returnTo.includes("?") ? "&" : "?";
-        targetUrl = `${returnTo}${returnTo.includes("spotify=connected") ? "" : `${separator}spotify=connected`}`;
+    // Query user profile from Spotify API
+    let userDisplayName = "";
+    let userAvatarUrl = "";
+    let userEmail = "";
+    try {
+      const userRes = await fetch("https://api.spotify.com/v1/me", {
+        headers: { Authorization: `Bearer ${data.access_token}` },
+      });
+      if (userRes.ok) {
+        const profile = await userRes.json();
+        userDisplayName = profile.display_name || "";
+        userAvatarUrl = profile.images?.[0]?.url || "";
+        userEmail = profile.email || "";
       }
+    } catch (profileErr) {
+      console.warn("[Spotify Callback Profile Fetch Error]:", profileErr);
+    }
+
+    // Determine target redirect url (never back to '/' on success)
+    let returnTo = cookieStore.get("spotify_return_to")?.value;
+    if (!returnTo || returnTo === "/" || returnTo.trim() === "") {
+      returnTo = "/play";
+    }
+
+    let targetUrl = `${origin}/play?spotify=connected`;
+    if (returnTo.startsWith("/")) {
+      const separator = returnTo.includes("?") ? "&" : "?";
+      targetUrl = `${origin}${returnTo}${returnTo.includes("spotify=connected") ? "" : `${separator}spotify=connected`}`;
+    } else if (returnTo.startsWith("http://") || returnTo.startsWith("https://")) {
+      const separator = returnTo.includes("?") ? "&" : "?";
+      targetUrl = `${returnTo}${returnTo.includes("spotify=connected") ? "" : `${separator}spotify=connected`}`;
     }
 
     const res = NextResponse.redirect(targetUrl);
@@ -97,6 +116,35 @@ export async function GET(request: Request) {
         secure: isSecure,
         path: "/",
         maxAge: 30 * 24 * 60 * 60, // 30 days
+        sameSite: "lax",
+      });
+    }
+
+    // Client-readable indicator so frontend can hydrate state instantly
+    res.cookies.set("spotify_user_connected", "1", {
+      httpOnly: false,
+      secure: isSecure,
+      path: "/",
+      maxAge: 30 * 24 * 60 * 60,
+      sameSite: "lax",
+    });
+
+    if (userDisplayName) {
+      res.cookies.set("spotify_user_name", encodeURIComponent(userDisplayName), {
+        httpOnly: false,
+        secure: isSecure,
+        path: "/",
+        maxAge: 30 * 24 * 60 * 60,
+        sameSite: "lax",
+      });
+    }
+
+    if (userAvatarUrl) {
+      res.cookies.set("spotify_user_avatar", encodeURIComponent(userAvatarUrl), {
+        httpOnly: false,
+        secure: isSecure,
+        path: "/",
+        maxAge: 30 * 24 * 60 * 60,
         sameSite: "lax",
       });
     }

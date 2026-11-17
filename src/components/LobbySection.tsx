@@ -190,11 +190,11 @@ export default function LobbySection({ onOpenMiniQuiz }: LobbySectionProps) {
                 Ver Demostración Rápida
               </button>
               <Link
-                href="/play?create=true"
+                href="/ranked"
                 className="flex-1 py-3 rounded-xl bg-emerald-950/80 hover:bg-emerald-900 border border-goblinLime/40 font-extrabold text-goblinLime text-xs transition text-center flex items-center justify-center gap-2"
               >
                 <Gamepad2 className="w-4 h-4 text-goblinLime" />
-                <span>Crear Sala Multijugador</span>
+                <span>Explorar Modo Ranked</span>
               </Link>
             </div>
           </div>

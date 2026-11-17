@@ -59,7 +59,7 @@ export default function Hero({ onOpenMiniQuiz }: HeroProps) {
           </a>
 
           <a
-            href="/play"
+            href="/ranked"
             className="w-full sm:w-auto bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime text-black font-extrabold text-base px-7 py-3.5 rounded-2xl shadow-xl shadow-emerald-500/25 hover:scale-105 transition flex items-center justify-center gap-2.5"
           >
             <Play className="w-4 h-4 fill-current" />

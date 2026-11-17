@@ -9,9 +9,7 @@ import LobbySection from "@/components/LobbySection";
 import BentoFeatures from "@/components/BentoFeatures";
 import ArtistSection from "@/components/ArtistSection";
 import GameNightSection from "@/components/GameNightSection";
-import ReviewsSection from "@/components/ReviewsSection";
 import FaqSection from "@/components/FaqSection";
-import ContactSection from "@/components/ContactSection";
 import CtaBanner from "@/components/CtaBanner";
 import Footer from "@/components/Footer";
 import MiniQuizModal from "@/components/MiniQuizModal";
@@ -66,16 +64,10 @@ export default function ScuinklezamLandingPage() {
         {/* 7. NOCHE DE JUEGOS / TRANSMISIÓN A TV */}
         <GameNightSection />
 
-        {/* 8. ESTADÍSTICAS Y RESEÑAS */}
-        <ReviewsSection />
-
-        {/* 9. PREGUNTAS FRECUENTES (FAQ) */}
+        {/* 8. PREGUNTAS FRECUENTES (FAQ) */}
         <FaqSection />
 
-        {/* 10. FORMULARIO DE CONTACTO */}
-        <ContactSection />
-
-        {/* 11. BANNER FINAL CTA */}
+        {/* 9. BANNER FINAL CTA */}
         <CtaBanner onOpenMiniQuiz={handleOpenQuiz} />
       </main>
 

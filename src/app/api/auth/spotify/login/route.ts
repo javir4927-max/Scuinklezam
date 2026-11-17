@@ -32,11 +32,28 @@ export async function GET(request: Request) {
   // 2. Canonical redirect URI guaranteed to match Spotify Dashboard
   const redirectUri = resolveSpotifyRedirectUri(request);
 
-  // Save return_to path if provided, or from referer
-  const returnTo =
-    url.searchParams.get("return_to") ||
-    request.headers.get("referer") ||
-    "/play?spotify=connected";
+  // Save return_to path if provided, or from referer (defaults to /play)
+  let returnTo =
+    url.searchParams.get("returnTo") ||
+    url.searchParams.get("return_to");
+
+  if (!returnTo) {
+    const referer = request.headers.get("referer");
+    if (referer) {
+      try {
+        const refUrl = new URL(referer);
+        if (refUrl.pathname === "/" || refUrl.pathname === "") {
+          returnTo = "/play";
+        } else {
+          returnTo = refUrl.pathname + refUrl.search;
+        }
+      } catch {
+        returnTo = "/play";
+      }
+    } else {
+      returnTo = "/play";
+    }
+  }
 
   const scope = [
     "streaming",

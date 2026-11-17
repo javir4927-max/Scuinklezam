@@ -16,6 +16,8 @@ import {
   renamePlayer,
   addPlaylistToRoom,
   removePlaylistFromRoom,
+  checkRoomStateProgression,
+  saveRoom,
 } from "@/lib/roomStore";
 
 export const dynamic = "force-dynamic";
@@ -162,6 +164,37 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         const updated = await getRoom(code);
         return NextResponse.json(
           { success: true, room: updated },
+          { headers: NO_CACHE_HEADERS }
+        );
+      }
+
+      case "cast_vote": {
+        const themeId = body.themeId;
+        if (!playerId || !themeId) {
+          return NextResponse.json(
+            { success: false, error: "Datos de voto no válidos" },
+            { status: 400, headers: NO_CACHE_HEADERS }
+          );
+        }
+
+        const player = room.players.find((p) => p.id === playerId);
+        if (player) {
+          player.votedTheme = themeId;
+        }
+
+        if (room.votingCandidates) {
+          room.votingCandidates.forEach((c) => {
+            c.votes = c.votes.filter((id) => id !== playerId);
+            if (c.id === themeId) {
+              c.votes.push(playerId);
+            }
+          });
+        }
+
+        checkRoomStateProgression(room);
+        await saveRoom(room);
+        return NextResponse.json(
+          { success: true, room },
           { headers: NO_CACHE_HEADERS }
         );
       }

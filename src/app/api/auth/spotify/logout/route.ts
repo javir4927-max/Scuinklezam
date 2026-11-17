@@ -18,6 +18,21 @@ export async function POST(request: Request) {
     httpOnly: true,
   });
 
+  response.cookies.set("spotify_user_connected", "", {
+    path: "/",
+    maxAge: 0,
+  });
+
+  response.cookies.set("spotify_user_name", "", {
+    path: "/",
+    maxAge: 0,
+  });
+
+  response.cookies.set("spotify_user_avatar", "", {
+    path: "/",
+    maxAge: 0,
+  });
+
   return response;
 }
 

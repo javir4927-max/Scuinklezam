@@ -41,7 +41,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
-import { RoomState, Player, GameMode, GuessType, RoundOption } from "@/lib/roomStore";
+import type { RoomState, Player, GameMode, GuessType, RoundOption } from "@/lib/roomStore";
 
 // Universal clipboard copy fallback
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -91,6 +91,8 @@ function normalizeRoundOption(opt: RoundOption | string): RoundOption {
   };
 }
 import SpotifyConnectModal from "@/components/SpotifyConnectModal";
+import Navbar from "@/components/Navbar";
+import { PRELOADED_ARTIST_PHOTOS } from "@/lib/artistPhotos";
 import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
 
 function renderModeIcon(modeId: GameMode, className: string = "w-5 h-5") {
@@ -524,7 +526,7 @@ function PlayArenaContent() {
   // Smooth local ticker to update seconds on screen between polling cycles
   const [, setTicker] = useState<number>(Date.now());
   useEffect(() => {
-    if (!room || (room.status !== "countdown" && room.status !== "playing")) return;
+    if (!room || (room.status !== "countdown" && room.status !== "playing" && room.status !== "voting")) return;
     const interval = setInterval(() => {
       setTicker(Date.now());
     }, 500);
@@ -1059,6 +1061,46 @@ function PlayArenaContent() {
     }
   };
 
+  // Cast vote in Democratic Voting Mode (10s live voting)
+  const handleCastVote = async (themeId: string) => {
+    if (!roomCode || !playerId) return;
+    try {
+      playSynthNote(587.33, 0.15); // Arcade acoustic feedback
+      if (room && room.votingCandidates) {
+        const nextCandidates = room.votingCandidates.map((c) => ({
+          ...c,
+          votes:
+            c.id === themeId
+              ? Array.from(new Set([...c.votes.filter((id) => id !== playerId), playerId]))
+              : c.votes.filter((id) => id !== playerId),
+        }));
+        setRoom({
+          ...room,
+          votingCandidates: nextCandidates,
+          players: room.players.map((p) =>
+            p.id === playerId ? { ...p, votedTheme: themeId } : p
+          ),
+        });
+      }
+
+      const res = await fetch(`/api/rooms/${roomCode}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "cast_vote",
+          playerId,
+          themeId,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.room) setRoom(data.room);
+      }
+    } catch (err) {
+      console.error("Error casting vote:", err);
+    }
+  };
+
   // Save Track to Spotify
   const handleSaveTrack = async (track: SpotifyTrackItem) => {
     try {
@@ -1213,76 +1255,88 @@ function PlayArenaContent() {
   };
   const countdownSec = getCountdownSeconds();
 
+  const getVotingSeconds = () => {
+    if (!room) return 10;
+    const now = Date.now();
+    if (room.votingEndsAt) {
+      return Math.max(0, Math.ceil((room.votingEndsAt - now) / 1000));
+    }
+    if (room.votingStartTime) {
+      const elapsed = Math.floor((now - room.votingStartTime) / 1000);
+      return Math.max(0, 10 - elapsed);
+    }
+    return 10;
+  };
+  const votingSec = getVotingSeconds();
+
   // --- RENDER VIEWS ---
 
   return (
     <div className="min-h-screen bg-[#060D09] text-white flex flex-col font-sans selection:bg-goblinPrimary selection:text-black">
-      {/* Top Navigation */}
-      <header className="sticky top-0 z-40 bg-[#060D09]/85 backdrop-blur-xl border-b border-emerald-500/15 px-4 sm:px-6 py-3.5 flex items-center justify-between">
-        <div className="flex items-center gap-2.5 sm:gap-3">
-          <Link href="/" className="flex items-center gap-2 group">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-goblinPrimary to-goblinLime flex items-center justify-center font-black text-black text-lg shadow-lg shadow-emerald-500/20 group-hover:scale-105 transition">
-              S
+      {/* Unified Top Navbar */}
+      <Navbar
+        activeRoute="play"
+        onOpenSpotifyModal={() => setShowSpotifyModal(true)}
+        rightSlot={
+          <div className="flex items-center gap-2">
+            {/* Sound Volume Capsule */}
+            <div className="bg-zinc-900/80 backdrop-blur-md border border-white/10 rounded-full px-2.5 py-1 flex items-center gap-2">
+              <button
+                onClick={() => setAudioMuted(!audioMuted)}
+                className="text-zinc-300 hover:text-white transition flex items-center justify-center cursor-pointer"
+                title={audioMuted ? "Activar audio" : "Silenciar audio"}
+              >
+                {audioMuted || volume === 0 ? (
+                  <VolumeX className="w-3.5 h-3.5 text-zinc-400" />
+                ) : volume < 0.5 ? (
+                  <Volume1 className="w-3.5 h-3.5 text-emerald-400" />
+                ) : (
+                  <Volume2 className="w-3.5 h-3.5 text-goblinLime" />
+                )}
+              </button>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={audioMuted ? 0 : volume}
+                onChange={(e) => {
+                  const val = parseFloat(e.target.value);
+                  setVolume(val);
+                  if (audioMuted) {
+                    setAudioMuted(false);
+                  }
+                  audioPlayer.setVolume(val);
+                }}
+                className="accent-emerald-500 cursor-pointer w-16 sm:w-20 h-1.5 bg-zinc-700 rounded-lg appearance-none"
+                title="Volumen del juego"
+              />
+              <span className="text-[10px] font-mono text-zinc-300 min-w-[24px] text-right select-none">
+                {Math.round((audioMuted ? 0 : volume) * 100)}%
+              </span>
             </div>
-            <span className="font-display font-extrabold text-xl tracking-tight text-white hidden sm:inline">
-              Scuinkle<span className="text-goblinLime">zam</span>
-            </span>
-          </Link>
 
-          {/* Sound Volume Capsule */}
-          <div className="bg-zinc-900/80 backdrop-blur-md border border-white/10 rounded-full px-3 py-1.5 flex items-center gap-2">
-            <button
-              onClick={() => setAudioMuted(!audioMuted)}
-              className="text-zinc-300 hover:text-white transition flex items-center justify-center cursor-pointer"
-              title={audioMuted ? "Activar audio" : "Silenciar audio"}
-            >
-              {audioMuted || volume === 0 ? (
-                <VolumeX className="w-4 h-4 text-zinc-400" />
-              ) : volume < 0.5 ? (
-                <Volume1 className="w-4 h-4 text-emerald-400" />
-              ) : (
-                <Volume2 className="w-4 h-4 text-goblinLime" />
-              )}
-            </button>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={audioMuted ? 0 : volume}
-              onChange={(e) => {
-                const val = parseFloat(e.target.value);
-                setVolume(val);
-                if (audioMuted) {
-                  setAudioMuted(false);
-                }
-                audioPlayer.setVolume(val);
-              }}
-              className="accent-emerald-500 cursor-pointer w-20 sm:w-28 h-1.5 bg-zinc-700 rounded-lg appearance-none"
-              title="Volumen del juego"
-            />
-            <span className="text-[11px] font-mono text-zinc-300 min-w-[28px] text-right select-none">
-              {Math.round((audioMuted ? 0 : volume) * 100)}%
-            </span>
+            {room && (
+              <div className="flex items-center gap-1.5 pl-2 border-l border-emerald-500/20">
+                <span className="font-mono font-black text-goblinLime bg-emerald-950/80 px-2 py-0.5 rounded-lg border border-emerald-500/30 text-xs tracking-wider">
+                  {room.code}
+                </span>
+                <span className="text-xs text-zinc-400 hidden xl:inline truncate max-w-[120px]">
+                  {room.name}
+                </span>
+              </div>
+            )}
           </div>
+        }
+      />
 
-          {room && (
-            <div className="flex items-center gap-2 ml-1 pl-2 sm:pl-3 border-l border-emerald-500/20">
-              <span className="font-mono font-black text-goblinLime bg-emerald-950/80 px-2.5 py-1 rounded-lg border border-emerald-500/30 text-xs sm:text-sm tracking-wider">
-                {room.code}
-              </span>
-              <span className="text-xs text-zinc-400 hidden md:inline">
-                {room.name}
-              </span>
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2.5">
+      {/* Secondary Bar in Game (Room Controls & Player Badge) */}
+      <div className="border-b border-emerald-500/10 bg-[#060D09]/60 px-4 sm:px-6 py-2 flex items-center justify-between">
+        <div className="flex items-center gap-2">
           {room && (
             <button
               onClick={() => setShowInviteModal(true)}
-              className="px-3.5 py-1.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-xs font-bold text-emerald-300 border border-emerald-500/30 transition flex items-center gap-1.5 cursor-pointer"
+              className="px-3 py-1 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-xs font-bold text-emerald-300 border border-emerald-500/30 transition flex items-center gap-1.5 cursor-pointer"
             >
               <Link2 className="w-3.5 h-3.5 text-emerald-300" />
               <span className="hidden sm:inline">Invitar Amigos</span>
@@ -1291,47 +1345,46 @@ function PlayArenaContent() {
 
           <button
             onClick={() => setShowSpotifyModal(true)}
-            className="px-3.5 py-1.5 rounded-xl bg-[#1DB954]/20 hover:bg-[#1DB954]/30 border border-[#1DB954]/40 text-xs font-bold text-[#1DB954] transition flex items-center gap-1.5 cursor-pointer"
+            className="px-3 py-1 rounded-xl bg-[#1DB954]/20 hover:bg-[#1DB954]/30 border border-[#1DB954]/40 text-xs font-bold text-[#1DB954] transition flex items-center gap-1.5 cursor-pointer"
           >
             <Headphones className="w-3.5 h-3.5 text-[#1DB954]" />
             <span className="hidden sm:inline">Importar Spotify</span>
           </button>
-
-          {/* Player Badge */}
-          <div className="flex items-center gap-2 bg-[#102218] px-3 py-1.5 rounded-xl border border-emerald-500/20 text-xs relative overflow-visible">
-            <span
-              className="w-3 h-3 rounded-full border border-black/40"
-              style={{ backgroundColor: currentMe?.avatarColor || "#10B981" }}
-            />
-            <span className="font-bold text-white max-w-[100px] truncate">
-              {playerName || (spotifyAuthUser?.displayName || "Jugador")}
-            </span>
-            {currentMe && typeof currentMe.score === "number" && (
-              <span className="font-mono font-bold text-goblinLime text-[11px] ml-0.5">
-                {currentMe.score} pts
-              </span>
-            )}
-            {/* Header Score Floating Feedback */}
-            {scorePopup && (
-              <div
-                key={`header_popup_${scorePopup.key}`}
-                className={`absolute -bottom-5 right-0 pointer-events-none z-30 px-2 py-0.5 rounded-full font-mono font-black text-[10px] tracking-wider flex items-center gap-1 whitespace-nowrap animate-score-float select-none ${
-                  scorePopup.isCorrect
-                    ? "text-emerald-300 bg-emerald-500/20 border border-emerald-400/80 shadow-[0_0_15px_rgba(16,185,129,0.5)] backdrop-blur-md"
-                    : "text-rose-300 bg-rose-500/20 border border-rose-500/80 shadow-[0_0_15px_rgba(244,63,94,0.5)] backdrop-blur-md"
-                }`}
-              >
-                {scorePopup.isCorrect ? `+${scorePopup.points} pts` : "0 pts"}
-              </div>
-            )}
-            {isHost && (
-              <span title="Anfitrión">
-                <Crown className="w-3.5 h-3.5 text-amber-400 inline" />
-              </span>
-            )}
-          </div>
         </div>
-      </header>
+
+        {/* Player Badge */}
+        <div className="flex items-center gap-2 bg-[#102218] px-3 py-1.5 rounded-xl border border-emerald-500/20 text-xs relative overflow-visible">
+          <span
+            className="w-3 h-3 rounded-full border border-black/40"
+            style={{ backgroundColor: currentMe?.avatarColor || "#10B981" }}
+          />
+          <span className="font-bold text-white max-w-[120px] truncate">
+            {playerName || (spotifyAuthUser?.displayName || "Jugador")}
+          </span>
+          {currentMe && typeof currentMe.score === "number" && (
+            <span className="font-mono font-bold text-goblinLime text-[11px] ml-0.5">
+              {currentMe.score} pts
+            </span>
+          )}
+          {scorePopup && (
+            <div
+              key={`header_popup_${scorePopup.key}`}
+              className={`absolute -bottom-5 right-0 pointer-events-none z-30 px-2 py-0.5 rounded-full font-mono font-black text-[10px] tracking-wider flex items-center gap-1 whitespace-nowrap animate-score-float select-none ${
+                scorePopup.isCorrect
+                  ? "text-emerald-300 bg-emerald-500/20 border border-emerald-400/80 shadow-[0_0_15px_rgba(16,185,129,0.5)] backdrop-blur-md"
+                  : "text-rose-300 bg-rose-500/20 border border-rose-500/80 shadow-[0_0_15px_rgba(244,63,94,0.5)] backdrop-blur-md"
+              }`}
+            >
+              {scorePopup.isCorrect ? `+${scorePopup.points} pts` : "0 pts"}
+            </div>
+          )}
+          {isHost && (
+            <span title="Anfitrión">
+              <Crown className="w-3.5 h-3.5 text-amber-400 inline" />
+            </span>
+          )}
+        </div>
+      </div>
 
       {/* Main Container */}
       <main className="flex-1 max-w-[1240px] w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 flex flex-col justify-center">
@@ -1906,32 +1959,44 @@ function PlayArenaContent() {
                     </div>
 
                     <div className="flex flex-wrap gap-2">
-                      {currentMe?.favoriteArtists.map((artist, idx) => (
-                        <span
-                          key={idx}
-                          className="px-3 py-1 rounded-xl bg-emerald-950 border border-emerald-500/30 text-emerald-300 font-bold text-xs flex items-center gap-1.5"
-                        >
-                          <Music2 className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>{artist}</span>
-                          <button
-                            onClick={() => {
-                              const updated = currentMe.favoriteArtists.filter((_, i) => i !== idx);
-                              fetch(`/api/rooms/${roomCode}`, {
-                                method: "PATCH",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
-                                  action: "update_taste",
-                                  playerId,
-                                  favoriteArtists: updated,
-                                }),
-                              });
-                            }}
-                            className="text-zinc-400 hover:text-red-400 ml-1 cursor-pointer flex items-center"
+                      {currentMe?.favoriteArtists.map((artist, idx) => {
+                        const photo =
+                          PRELOADED_ARTIST_PHOTOS[artist.toLowerCase()] ||
+                          `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(artist)}&backgroundColor=0B1710`;
+                        return (
+                          <span
+                            key={idx}
+                            className="px-2.5 py-1 rounded-xl bg-emerald-950 border border-emerald-500/30 text-emerald-300 font-bold text-xs flex items-center gap-2"
                           >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </span>
-                      ))}
+                            <img
+                              src={photo}
+                              alt={artist}
+                              className="w-4 h-4 rounded-full object-cover border border-emerald-500/40"
+                              onError={(e) => {
+                                (e.currentTarget as HTMLElement).style.display = "none";
+                              }}
+                            />
+                            <span>{artist}</span>
+                            <button
+                              onClick={() => {
+                                const updated = currentMe.favoriteArtists.filter((_, i) => i !== idx);
+                                fetch(`/api/rooms/${roomCode}`, {
+                                  method: "PATCH",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({
+                                    action: "update_taste",
+                                    playerId,
+                                    favoriteArtists: updated,
+                                  }),
+                                });
+                              }}
+                              className="text-zinc-400 hover:text-red-400 ml-1 cursor-pointer flex items-center"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </span>
+                        );
+                      })}
                     </div>
 
                     {(currentMe?.favoriteArtists.length || 0) < 10 && (
@@ -2374,6 +2439,139 @@ function PlayArenaContent() {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* 2.5 VIEW: DEMOCRATIC LIVE VOTING (10s) */}
+        {room && room.status === "voting" && (
+          <div className="w-full max-w-4xl mx-auto px-4 py-8 space-y-6 flex flex-col my-auto animate-fade-in">
+            {/* Header with 10s Timer */}
+            <div className="glass-card rounded-3xl p-6 sm:p-8 border border-emerald-500/30 text-center relative overflow-hidden shadow-2xl">
+              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-emerald-950/80 border border-emerald-500/40 text-goblinLime text-xs font-black tracking-wider uppercase mb-3">
+                <Vote className="w-4 h-4 animate-spin-slow" />
+                <span>Votación Democrática en Vivo</span>
+              </div>
+
+              <div className="flex items-center justify-center gap-4 my-2">
+                <div className="font-display font-black text-[clamp(3.5rem,8vw,5.5rem)] leading-none text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 via-goblinLime to-white">
+                  {votingSec}s
+                </div>
+              </div>
+
+              <h2 className="font-display font-extrabold text-xl sm:text-2xl text-white tracking-tight">
+                Elige la temática de la partida
+              </h2>
+              <p className="text-xs sm:text-sm text-zinc-300 max-w-xl mx-auto mt-2">
+                La opción más votada cuando el reloj llegue a 0 determinará las canciones de la partida.
+              </p>
+
+              {/* Progress bar */}
+              <div className="w-full max-w-md mx-auto mt-5 h-2 bg-black/60 rounded-full overflow-hidden border border-emerald-500/20">
+                <div
+                  className="h-full bg-gradient-to-r from-goblinPrimary to-goblinLime transition-all duration-300 ease-out"
+                  style={{ width: `${Math.min(100, (votingSec / 10) * 100)}%` }}
+                />
+              </div>
+            </div>
+
+            {/* 4 Thematic Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {(room.votingCandidates || []).map((candidate) => {
+                const isSelected = currentMe?.votedTheme === candidate.id;
+                const voteCount = candidate.votes.length;
+                const voters = room.players.filter((p) => candidate.votes.includes(p.id));
+
+                return (
+                  <button
+                    key={candidate.id}
+                    onClick={() => handleCastVote(candidate.id)}
+                    className={`relative p-5 rounded-2xl border text-left transition-all duration-200 cursor-pointer flex flex-col justify-between group overflow-hidden ${
+                      isSelected
+                        ? "bg-emerald-950/70 border-goblinLime ring-2 ring-goblinLime/60 shadow-lg shadow-goblinLime/10 scale-[1.02]"
+                        : "bg-[#0B1710]/90 border-emerald-500/20 hover:border-emerald-500/50 hover:bg-emerald-950/30"
+                    }`}
+                  >
+                    {/* Background subtle glow */}
+                    <div
+                      className={`absolute -right-8 -top-8 w-28 h-28 rounded-full blur-2xl pointer-events-none transition ${
+                        isSelected ? "bg-goblinLime/20" : "bg-emerald-500/5 group-hover:bg-emerald-500/10"
+                      }`}
+                    />
+
+                    <div>
+                      <div className="flex items-center justify-between gap-3 mb-2">
+                        <div className="flex items-center gap-2">
+                          <div
+                            className={`p-2 rounded-xl border ${
+                              isSelected
+                                ? "bg-goblinLime/20 border-goblinLime/40 text-goblinLime"
+                                : "bg-white/[0.04] border-white/10 text-zinc-300 group-hover:text-white"
+                            }`}
+                          >
+                            <Music2 className="w-4 h-4" />
+                          </div>
+                          <span className="font-display font-extrabold text-base sm:text-lg text-white group-hover:text-emerald-300 transition">
+                            {candidate.name}
+                          </span>
+                        </div>
+
+                        {/* Live Vote Count Pill */}
+                        <div
+                          className={`px-2.5 py-1 rounded-full text-xs font-black border flex items-center gap-1 ${
+                            voteCount > 0
+                              ? "bg-goblinLime/20 border-goblinLime/40 text-goblinLime"
+                              : "bg-white/[0.04] border-white/10 text-zinc-400"
+                          }`}
+                        >
+                          <Users className="w-3 h-3" />
+                          <span>
+                            {voteCount} {voteCount === 1 ? "voto" : "votos"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <p className="text-xs text-zinc-300 line-clamp-2 leading-relaxed">
+                        {candidate.description}
+                      </p>
+                    </div>
+
+                    {/* Footer: Voter avatars + Vote indicator */}
+                    <div className="mt-4 pt-3 border-t border-emerald-500/10 flex items-center justify-between">
+                      {/* Voters avatars/names */}
+                      <div className="flex items-center -space-x-1.5 overflow-hidden">
+                        {voters.slice(0, 4).map((voter) => (
+                          <div
+                            key={voter.id}
+                            title={voter.name}
+                            className="w-6 h-6 rounded-full bg-emerald-900 border border-emerald-400/50 flex items-center justify-center text-[10px] font-black text-emerald-200"
+                          >
+                            {voter.name.charAt(0).toUpperCase()}
+                          </div>
+                        ))}
+                        {voters.length > 4 && (
+                          <span className="text-[10px] font-bold text-zinc-400 pl-2">
+                            +{voters.length - 4}
+                          </span>
+                        )}
+                        {voters.length === 0 && (
+                          <span className="text-[11px] text-zinc-400">Sin votos aún</span>
+                        )}
+                      </div>
+
+                      <span
+                        className={`text-xs font-bold px-3 py-1 rounded-xl transition ${
+                          isSelected
+                            ? "bg-goblinLime text-black font-black"
+                            : "bg-white/[0.06] text-zinc-300 group-hover:bg-emerald-500/20 group-hover:text-emerald-300"
+                        }`}
+                      >
+                        {isSelected ? "¡Tu Voto!" : "Votar"}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}

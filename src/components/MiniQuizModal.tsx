@@ -53,6 +53,13 @@ export default function MiniQuizModal({
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [savedFeedback, setSavedFeedback] = useState<string | null>(null);
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+  const [scorePopup, setScorePopup] = useState<{
+    points: number;
+    isCorrect: boolean;
+    optionIndex: number;
+    key: number;
+  } | null>(null);
+  const scorePopupTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [audioState, setAudioState] = useState<AudioPlayerState>({
     isPlaying: false,
     isBlocked: false,
@@ -218,13 +225,27 @@ export default function MiniQuizModal({
       setIsRevealing(true);
       setAnsweredIdx(idx);
 
-      if (idx === currentRound.correctIndex) {
-        const bonus = Math.round(50 + (timeLeft / 15) * 50);
-        setScore((prev) => prev + bonus);
+      const isCorrect = idx === currentRound.correctIndex;
+      const pointsEarned = isCorrect ? Math.round(500 + (timeLeft / 15) * 500) : 0;
+
+      if (isCorrect) {
+        setScore((prev) => prev + pointsEarned);
         playSynthNote(659.25, 0.35);
       } else {
         playSynthNote(196.0, 0.35);
       }
+
+      // Trigger floating arcade score animation (+X pts / 0 puntos)
+      if (scorePopupTimerRef.current) clearTimeout(scorePopupTimerRef.current);
+      setScorePopup({
+        points: pointsEarned,
+        isCorrect,
+        optionIndex: idx,
+        key: Date.now(),
+      });
+      scorePopupTimerRef.current = setTimeout(() => {
+        setScorePopup(null);
+      }, 1800);
 
       // Preload next round audio while revealing
       if (currentRoundIdx + 1 < rounds.length) {
@@ -233,6 +254,7 @@ export default function MiniQuizModal({
 
       // Display reveal card for 1.8 seconds (1800ms) before advancing
       advanceTimerRef.current = setTimeout(() => {
+        setScorePopup(null);
         if (currentRoundIdx + 1 < rounds.length) {
           const nextIdx = currentRoundIdx + 1;
           setCurrentRoundIdx(nextIdx);
@@ -360,9 +382,23 @@ export default function MiniQuizModal({
                 <span>{timeLeft}s</span>
               </span>
             )}
-            <span className="px-3 py-1 rounded-full bg-emerald-950 border border-emerald-500/40 text-goblinLime font-mono font-bold text-xs">
-              {score} pts
-            </span>
+            <div className="relative">
+              <span className="px-3 py-1 rounded-full bg-emerald-950 border border-emerald-500/40 text-goblinLime font-mono font-bold text-xs">
+                {score} pts
+              </span>
+              {scorePopup && (
+                <div
+                  key={`header_popup_${scorePopup.key}`}
+                  className={`absolute -top-4 right-0 pointer-events-none z-30 px-2.5 py-0.5 rounded-full font-mono font-black text-xs tracking-wider flex items-center gap-1 whitespace-nowrap animate-score-float select-none ${
+                    scorePopup.isCorrect
+                      ? "text-emerald-300 bg-emerald-500/20 border border-emerald-400/80 shadow-[0_0_20px_rgba(16,185,129,0.65)] backdrop-blur-md"
+                      : "text-rose-300 bg-rose-500/20 border border-rose-500/80 shadow-[0_0_20px_rgba(244,63,94,0.65)] backdrop-blur-md animate-wrong-shake"
+                  }`}
+                >
+                  {scorePopup.isCorrect ? `+${scorePopup.points} pts` : "0 pts"}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -495,9 +531,33 @@ export default function MiniQuizModal({
                   <button
                     key={`${currentRoundIdx}_${optData.title}_${idx}`}
                     onClick={() => handleAnswer(idx)}
-                    className={btnStyle}
+                    className={`${btnStyle} relative overflow-visible`}
                     disabled={isRevealing}
                   >
+                    {/* Floating Arcade Score Popup */}
+                    {scorePopup && scorePopup.optionIndex === idx && (
+                      <div
+                        key={`popup_${scorePopup.key}`}
+                        className={`absolute -top-4 sm:-top-5 left-1/2 -translate-x-1/2 pointer-events-none z-30 px-3.5 py-1.5 rounded-full font-mono font-black text-sm tracking-wider flex items-center gap-1.5 whitespace-nowrap animate-score-float select-none ${
+                          scorePopup.isCorrect
+                            ? "text-emerald-300 bg-emerald-500/20 border-2 border-emerald-400/80 shadow-[0_0_30px_rgba(16,185,129,0.65)] backdrop-blur-md"
+                            : "text-rose-300 bg-rose-500/20 border-2 border-rose-500/80 shadow-[0_0_30px_rgba(244,63,94,0.65)] backdrop-blur-md animate-wrong-shake"
+                        }`}
+                      >
+                        {scorePopup.isCorrect ? (
+                          <>
+                            <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
+                            <span>+{scorePopup.points} pts</span>
+                          </>
+                        ) : (
+                          <>
+                            <X className="w-4 h-4 text-rose-400 shrink-0" />
+                            <span>0 puntos</span>
+                          </>
+                        )}
+                      </div>
+                    )}
+
                     {/* Left: Artwork & Center: Title + Artist */}
                     <div className="flex items-center gap-3 min-w-0 flex-1">
                       <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-lg overflow-hidden shrink-0 bg-emerald-950/80 border border-white/10 relative flex items-center justify-center">
