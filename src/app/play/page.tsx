@@ -226,6 +226,13 @@ function PlayArenaContent() {
   // Gameplay Local Interaction
   const [selectedOption, setSelectedOption] = useState<number | null>(null);
   const [selectedFriend, setSelectedFriend] = useState<string | null>(null);
+  const [scorePopup, setScorePopup] = useState<{
+    points: number;
+    isCorrect: boolean;
+    optionIndex: number;
+    key: number;
+  } | null>(null);
+  const scorePopupTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [volume, setVolume] = useState<number>(0.25);
   const [audioMuted, setAudioMuted] = useState<boolean>(false);
   const [isAudioBlocked, setIsAudioBlocked] = useState<boolean>(false);
@@ -483,6 +490,7 @@ function PlayArenaContent() {
       playSynthNote(440, 0.2);
       setSelectedOption(null);
       setSelectedFriend(null);
+      setScorePopup(null);
     }
 
     // Status changed to Playing or Round changed
@@ -492,6 +500,7 @@ function PlayArenaContent() {
     ) {
       setSelectedOption(null);
       setSelectedFriend(null);
+      setScorePopup(null);
 
       // Play audio preview via centralized audioPlayer
       if (currentRoundData?.targetTrack?.previewUrl) {
@@ -510,13 +519,15 @@ function PlayArenaContent() {
         audioPlayer.preloadNext(room.rounds[room.currentRound]?.targetTrack?.previewUrl);
       }
 
-      // Reveal sound
+      // Reveal sound (only if answer sound was not already played in this round)
       const me = room.players.find((p) => p.id === playerId);
-      if (me?.currentAnswer?.isCorrect) {
-        playSynthNote(523.25, 0.25);
-        setTimeout(() => playSynthNote(659.25, 0.35), 120);
-      } else {
-        playSynthNote(220, 0.35);
+      if (!scorePopup) {
+        if (me?.currentAnswer?.isCorrect) {
+          playSynthNote(523.25, 0.25);
+          setTimeout(() => playSynthNote(659.25, 0.35), 120);
+        } else if (me?.currentAnswer) {
+          playSynthNote(220, 0.35);
+        }
       }
     }
 
@@ -702,8 +713,51 @@ function PlayArenaContent() {
 
     const now = Date.now();
     const timeMs = room.roundStartTime ? now - room.roundStartTime : 5000;
+    const currentRound = room.rounds[room.currentRound - 1];
+    const isCorrect = optionIdx === currentRound?.correctIndex;
 
-    playSynthNote(350, 0.1);
+    // Instant local points calculation
+    let calculatedPoints = 0;
+    if (isCorrect) {
+      const timeSec = Math.min(15, Math.max(0, timeMs / 1000));
+      const speedRatio = Math.max(0, (15 - timeSec) / 15);
+      const speedPoints = Math.round(50 + speedRatio * 50);
+      const currentMe = room.players.find((p) => p.id === playerId);
+      const streakBonus = Math.min(30, (currentMe?.streak || 0) * 5);
+      let friendBonus = 0;
+      if (
+        room.gameMode === "who_listens" &&
+        selectedFriend &&
+        currentRound?.contributedByPlayerId &&
+        selectedFriend === currentRound.contributedByPlayerId
+      ) {
+        friendBonus = 50;
+      }
+      calculatedPoints = speedPoints + streakBonus + friendBonus;
+    }
+
+    // Set floating score popup immediately for instant 60fps arcade feel
+    if (scorePopupTimerRef.current) {
+      clearTimeout(scorePopupTimerRef.current);
+    }
+    const popupKey = Date.now();
+    setScorePopup({
+      points: calculatedPoints,
+      isCorrect,
+      optionIndex: optionIdx,
+      key: popupKey,
+    });
+    scorePopupTimerRef.current = setTimeout(() => {
+      setScorePopup(null);
+    }, 1800);
+
+    // Audio feedback
+    if (isCorrect) {
+      playSynthNote(523.25, 0.12);
+      setTimeout(() => playSynthNote(659.25, 0.18), 70);
+    } else {
+      playSynthNote(220, 0.22);
+    }
 
     try {
       const res = await fetch(`/api/rooms/${roomCode}`, {
@@ -718,8 +772,19 @@ function PlayArenaContent() {
         }),
       });
       const data = await res.json();
-      if (data.success && data.room) {
-        setRoom(data.room);
+      if (data.success) {
+        if (
+          typeof data.pointsEarned === "number" &&
+          isCorrect &&
+          data.pointsEarned !== calculatedPoints
+        ) {
+          setScorePopup((prev) =>
+            prev && prev.key === popupKey ? { ...prev, points: data.pointsEarned } : prev
+          );
+        }
+        if (data.room) {
+          setRoom(data.room);
+        }
       }
     } catch (err) {
       console.error("Error submitting answer:", err);
@@ -1181,7 +1246,7 @@ function PlayArenaContent() {
           </button>
 
           {/* Player Badge */}
-          <div className="flex items-center gap-2 bg-[#102218] px-3 py-1.5 rounded-xl border border-emerald-500/20 text-xs">
+          <div className="flex items-center gap-2 bg-[#102218] px-3 py-1.5 rounded-xl border border-emerald-500/20 text-xs relative overflow-visible">
             <span
               className="w-3 h-3 rounded-full border border-black/40"
               style={{ backgroundColor: currentMe?.avatarColor || "#10B981" }}
@@ -1189,6 +1254,24 @@ function PlayArenaContent() {
             <span className="font-bold text-white max-w-[100px] truncate">
               {playerName || (spotifyAuthUser?.displayName || "Jugador")}
             </span>
+            {currentMe && typeof currentMe.score === "number" && (
+              <span className="font-mono font-bold text-goblinLime text-[11px] ml-0.5">
+                {currentMe.score} pts
+              </span>
+            )}
+            {/* Header Score Floating Feedback */}
+            {scorePopup && (
+              <div
+                key={`header_popup_${scorePopup.key}`}
+                className={`absolute -bottom-5 right-0 pointer-events-none z-30 px-2 py-0.5 rounded-full font-mono font-black text-[10px] tracking-wider flex items-center gap-1 whitespace-nowrap animate-score-float select-none ${
+                  scorePopup.isCorrect
+                    ? "text-emerald-300 bg-emerald-500/20 border border-emerald-400/80 shadow-[0_0_15px_rgba(16,185,129,0.5)] backdrop-blur-md"
+                    : "text-rose-300 bg-rose-500/20 border border-rose-500/80 shadow-[0_0_15px_rgba(244,63,94,0.5)] backdrop-blur-md"
+                }`}
+              >
+                {scorePopup.isCorrect ? `+${scorePopup.points} pts` : "0 pts"}
+              </div>
+            )}
             {isHost && (
               <span title="Anfitrión">
                 <Crown className="w-3.5 h-3.5 text-amber-400 inline" />
@@ -2333,13 +2416,24 @@ function PlayArenaContent() {
                 const isCorrect = optIdx === currentRound.correctIndex;
                 const isReveal = room.status === "round_reveal";
                 const imgKey = `play_${room.currentRound}_${optIdx}`;
+                const hasScorePopup = scorePopup && scorePopup.optionIndex === optIdx;
 
                 let cardStyle =
                   "bg-[#102218] border-emerald-500/20 hover:border-goblinLime text-white";
 
                 if (isSelected && !isReveal) {
-                  cardStyle =
-                    "bg-emerald-950/90 border-goblinLime text-goblinLime shadow-lg shadow-emerald-500/20";
+                  if (hasScorePopup) {
+                    if (scorePopup.isCorrect) {
+                      cardStyle =
+                        "bg-emerald-950/90 border-emerald-400 text-white font-bold shadow-[0_0_30px_rgba(16,185,129,0.65)] animate-correct-glow scale-[1.02]";
+                    } else {
+                      cardStyle =
+                        "bg-rose-950/90 border-rose-500 text-rose-200 shadow-[0_0_30px_rgba(244,63,94,0.65)] animate-wrong-shake";
+                    }
+                  } else {
+                    cardStyle =
+                      "bg-emerald-950/90 border-goblinLime text-goblinLime shadow-lg shadow-emerald-500/20";
+                  }
                 }
 
                 if (isReveal) {
@@ -2347,7 +2441,9 @@ function PlayArenaContent() {
                     cardStyle =
                       "bg-emerald-900/90 border-emerald-400 text-white font-black shadow-lg shadow-emerald-500/30 scale-[1.02]";
                   } else if (isSelected && !isCorrect) {
-                    cardStyle = "bg-red-950/80 border-red-500 text-red-200 line-through opacity-80";
+                    cardStyle = hasScorePopup
+                      ? "bg-red-950/90 border-red-500 text-red-200 line-through opacity-90 shadow-[0_0_25px_rgba(244,63,94,0.6)] animate-wrong-shake"
+                      : "bg-red-950/80 border-red-500 text-red-200 line-through opacity-80";
                   } else {
                     cardStyle = "bg-black/40 border-zinc-800 text-zinc-500 opacity-50";
                   }
@@ -2358,10 +2454,33 @@ function PlayArenaContent() {
                     key={`${room.currentRound}_${optData.title}_${optIdx}`}
                     onClick={() => handleAnswer(optIdx)}
                     disabled={selectedOption !== null || isReveal}
-                    className={`flex items-center justify-between gap-3.5 p-2.5 sm:p-3 rounded-xl border text-left transition-all ${cardStyle} ${
+                    className={`flex items-center justify-between gap-3.5 p-2.5 sm:p-3 rounded-xl border text-left transition-all relative overflow-visible ${cardStyle} ${
                       selectedOption !== null || isReveal ? "cursor-default" : "cursor-pointer"
                     }`}
                   >
+                    {/* Floating Arcade Score Popup */}
+                    {hasScorePopup && (
+                      <div
+                        key={`popup_${scorePopup.key}`}
+                        className={`absolute -top-4 sm:-top-5 left-1/2 pointer-events-none z-30 px-3.5 py-1.5 rounded-full font-mono font-black text-sm sm:text-base tracking-wider flex items-center gap-1.5 whitespace-nowrap animate-score-float select-none ${
+                          scorePopup.isCorrect
+                            ? "text-emerald-300 bg-emerald-500/20 border-2 border-emerald-400/80 shadow-[0_0_30px_rgba(16,185,129,0.65)] backdrop-blur-md"
+                            : "text-rose-300 bg-rose-500/20 border-2 border-rose-500/80 shadow-[0_0_30px_rgba(244,63,94,0.65)] backdrop-blur-md"
+                        }`}
+                      >
+                        {scorePopup.isCorrect ? (
+                          <>
+                            <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
+                            <span>+{scorePopup.points} pts</span>
+                          </>
+                        ) : (
+                          <>
+                            <X className="w-4 h-4 text-rose-400 shrink-0" />
+                            <span>0 puntos</span>
+                          </>
+                        )}
+                      </div>
+                    )}
                     {/* Left: Artwork Container + Center: Title & Artist */}
                     <div className="flex items-center gap-3 min-w-0 flex-1">
                       <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-lg overflow-hidden shrink-0 bg-emerald-950/80 border border-white/10 relative flex items-center justify-center">
@@ -2446,12 +2565,33 @@ function PlayArenaContent() {
                   .sort((a, b) => b.score - a.score)
                   .map((p, idx) => {
                     const hasAnswered = p.currentAnswer !== null;
+                    const isCurrentMe = p.id === playerId;
+                    const showMeScorePopup = isCurrentMe && scorePopup !== null;
 
                     return (
                       <div
                         key={p.id}
-                        className="p-3 rounded-xl bg-black/40 border border-emerald-500/15 flex flex-col justify-between"
+                        className={`p-3 rounded-xl bg-black/40 border flex flex-col justify-between relative transition-all overflow-visible ${
+                          showMeScorePopup
+                            ? scorePopup.isCorrect
+                              ? "border-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.35)]"
+                              : "border-rose-500 shadow-[0_0_20px_rgba(244,63,94,0.35)] animate-wrong-shake"
+                            : "border-emerald-500/15"
+                        }`}
                       >
+                        {/* Floating Popup on Leaderboard Player Card */}
+                        {showMeScorePopup && (
+                          <div
+                            key={`player_popup_${scorePopup.key}`}
+                            className={`absolute -top-3.5 right-2 pointer-events-none z-30 px-2.5 py-0.5 rounded-full font-mono font-black text-xs tracking-wider flex items-center gap-1 whitespace-nowrap animate-score-float select-none ${
+                              scorePopup.isCorrect
+                                ? "text-emerald-300 bg-emerald-500/20 border border-emerald-400/80 shadow-[0_0_20px_rgba(16,185,129,0.65)] backdrop-blur-md"
+                                : "text-rose-300 bg-rose-500/20 border border-rose-500/80 shadow-[0_0_20px_rgba(244,63,94,0.65)] backdrop-blur-md"
+                            }`}
+                          >
+                            {scorePopup.isCorrect ? `+${scorePopup.points} pts` : "0 pts"}
+                          </div>
+                        )}
                         <div className="flex items-center justify-between">
                           <span className="font-bold text-xs text-white truncate max-w-[85px]">
                             #{idx + 1} {p.name}
