@@ -26,6 +26,7 @@ import {
   Users,
   X,
   Volume2,
+  Volume1,
   VolumeX,
   Link2,
   AlertTriangle,
@@ -225,6 +226,7 @@ function PlayArenaContent() {
   // Gameplay Local Interaction
   const [selectedOption, setSelectedOption] = useState<number | null>(null);
   const [selectedFriend, setSelectedFriend] = useState<string | null>(null);
+  const [volume, setVolume] = useState<number>(0.25);
   const [audioMuted, setAudioMuted] = useState<boolean>(false);
   const [isAudioBlocked, setIsAudioBlocked] = useState<boolean>(false);
   const [savedTrackIds, setSavedTrackIds] = useState<Set<string>>(new Set());
@@ -243,10 +245,34 @@ function PlayArenaContent() {
     return () => unsub();
   }, []);
 
-  // Update audio volume when muted changes
+  // Initialize volume from localStorage if available
   useEffect(() => {
-    audioPlayer.setVolume(audioMuted ? 0 : 0.85);
-  }, [audioMuted]);
+    try {
+      const saved = localStorage.getItem("scuinklezam_volume");
+      if (saved !== null) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed) && parsed >= 0 && parsed <= 1) {
+          setVolume(parsed);
+          audioPlayer.setVolume(parsed);
+          return;
+        }
+      }
+      audioPlayer.setVolume(0.25);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Synchronize audio volume when muted or volume changes, and persist to localStorage
+  useEffect(() => {
+    const effective = audioMuted ? 0 : volume;
+    audioPlayer.setVolume(effective);
+    try {
+      localStorage.setItem("scuinklezam_volume", volume.toString());
+    } catch {
+      // ignore
+    }
+  }, [audioMuted, volume]);
 
   // Artist Autocomplete Debounce (250ms)
   useEffect(() => {
@@ -1076,7 +1102,7 @@ function PlayArenaContent() {
     <div className="min-h-screen bg-[#060D09] text-white flex flex-col font-sans selection:bg-goblinPrimary selection:text-black">
       {/* Top Navigation */}
       <header className="sticky top-0 z-40 bg-[#060D09]/85 backdrop-blur-xl border-b border-emerald-500/15 px-4 sm:px-6 py-3.5 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5 sm:gap-3">
           <Link href="/" className="flex items-center gap-2 group">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-goblinPrimary to-goblinLime flex items-center justify-center font-black text-black text-lg shadow-lg shadow-emerald-500/20 group-hover:scale-105 transition">
               S
@@ -1086,8 +1112,45 @@ function PlayArenaContent() {
             </span>
           </Link>
 
+          {/* Sound Volume Capsule */}
+          <div className="bg-zinc-900/80 backdrop-blur-md border border-white/10 rounded-full px-3 py-1.5 flex items-center gap-2">
+            <button
+              onClick={() => setAudioMuted(!audioMuted)}
+              className="text-zinc-300 hover:text-white transition flex items-center justify-center cursor-pointer"
+              title={audioMuted ? "Activar audio" : "Silenciar audio"}
+            >
+              {audioMuted || volume === 0 ? (
+                <VolumeX className="w-4 h-4 text-zinc-400" />
+              ) : volume < 0.5 ? (
+                <Volume1 className="w-4 h-4 text-emerald-400" />
+              ) : (
+                <Volume2 className="w-4 h-4 text-goblinLime" />
+              )}
+            </button>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={audioMuted ? 0 : volume}
+              onChange={(e) => {
+                const val = parseFloat(e.target.value);
+                setVolume(val);
+                if (audioMuted) {
+                  setAudioMuted(false);
+                }
+                audioPlayer.setVolume(val);
+              }}
+              className="accent-emerald-500 cursor-pointer w-20 sm:w-28 h-1.5 bg-zinc-700 rounded-lg appearance-none"
+              title="Volumen del juego"
+            />
+            <span className="text-[11px] font-mono text-zinc-300 min-w-[28px] text-right select-none">
+              {Math.round((audioMuted ? 0 : volume) * 100)}%
+            </span>
+          </div>
+
           {room && (
-            <div className="flex items-center gap-2 ml-2 pl-3 border-l border-emerald-500/20">
+            <div className="flex items-center gap-2 ml-1 pl-2 sm:pl-3 border-l border-emerald-500/20">
               <span className="font-mono font-black text-goblinLime bg-emerald-950/80 px-2.5 py-1 rounded-lg border border-emerald-500/30 text-xs sm:text-sm tracking-wider">
                 {room.code}
               </span>
@@ -1115,15 +1178,6 @@ function PlayArenaContent() {
           >
             <Headphones className="w-3.5 h-3.5 text-[#1DB954]" />
             <span className="hidden sm:inline">Importar Spotify</span>
-          </button>
-
-          {/* Sound Mute Toggle */}
-          <button
-            onClick={() => setAudioMuted(!audioMuted)}
-            className="w-8 h-8 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-emerald-500/20 flex items-center justify-center text-xs text-zinc-300 transition"
-            title={audioMuted ? "Activar audio" : "Silenciar audio"}
-          >
-            {audioMuted ? <VolumeX className="w-4 h-4 text-zinc-400" /> : <Volume2 className="w-4 h-4 text-goblinLime" />}
           </button>
 
           {/* Player Badge */}

@@ -667,10 +667,21 @@ export async function addPlaylistToRoom(
   // Filter out any duplicate playlist id
   room.playlists = room.playlists.filter((p) => p.id !== playlist.id);
 
-  // Filter valid tracks
-  const validTracks = (playlist.tracks || []).filter(
-    (t) => t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl
-  );
+  // Filter valid tracks and ensure song artwork never inherits playlist cover
+  const validTracks = (playlist.tracks || [])
+    .map((t) => {
+      let art = t.artworkUrl;
+      if (!art || (playlist.imageUrl && art === playlist.imageUrl)) {
+        art = getFallbackArtwork(t.title, t.artist);
+      }
+      return {
+        ...t,
+        artworkUrl: art,
+      };
+    })
+    .filter(
+      (t) => t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl
+    );
 
   const newPlaylist: RoomPlaylist = {
     id: playlist.id,
@@ -819,8 +830,15 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
     for (const pl of room.playlists) {
       if (pl.tracks && pl.tracks.length > 0) {
         pl.tracks.forEach((track) => {
+          let art = track.artworkUrl;
+          if (!art || (pl.imageUrl && art === pl.imageUrl)) {
+            art = getFallbackArtwork(track.title, track.artist);
+          }
           pool.push({
-            track,
+            track: {
+              ...track,
+              artworkUrl: art,
+            },
             playerId: pl.addedByPlayerId,
             playerName: pl.addedByPlayerName,
           });

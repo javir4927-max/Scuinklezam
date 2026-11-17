@@ -14,7 +14,7 @@ class AudioPlayerService {
   private audioEl: HTMLAudioElement | null = null;
   private preloaderEl: HTMLAudioElement | null = null;
   private currentUrl: string | null = null;
-  private currentVolume: number = 0.85;
+  private currentVolume: number = 0.25;
   private stallTimer: NodeJS.Timeout | null = null;
   private beatInterval: NodeJS.Timeout | null = null;
   private isFallbackBeating: boolean = false;
@@ -24,6 +24,18 @@ class AudioPlayerService {
 
   constructor() {
     if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem("scuinklezam_volume");
+        if (saved !== null) {
+          const parsed = parseFloat(saved);
+          if (!isNaN(parsed) && parsed >= 0 && parsed <= 1) {
+            this.currentVolume = parsed;
+          }
+        }
+      } catch {
+        // ignore
+      }
+
       this.audioEl = new Audio();
       this.audioEl.crossOrigin = "anonymous";
       this.audioEl.volume = this.currentVolume;
@@ -221,6 +233,10 @@ class AudioPlayerService {
     if (this.audioEl) {
       this.audioEl.volume = this.currentVolume;
     }
+  }
+
+  public getVolume(): number {
+    return this.currentVolume;
   }
 }
 

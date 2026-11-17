@@ -141,43 +141,63 @@ export async function POST(request: Request) {
               const rawTrackList = entity.trackList || [];
               const candidates = rawTrackList.slice(0, 30);
 
-              for (const item of candidates) {
-                const trackTitle = item.title || "Canción";
-                const trackArtist = item.subtitle || "Artista";
-                const trackId =
-                  item.id ||
-                  item.uri?.split(":").pop() ||
-                  Math.random().toString(36).substring(2, 9);
-                let previewUrl = item.audioPreview?.url || null;
-                let artworkUrl =
-                  item.visualIdentity?.image?.[0]?.url ||
-                  item.album?.images?.[0]?.url ||
-                  playlistImage ||
-                  getFallbackArtwork(trackTitle, trackArtist);
+              // Process candidates in parallel batches of 6 for speed and responsiveness
+              const chunkSize = 6;
+              for (let i = 0; i < candidates.length; i += chunkSize) {
+                const chunk = candidates.slice(i, i + chunkSize);
+                const chunkResults = await Promise.all(
+                  chunk.map(async (item: any) => {
+                    const trackTitle = item.title || "Canción";
+                    const trackArtist = item.subtitle || "Artista";
+                    const trackId =
+                      item.id ||
+                      item.uri?.split(":").pop() ||
+                      Math.random().toString(36).substring(2, 9);
+                    let previewUrl = item.audioPreview?.url || null;
 
-                // If Spotify embed does not have audio preview, resolve via iTunes search
-                if (!previewUrl) {
-                  const itunesMatch = await resolveAudioStream(trackTitle, trackArtist);
-                  if (itunesMatch) {
-                    previewUrl = itunesMatch.previewUrl;
-                    if (itunesMatch.artworkUrl) {
-                      artworkUrl = itunesMatch.artworkUrl;
+                    // Spotify album art if present on track item and distinct from playlist cover
+                    let candidateArtwork =
+                      item.album?.images?.[0]?.url && item.album.images[0].url !== playlistImage
+                        ? item.album.images[0].url
+                        : "";
+
+                    // If missing audio preview OR missing original album artwork, resolve via iTunes
+                    if (!previewUrl || !candidateArtwork) {
+                      const itunesMatch = await resolveAudioStream(trackTitle, trackArtist);
+                      if (itunesMatch) {
+                        if (!previewUrl && itunesMatch.previewUrl) {
+                          previewUrl = itunesMatch.previewUrl;
+                        }
+                        if (!candidateArtwork && itunesMatch.artworkUrl) {
+                          candidateArtwork = itunesMatch.artworkUrl;
+                        }
+                      }
                     }
-                  }
-                }
 
-                if (previewUrl && previewUrl.startsWith("http")) {
-                  resolvedTracks.push({
-                    id: trackId,
-                    uri: item.uri || `spotify:track:${trackId}`,
-                    title: trackTitle,
-                    artist: trackArtist,
-                    album: playlistName,
-                    artworkUrl,
-                    spotifyUrl: `https://open.spotify.com/track/${trackId}`,
-                    previewUrl,
-                    durationMs: item.duration || 30000,
-                  });
+                    // Strict fallback: NEVER assign playlistImage to a song's artwork
+                    if (!candidateArtwork || candidateArtwork === playlistImage) {
+                      candidateArtwork = getFallbackArtwork(trackTitle, trackArtist);
+                    }
+
+                    if (previewUrl && previewUrl.startsWith("http")) {
+                      return {
+                        id: trackId,
+                        uri: item.uri || `spotify:track:${trackId}`,
+                        title: trackTitle,
+                        artist: trackArtist,
+                        album: item.album?.name || playlistName,
+                        artworkUrl: candidateArtwork,
+                        spotifyUrl: `https://open.spotify.com/track/${trackId}`,
+                        previewUrl,
+                        durationMs: item.duration || 30000,
+                      } as SpotifyTrackItem;
+                    }
+                    return null;
+                  })
+                );
+
+                for (const res of chunkResults) {
+                  if (res) resolvedTracks.push(res);
                 }
               }
             }
