@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Flame, Trophy, Clock, FolderHeart, Link2, AlertTriangle, Gamepad2, FlaskConical, Settings } from "lucide-react";
+import { Flame, Trophy, Clock, FolderHeart, Link2, AlertTriangle, Gamepad2, FlaskConical, Settings, Heart, Sparkles, Loader2, Check } from "lucide-react";
 import { SpotifyTrackItem, SpotifyPlaylistItem } from "@/lib/spotifyTypes";
 import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
 
@@ -32,6 +32,8 @@ export default function SpotifyConnectModal({
   // Private playlists selector state
   const [showPlaylistsDrawer, setShowPlaylistsDrawer] = useState<boolean>(false);
   const [selectedPlaylistLoading, setSelectedPlaylistLoading] = useState<string | null>(null);
+  const [loadingMode, setLoadingMode] = useState<string | null>(null);
+  const [modeNotice, setModeNotice] = useState<string | null>(null);
 
   // Developer API keys configuration state
   const [showConfigKeys, setShowConfigKeys] = useState<boolean>(false);
@@ -110,7 +112,40 @@ export default function SpotifyConnectModal({
     }
   };
 
-  // Handler for 1-click mixing from stats
+  // Handler for 1-click mixing from real Spotify endpoints (with 401 refresh & iTunes audio enrichment)
+  const handleSelectMode = async (
+    mode: "recently_played" | "top_tracks" | "top_artists" | "liked_songs"
+  ) => {
+    setLoadingMode(mode);
+    setModeNotice(null);
+    try {
+      const res = await fetch("/api/spotify/user-tracks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      const data = await res.json();
+      if (!data.success || !data.tracks || data.tracks.length === 0) {
+        setModeNotice(
+          data.warning || data.error || `0 canciones encontradas en el modo seleccionado.`
+        );
+        return;
+      }
+
+      if (onInjectTracks) {
+        onInjectTracks(data.tracks, data.modeName, data.artists);
+      } else if (onPlayPlaylist) {
+        onPlayPlaylist(data.tracks, data.modeName, data.artists);
+      }
+      onClose();
+    } catch {
+      setModeNotice("Error de conexión al obtener canciones de Spotify.");
+    } finally {
+      setLoadingMode(null);
+    }
+  };
+
+  // Handler for 1-click mixing from stats (fallback)
   const handleInjectQuickStats = (
     tracks: SpotifyTrackItem[],
     label: string,
@@ -293,86 +328,124 @@ export default function SpotifyConnectModal({
               </div>
             )}
 
-            {/* 4 Quick Action Buttons */}
+            {/* 4 Real Spotify Modes */}
             <div className="space-y-2 pt-1">
               <div className="text-xs font-bold text-zinc-300">
-                Acciones rápidas con tus estadísticas:
+                Selecciona un modo de juego con tu cuenta de Spotify:
               </div>
 
+              {modeNotice && (
+                <div className="p-2.5 rounded-xl bg-amber-950/70 border border-amber-500/40 text-amber-300 text-xs flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
+                    <span>{modeNotice}</span>
+                  </div>
+                  <button
+                    onClick={() => setModeNotice(null)}
+                    className="text-zinc-400 hover:text-white p-0.5"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {/* 1. Escuchadas Recientemente */}
                 <button
-                  onClick={() =>
-                    handleInjectQuickStats(
-                      stats?.topTracksShort || [],
-                      "Mis Canciones Más Escuchadas (Último mes)",
-                      stats?.topArtists?.slice(0, 3).map((a) => a.name)
-                    )
-                  }
-                  className="p-3 rounded-2xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/25 hover:border-goblinLime/50 text-left transition flex items-center gap-2.5 cursor-pointer group"
+                  disabled={loadingMode !== null}
+                  onClick={() => handleSelectMode("recently_played")}
+                  className="p-3 rounded-2xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/25 hover:border-goblinLime/50 text-left transition flex items-center gap-2.5 cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <Flame className="w-5 h-5 text-amber-400 shrink-0" />
+                  {loadingMode === "recently_played" ? (
+                    <Loader2 className="w-5 h-5 text-cyan-400 animate-spin shrink-0" />
+                  ) : (
+                    <Clock className="w-5 h-5 text-cyan-400 shrink-0" />
+                  )}
                   <div className="flex-1 truncate">
                     <div className="font-bold text-xs text-white group-hover:text-goblinLime transition truncate">
-                      Mis Top Hits del Mes
+                      Escuchadas Recientemente
                     </div>
                     <div className="text-[10px] text-zinc-400 truncate">
-                      Últimas 4 semanas ({stats?.topTracksShort?.length || 0} pistas)
+                      Tus últimas 50 canciones reproducidas
                     </div>
                   </div>
                 </button>
 
+                {/* 2. Más Escuchadas */}
                 <button
-                  onClick={() =>
-                    handleInjectQuickStats(
-                      stats?.topTracksMedium || [],
-                      "Mis Top Hits Históricos (6 meses)",
-                      stats?.topArtists?.slice(0, 3).map((a) => a.name)
-                    )
-                  }
-                  className="p-3 rounded-2xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/25 hover:border-goblinLime/50 text-left transition flex items-center gap-2.5 cursor-pointer group"
+                  disabled={loadingMode !== null}
+                  onClick={() => handleSelectMode("top_tracks")}
+                  className="p-3 rounded-2xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/25 hover:border-goblinLime/50 text-left transition flex items-center gap-2.5 cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <Trophy className="w-5 h-5 text-amber-300 shrink-0" />
+                  {loadingMode === "top_tracks" ? (
+                    <Loader2 className="w-5 h-5 text-amber-300 animate-spin shrink-0" />
+                  ) : (
+                    <Trophy className="w-5 h-5 text-amber-300 shrink-0" />
+                  )}
                   <div className="flex-1 truncate">
                     <div className="font-bold text-xs text-white group-hover:text-goblinLime transition truncate">
-                      Top Hits Históricos
+                      Más Escuchadas
                     </div>
                     <div className="text-[10px] text-zinc-400 truncate">
-                      Últimos 6 meses ({stats?.topTracksMedium?.length || 0} pistas)
+                      Top hits de tu cuenta de Spotify
                     </div>
                   </div>
                 </button>
 
+                {/* 3. Tus Artistas Favoritos */}
                 <button
-                  onClick={() =>
-                    handleInjectQuickStats(
-                      stats?.recentlyPlayed || [],
-                      "Lo que he escuchado hoy (Recientes)"
-                    )
-                  }
-                  className="p-3 rounded-2xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/25 hover:border-goblinLime/50 text-left transition flex items-center gap-2.5 cursor-pointer group"
+                  disabled={loadingMode !== null}
+                  onClick={() => handleSelectMode("top_artists")}
+                  className="p-3 rounded-2xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/25 hover:border-goblinLime/50 text-left transition flex items-center gap-2.5 cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <Clock className="w-5 h-5 text-emerald-400 shrink-0" />
+                  {loadingMode === "top_artists" ? (
+                    <Loader2 className="w-5 h-5 text-emerald-400 animate-spin shrink-0" />
+                  ) : (
+                    <Sparkles className="w-5 h-5 text-emerald-400 shrink-0" />
+                  )}
                   <div className="flex-1 truncate">
                     <div className="font-bold text-xs text-white group-hover:text-goblinLime transition truncate">
-                      Escuchado Hoy
+                      Tus Artistas Favoritos
                     </div>
                     <div className="text-[10px] text-zinc-400 truncate">
-                      Reproducción reciente ({stats?.recentlyPlayed?.length || 0} pistas)
+                      Temas de tus top 10 artistas
                     </div>
                   </div>
                 </button>
 
+                {/* 4. Canciones Que Te Gustan */}
+                <button
+                  disabled={loadingMode !== null}
+                  onClick={() => handleSelectMode("liked_songs")}
+                  className="p-3 rounded-2xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/25 hover:border-goblinLime/50 text-left transition flex items-center gap-2.5 cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {loadingMode === "liked_songs" ? (
+                    <Loader2 className="w-5 h-5 text-pink-400 animate-spin shrink-0" />
+                  ) : (
+                    <Heart className="w-5 h-5 text-pink-400 shrink-0" />
+                  )}
+                  <div className="flex-1 truncate">
+                    <div className="font-bold text-xs text-white group-hover:text-goblinLime transition truncate">
+                      Canciones Que Te Gustan
+                    </div>
+                    <div className="text-[10px] text-zinc-400 truncate">
+                      Tus canciones guardadas en biblioteca
+                    </div>
+                  </div>
+                </button>
+
+                {/* 5. Elegir Playlist Privada */}
                 <button
                   onClick={() => setShowPlaylistsDrawer(!showPlaylistsDrawer)}
-                  className="p-3 rounded-2xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/25 hover:border-goblinLime/50 text-left transition flex items-center gap-2.5 cursor-pointer group"
+                  className="p-3 rounded-2xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/25 hover:border-goblinLime/50 text-left transition flex items-center gap-2.5 cursor-pointer group sm:col-span-2"
                 >
                   <FolderHeart className="w-5 h-5 text-goblinLime shrink-0" />
                   <div className="flex-1 truncate">
                     <div className="font-bold text-xs text-white group-hover:text-goblinLime transition truncate">
-                      Elegir Playlist Privada
+                      Elegir de Mis Playlists Privadas
                     </div>
                     <div className="text-[10px] text-zinc-400 truncate">
-                      {playlists.length} playlists disponibles
+                      {playlists.length} playlists detectadas en tu biblioteca
                     </div>
                   </div>
                 </button>

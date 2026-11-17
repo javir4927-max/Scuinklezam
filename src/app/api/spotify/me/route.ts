@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import {
-  getSpotifyUserTokenDetails,
+  fetchSpotifyUserAPI,
   enrichSpotifyTracks,
-  FALLBACK_SPOTIFY_TRACKS,
 } from "@/lib/spotifyServer";
 import {
   SpotifyUserProfile,
@@ -13,39 +12,9 @@ import {
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const { token, refreshedToken, expiresIn } = await getSpotifyUserTokenDetails();
-
-  if (!token) {
-    return NextResponse.json({
-      connected: false,
-      user: null,
-      stats: null,
-      playlists: [],
-    });
-  }
-
   try {
-    const headers = { Authorization: `Bearer ${token}` };
-
-    // Parallel fetch across Spotify official endpoints
-    const [
-      profileRes,
-      topTracksShortRes,
-      topTracksMedRes,
-      topArtistsRes,
-      recentlyPlayedRes,
-      playlistsRes,
-    ] = await Promise.all([
-      fetch("https://api.spotify.com/v1/me", { headers }),
-      fetch("https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=20", { headers }),
-      fetch("https://api.spotify.com/v1/me/top/tracks?time_range=medium_term&limit=25", { headers }),
-      fetch("https://api.spotify.com/v1/me/top/artists?time_range=medium_term&limit=10", { headers }),
-      fetch("https://api.spotify.com/v1/me/player/recently-played?limit=20", { headers }),
-      fetch("https://api.spotify.com/v1/me/playlists?limit=20", { headers }),
-    ]);
-
-    // If profile request failed, token might be revoked or invalid
-    if (!profileRes.ok) {
+    const profileRes = await fetchSpotifyUserAPI("/v1/me");
+    if (!profileRes.res || !profileRes.res.ok) {
       return NextResponse.json({
         connected: false,
         user: null,
@@ -54,12 +23,31 @@ export async function GET() {
       });
     }
 
-    const profileData = await profileRes.json();
-    const topTracksShortData = topTracksShortRes.ok ? await topTracksShortRes.json() : { items: [] };
-    const topTracksMedData = topTracksMedRes.ok ? await topTracksMedRes.json() : { items: [] };
-    const topArtistsData = topArtistsRes.ok ? await topArtistsRes.json() : { items: [] };
-    const recentlyPlayedData = recentlyPlayedRes.ok ? await recentlyPlayedRes.json() : { items: [] };
-    const playlistsData = playlistsRes.ok ? await playlistsRes.json() : { items: [] };
+    const profileData = await profileRes.res.json();
+
+    // Parallel fetch across official Spotify endpoints with auto-refreshing token
+    const [
+      topTracksMedRes,
+      topTracksShortRes,
+      topArtistsRes,
+      recentlyPlayedRes,
+      likedTracksRes,
+      playlistsRes,
+    ] = await Promise.all([
+      fetchSpotifyUserAPI("/v1/me/top/tracks?time_range=medium_term&limit=50"),
+      fetchSpotifyUserAPI("/v1/me/top/tracks?time_range=short_term&limit=50"),
+      fetchSpotifyUserAPI("/v1/me/top/artists?time_range=medium_term&limit=15"),
+      fetchSpotifyUserAPI("/v1/me/player/recently-played?limit=50"),
+      fetchSpotifyUserAPI("/v1/me/tracks?limit=50"),
+      fetchSpotifyUserAPI("/v1/me/playlists?limit=25"),
+    ]);
+
+    const topTracksMedData = topTracksMedRes.res?.ok ? await topTracksMedRes.res.json() : { items: [] };
+    const topTracksShortData = topTracksShortRes.res?.ok ? await topTracksShortRes.res.json() : { items: [] };
+    const topArtistsData = topArtistsRes.res?.ok ? await topArtistsRes.res.json() : { items: [] };
+    const recentlyPlayedData = recentlyPlayedRes.res?.ok ? await recentlyPlayedRes.res.json() : { items: [] };
+    const likedTracksData = likedTracksRes.res?.ok ? await likedTracksRes.res.json() : { items: [] };
+    const playlistsData = playlistsRes.res?.ok ? await playlistsRes.res.json() : { items: [] };
 
     // 1. User Profile
     const user: SpotifyUserProfile = {
@@ -72,7 +60,7 @@ export async function GET() {
       isPremium: profileData.product === "premium",
     };
 
-    // 2. Top Artists
+    // 2. Top Artists (up to 15)
     const topArtists: SpotifyArtistItem[] = (topArtistsData.items || []).map((a: any) => ({
       id: a.id,
       name: a.name,
@@ -92,34 +80,26 @@ export async function GET() {
       uri: p.uri,
     }));
 
-    // 4. Enrich tracks with audio preview resolution
-    const [topTracksShort, topTracksMedium, recentlyPlayed] = await Promise.all([
-      enrichSpotifyTracks(topTracksShortData.items || []),
+    // 4. Enrich tracks with iTunes Search API audio preview & artwork resolution
+    const [topTracksMedium, topTracksShort, recentlyPlayed, likedTracks] = await Promise.all([
       enrichSpotifyTracks(topTracksMedData.items || []),
+      enrichSpotifyTracks(topTracksShortData.items || []),
       enrichSpotifyTracks((recentlyPlayedData.items || []).map((i: any) => i.track)),
+      enrichSpotifyTracks((likedTracksData.items || []).map((i: any) => i.track)),
     ]);
 
     const response = NextResponse.json({
       connected: true,
       user,
       stats: {
-        topTracksShort: topTracksShort.length > 0 ? topTracksShort : FALLBACK_SPOTIFY_TRACKS.slice(0, 10),
-        topTracksMedium: topTracksMedium.length > 0 ? topTracksMedium : FALLBACK_SPOTIFY_TRACKS.slice(0, 10),
+        topTracksShort: topTracksShort.filter((t) => t.previewUrl),
+        topTracksMedium: topTracksMedium.filter((t) => t.previewUrl),
         topArtists,
-        recentlyPlayed: recentlyPlayed.length > 0 ? recentlyPlayed : FALLBACK_SPOTIFY_TRACKS.slice(0, 10),
+        recentlyPlayed: recentlyPlayed.filter((t) => t.previewUrl),
+        likedTracks: likedTracks.filter((t) => t.previewUrl),
       },
       playlists,
     });
-
-    // Update refreshed access token in cookie if applicable
-    if (refreshedToken) {
-      response.cookies.set("spotify_access_token", refreshedToken, {
-        path: "/",
-        maxAge: expiresIn || 3600,
-        sameSite: "lax",
-        httpOnly: true,
-      });
-    }
 
     return response;
   } catch (err) {

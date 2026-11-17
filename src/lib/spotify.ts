@@ -23,8 +23,8 @@ export function resolveSpotifyRedirectUri(request: Request): string {
 
   // 3. Vercel deployments (production or preview branches like *.vercel.app)
   // Strictly the canonical authorized domain configured in Spotify Developers Dashboard
-  if (cleanHost.endsWith(".vercel.app")) {
-    return "https://scuinklezam-zz38.vercel.app/api/auth/spotify/callback";
+  if (cleanHost.endsWith(".vercel.app") || cleanHost.includes("scuinklezam")) {
+    return "https://scuinklezam.vercel.app/api/auth/spotify/callback";
   }
 
   // 4. Any other domain (such as custom tunnels or domains)
@@ -50,8 +50,8 @@ export function resolveSpotifyOrigin(request: Request): string {
     return "https://echo-both-mullets.ngrok-free.dev";
   }
 
-  if (cleanHost.endsWith(".vercel.app")) {
-    return "https://scuinklezam-zz38.vercel.app";
+  if (cleanHost.endsWith(".vercel.app") || cleanHost.includes("scuinklezam")) {
+    return "https://scuinklezam.vercel.app";
   }
 
   const proto = request.headers.get("x-forwarded-proto") || "https";

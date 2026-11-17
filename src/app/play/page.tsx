@@ -199,6 +199,8 @@ function PlayArenaContent() {
   const [showInviteModal, setShowInviteModal] = useState<boolean>(false);
   const [showTasteModal, setShowTasteModal] = useState<boolean>(false);
   const [showSpotifyModal, setShowSpotifyModal] = useState<boolean>(false);
+  const [loadingSpotifyMode, setLoadingSpotifyMode] = useState<string | null>(null);
+  const [spotifyModeNotice, setSpotifyModeNotice] = useState<{ type: "success" | "warning"; message: string } | null>(null);
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
   const [optionImageErrors, setOptionImageErrors] = useState<Record<string, boolean>>({});
@@ -368,7 +370,7 @@ function PlayArenaContent() {
       const topArtists =
         artists && artists.length > 0
           ? artists
-          : Array.from(new Set(tracks.map((t) => t.artist.split(",")[0].trim()).filter(Boolean))).slice(0, 3);
+          : Array.from(new Set(tracks.map((t) => t.artist.split(",")[0].trim()).filter(Boolean))).slice(0, 10);
 
       const res = await fetch(`/api/rooms/${roomCode}`, {
         method: "PATCH",
@@ -379,6 +381,7 @@ function PlayArenaContent() {
           playerId,
           tracks,
           artists: topArtists,
+          label,
         }),
       });
       const data = await res.json();
@@ -387,6 +390,55 @@ function PlayArenaContent() {
       }
     } catch (err) {
       console.error("Error injecting Spotify tracks:", err);
+    }
+  };
+
+  // Handler for loading real Spotify user modes (Auto-refresh on 401, real endpoints, 0 fake tracks)
+  const handleLoadSpotifyMode = async (
+    mode: "recently_played" | "top_tracks" | "top_artists" | "liked_songs"
+  ) => {
+    if (!roomCode || !playerId) return;
+    setLoadingSpotifyMode(mode);
+    setSpotifyModeNotice(null);
+    try {
+      const res = await fetch("/api/spotify/user-tracks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ mode }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setSpotifyModeNotice({
+          type: "warning",
+          message: data.error || "No se pudieron obtener las canciones de Spotify.",
+        });
+        return;
+      }
+
+      if (!data.tracks || data.tracks.length === 0) {
+        setSpotifyModeNotice({
+          type: "warning",
+          message:
+            data.warning ||
+            `0 canciones encontradas en el modo "${data.modeName}". Escucha más música en Spotify para llenar este modo.`,
+        });
+        return;
+      }
+
+      await handleInjectSpotifyTracks(data.tracks, data.modeName, data.artists);
+      setSpotifyModeNotice({
+        type: "success",
+        message: `Modo "${data.modeName}" cargado con éxito (${data.count} canciones listas para jugar).`,
+      });
+    } catch (err) {
+      console.error("Error loading spotify mode:", err);
+      setSpotifyModeNotice({
+        type: "warning",
+        message: "Error de conexión al cargar modo de Spotify.",
+      });
+    } finally {
+      setLoadingSpotifyMode(null);
     }
   };
 
@@ -946,7 +998,7 @@ function PlayArenaContent() {
   const handleAddArtistName = async (artistName: string) => {
     if (!room || !artistName.trim()) return;
     const me = room.players.find((p) => p.id === playerId);
-    const updated = [...(me?.favoriteArtists || []), artistName.trim()].slice(0, 3);
+    const updated = [...(me?.favoriteArtists || []), artistName.trim()].slice(0, 10);
 
     try {
       const res = await fetch(`/api/rooms/${roomCode}`, {
@@ -1704,77 +1756,129 @@ function PlayArenaContent() {
                         </div>
                       )}
 
-                      {/* 4 Quick Action Buttons */}
+                      {/* Status / Mode Notice Banner */}
+                      {spotifyModeNotice && (
+                        <div
+                          className={`p-2.5 rounded-xl border text-xs flex items-center justify-between gap-2 ${
+                            spotifyModeNotice.type === "success"
+                              ? "bg-emerald-950/70 border-emerald-500/40 text-emerald-300"
+                              : "bg-amber-950/70 border-amber-500/40 text-amber-300"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            {spotifyModeNotice.type === "success" ? (
+                              <Check className="w-4 h-4 shrink-0 text-emerald-400" />
+                            ) : (
+                              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
+                            )}
+                            <span className="font-medium">{spotifyModeNotice.message}</span>
+                          </div>
+                          <button
+                            onClick={() => setSpotifyModeNotice(null)}
+                            className="text-zinc-400 hover:text-white p-0.5 cursor-pointer"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
+
+                      {/* 4 Real Spotify Modes */}
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                        {/* 1. Escuchadas recientemente */}
                         <button
-                          onClick={() =>
-                            handleInjectSpotifyTracks(
-                              spotifyStats?.topTracksShort || [],
-                              "Mis Canciones Más Escuchadas (Último mes)",
-                              spotifyStats?.topArtists?.slice(0, 3).map((a) => a.name)
-                            )
-                          }
-                          className="p-2.5 rounded-xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/20 hover:border-goblinLime/50 text-left transition flex items-center gap-2 cursor-pointer group"
+                          disabled={loadingSpotifyMode !== null}
+                          onClick={() => handleLoadSpotifyMode("recently_played")}
+                          className="p-2.5 rounded-xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/20 hover:border-goblinLime/50 text-left transition flex items-center gap-2.5 cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          <Flame className="w-4 h-4 text-emerald-400 shrink-0" />
+                          {loadingSpotifyMode === "recently_played" ? (
+                            <Loader2 className="w-4 h-4 text-cyan-400 animate-spin shrink-0" />
+                          ) : (
+                            <Clock className="w-4 h-4 text-cyan-400 shrink-0" />
+                          )}
                           <div className="truncate">
                             <div className="font-bold text-[11px] text-white group-hover:text-goblinLime transition truncate">
-                              Mezclar Más Escuchadas
+                              Escuchadas Recientemente
                             </div>
-                            <div className="text-[9px] text-zinc-400">Último mes</div>
+                            <div className="text-[9px] text-zinc-400">Tus últimas 50 canciones</div>
                           </div>
                         </button>
 
+                        {/* 2. Más escuchadas */}
                         <button
-                          onClick={() =>
-                            handleInjectSpotifyTracks(
-                              spotifyStats?.topTracksMedium || [],
-                              "Mis Top Hits Históricos (6 meses)",
-                              spotifyStats?.topArtists?.slice(0, 3).map((a) => a.name)
-                            )
-                          }
-                          className="p-2.5 rounded-xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/20 hover:border-goblinLime/50 text-left transition flex items-center gap-2 cursor-pointer group"
+                          disabled={loadingSpotifyMode !== null}
+                          onClick={() => handleLoadSpotifyMode("top_tracks")}
+                          className="p-2.5 rounded-xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/20 hover:border-goblinLime/50 text-left transition flex items-center gap-2.5 cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          <Trophy className="w-4 h-4 text-amber-400 shrink-0" />
+                          {loadingSpotifyMode === "top_tracks" ? (
+                            <Loader2 className="w-4 h-4 text-amber-400 animate-spin shrink-0" />
+                          ) : (
+                            <Trophy className="w-4 h-4 text-amber-400 shrink-0" />
+                          )}
                           <div className="truncate">
                             <div className="font-bold text-[11px] text-white group-hover:text-goblinLime transition truncate">
-                              Top Hits Históricos
+                              Más Escuchadas
                             </div>
-                            <div className="text-[9px] text-zinc-400">Últimos 6 meses</div>
+                            <div className="text-[9px] text-zinc-400">Tus top canciones favoritas</div>
                           </div>
                         </button>
 
+                        {/* 3. Tus artistas favoritos */}
                         <button
-                          onClick={() =>
-                            handleInjectSpotifyTracks(
-                              spotifyStats?.recentlyPlayed || [],
-                              "Lo que he escuchado hoy (Recientes)"
-                            )
-                          }
-                          className="p-2.5 rounded-xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/20 hover:border-goblinLime/50 text-left transition flex items-center gap-2 cursor-pointer group"
+                          disabled={loadingSpotifyMode !== null}
+                          onClick={() => handleLoadSpotifyMode("top_artists")}
+                          className="p-2.5 rounded-xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/20 hover:border-goblinLime/50 text-left transition flex items-center gap-2.5 cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          <Clock className="w-4 h-4 text-cyan-400 shrink-0" />
+                          {loadingSpotifyMode === "top_artists" ? (
+                            <Loader2 className="w-4 h-4 text-emerald-400 animate-spin shrink-0" />
+                          ) : (
+                            <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
+                          )}
                           <div className="truncate">
                             <div className="font-bold text-[11px] text-white group-hover:text-goblinLime transition truncate">
-                              Escuchado Hoy
+                              Tus Artistas Favoritos
                             </div>
-                            <div className="text-[9px] text-zinc-400">Canciones recientes</div>
+                            <div className="text-[9px] text-zinc-400">Canciones de tus top 10 artistas</div>
                           </div>
                         </button>
 
+                        {/* 4. Canciones que te gustan */}
+                        <button
+                          disabled={loadingSpotifyMode !== null}
+                          onClick={() => handleLoadSpotifyMode("liked_songs")}
+                          className="p-2.5 rounded-xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/20 hover:border-goblinLime/50 text-left transition flex items-center gap-2.5 cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {loadingSpotifyMode === "liked_songs" ? (
+                            <Loader2 className="w-4 h-4 text-pink-400 animate-spin shrink-0" />
+                          ) : (
+                            <Heart className="w-4 h-4 text-pink-400 shrink-0" />
+                          )}
+                          <div className="truncate">
+                            <div className="font-bold text-[11px] text-white group-hover:text-goblinLime transition truncate">
+                              Canciones Que Te Gustan
+                            </div>
+                            <div className="text-[9px] text-zinc-400">Tus canciones guardadas</div>
+                          </div>
+                        </button>
+                      </div>
+
+                      {/* Botón para Elegir Playlist Privada */}
+                      <div className="pt-1">
                         <button
                           onClick={() => setShowSpotifyModal(true)}
-                          className="p-2.5 rounded-xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/20 hover:border-goblinLime/50 text-left transition flex items-center gap-2 cursor-pointer group"
+                          className="w-full p-2.5 rounded-xl bg-[#0B1710] hover:bg-emerald-950/70 border border-emerald-500/20 hover:border-goblinLime/50 text-left transition flex items-center justify-between gap-2 cursor-pointer group"
                         >
-                          <FolderHeart className="w-4 h-4 text-pink-400 shrink-0" />
-                          <div className="truncate">
-                            <div className="font-bold text-[11px] text-white group-hover:text-goblinLime transition truncate">
-                              Elegir Playlist Privada
-                            </div>
-                            <div className="text-[9px] text-zinc-400">
-                              {spotifyPlaylists.length} playlists disponibles
+                          <div className="flex items-center gap-2 truncate">
+                            <FolderHeart className="w-4 h-4 text-goblinLime shrink-0" />
+                            <div className="truncate">
+                              <span className="font-bold text-[11px] text-white group-hover:text-goblinLime transition">
+                                Elegir Playlist Privada o Pegar Enlace
+                              </span>
+                              <span className="text-[9px] text-zinc-400 ml-2">
+                                ({spotifyPlaylists.length} playlists detectadas)
+                              </span>
                             </div>
                           </div>
+                          <span className="text-[10px] text-emerald-400 font-semibold shrink-0">Abrir Explorador →</span>
                         </button>
                       </div>
                     </div>
@@ -1795,9 +1899,9 @@ function PlayArenaContent() {
                      ======================================================== */}
                   <div className="bg-[#0B1710] p-4 rounded-2xl border border-emerald-500/15 space-y-3">
                     <div className="flex items-center justify-between text-xs font-bold">
-                      <span className="text-zinc-300">Tus 3 Artistas Favoritos (Manual)</span>
+                      <span className="text-zinc-300">Tus Artistas Favoritos (Manual)</span>
                       <span className="text-goblinLime">
-                        {currentMe?.favoriteArtists.length || 0}/3 añadidos
+                        {currentMe?.favoriteArtists.length || 0}/10 añadidos
                       </span>
                     </div>
 
@@ -1830,7 +1934,7 @@ function PlayArenaContent() {
                       ))}
                     </div>
 
-                    {(currentMe?.favoriteArtists.length || 0) < 3 && (
+                    {(currentMe?.favoriteArtists.length || 0) < 10 && (
                       <div ref={suggestionsRef} className="relative">
                         <div className="flex gap-2">
                           <div className="relative flex-1">

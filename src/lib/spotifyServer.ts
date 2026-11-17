@@ -67,17 +67,13 @@ export async function getSpotifyAppToken(): Promise<string | null> {
 }
 
 /**
- * Gets user access token or refreshes it via refresh_token.
+ * Refreshes user access token using the HTTP-only spotify_refresh_token cookie.
  */
-export async function getSpotifyUserTokenDetails(): Promise<{
+export async function refreshSpotifyUserToken(): Promise<{
   token: string | null;
-  refreshedToken?: string;
   expiresIn?: number;
 }> {
   const cookieStore = cookies();
-  const accessToken = cookieStore.get("spotify_access_token")?.value;
-  if (accessToken) return { token: accessToken };
-
   const refreshToken = cookieStore.get("spotify_refresh_token")?.value;
   const clientId = process.env.SPOTIFY_CLIENT_ID;
   const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
@@ -98,15 +94,29 @@ export async function getSpotifyUserTokenDetails(): Promise<{
         grant_type: "refresh_token",
         refresh_token: refreshToken,
       }),
+      cache: "no-store",
     });
 
-    if (!res.ok) return { token: null };
+    if (!res.ok) {
+      console.warn("Failed to refresh Spotify user token, status:", res.status);
+      return { token: null };
+    }
 
     const data = await res.json();
     if (data.access_token) {
+      try {
+        cookieStore.set("spotify_access_token", data.access_token, {
+          path: "/",
+          maxAge: data.expires_in || 3600,
+          sameSite: "lax",
+          httpOnly: true,
+        });
+      } catch {
+        // Ignore if cookies() is read-only in some streaming context
+      }
+
       return {
         token: data.access_token,
-        refreshedToken: data.access_token,
         expiresIn: data.expires_in || 3600,
       };
     }
@@ -115,6 +125,64 @@ export async function getSpotifyUserTokenDetails(): Promise<{
   }
 
   return { token: null };
+}
+
+/**
+ * Gets user access token or refreshes it via refresh_token.
+ */
+export async function getSpotifyUserTokenDetails(): Promise<{
+  token: string | null;
+  refreshedToken?: string;
+  expiresIn?: number;
+}> {
+  const cookieStore = cookies();
+  const accessToken = cookieStore.get("spotify_access_token")?.value;
+  if (accessToken) return { token: accessToken };
+
+  return await refreshSpotifyUserToken();
+}
+
+/**
+ * Executes a fetch call to Spotify Web API using the current user token.
+ * If Spotify responds with 401 Unauthorized, automatically refreshes the token and retries once.
+ */
+export async function fetchSpotifyUserAPI(
+  url: string,
+  options: RequestInit = {}
+): Promise<{ res: Response | null; newToken?: string; expiresIn?: number }> {
+  let { token } = await getSpotifyUserTokenDetails();
+  if (!token) return { res: null };
+
+  const endpoint = url.startsWith("http") ? url : `https://api.spotify.com${url}`;
+
+  let res = await fetch(endpoint, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+
+  // If 401 Unauthorized, automatically refresh token and retry
+  if (res.status === 401) {
+    console.warn(`[fetchSpotifyUserAPI] Received 401 on ${endpoint}, refreshing token...`);
+    const refreshed = await refreshSpotifyUserToken();
+    if (refreshed.token) {
+      token = refreshed.token;
+      res = await fetch(endpoint, {
+        ...options,
+        headers: {
+          ...(options.headers || {}),
+          Authorization: `Bearer ${token}`,
+        },
+        cache: "no-store",
+      });
+      return { res, newToken: refreshed.token, expiresIn: refreshed.expiresIn };
+    }
+  }
+
+  return { res };
 }
 
 export async function getSpotifyUserToken(): Promise<string | null> {
