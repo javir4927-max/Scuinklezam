@@ -247,7 +247,22 @@ function PlayArenaContent() {
   // Audio & Timer Refs
   const prevStatusRef = useRef<string>("");
   const prevRoundRef = useRef<number>(0);
+  const currentRoundRef = useRef<number>(1);
+  const roomStatusRef = useRef<string>("lobby");
+  const nextRoundTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [isStartingGame, setIsStartingGame] = useState<boolean>(false);
   const [, startTransition] = useTransition();
+
+  // Keep tracking refs synchronized with latest room state
+  useEffect(() => {
+    if (room) {
+      currentRoundRef.current = room.currentRound;
+      roomStatusRef.current = room.status;
+      if (room.status === "lobby") {
+        setIsStartingGame(false);
+      }
+    }
+  }, [room?.currentRound, room?.status]);
 
   // Subscribe to audio player state
   useEffect(() => {
@@ -465,6 +480,27 @@ function PlayArenaContent() {
             return;
           }
 
+          // Anti-stale protection: ignore polling responses that are older than our current round
+          const isCurrentActive =
+            roomStatusRef.current === "playing" ||
+            roomStatusRef.current === "round_reveal" ||
+            roomStatusRef.current === "countdown";
+
+          if (
+            isCurrentActive &&
+            currentRoom.status !== "lobby" &&
+            currentRoom.status !== "finished" &&
+            currentRoom.currentRound < currentRoundRef.current
+          ) {
+            // Ignore stale response from another serverless instance
+            return;
+          }
+
+          // If current is playing, but incoming is lobby (without an explicit reset), ignore
+          if (isCurrentActive && currentRoom.status === "lobby") {
+            return;
+          }
+
           if (!stillInRoom && currentRoom.status === "lobby") {
             // Player temporarily missing from players list (e.g. Redis replication lag).
             // Do NOT kick: automatically re-send background join PATCH to re-sync
@@ -495,6 +531,54 @@ function PlayArenaContent() {
       clearInterval(interval);
     };
   }, [roomCode, playerId]);
+
+  // 3.5s Reveal timer to progress to next round cleanly and idempotently
+  useEffect(() => {
+    if (!room || room.status !== "round_reveal" || !roomCode) {
+      if (nextRoundTimerRef.current) {
+        clearTimeout(nextRoundTimerRef.current);
+        nextRoundTimerRef.current = null;
+      }
+      return;
+    }
+
+    const now = Date.now();
+    const endsAt = room.revealEndsAt || (room.revealStartTime ? room.revealStartTime + 3500 : now + 3500);
+    const delay = Math.max(500, Math.min(3500, endsAt - now));
+    const roundToAdvance = room.currentRound;
+
+    nextRoundTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/rooms/${roomCode}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-cache",
+          },
+          body: JSON.stringify({
+            action: "next_round",
+            playerId,
+            expectedRoundIndex: roundToAdvance,
+          }),
+        });
+        const data = await res.json();
+        if (data.success && data.room) {
+          if (data.room.currentRound >= currentRoundRef.current) {
+            setRoom(data.room);
+          }
+        }
+      } catch (err) {
+        console.error("Error advancing round:", err);
+      }
+    }, delay);
+
+    return () => {
+      if (nextRoundTimerRef.current) {
+        clearTimeout(nextRoundTimerRef.current);
+        nextRoundTimerRef.current = null;
+      }
+    };
+  }, [room?.status, room?.currentRound, room?.revealEndsAt, roomCode, playerId]);
 
   // Smooth local ticker to update seconds on screen between polling cycles
   const [, setTicker] = useState<number>(Date.now());
@@ -692,7 +776,8 @@ function PlayArenaContent() {
 
   // Start Ranked Match
   const handleStartGame = async () => {
-    if (!roomCode) return;
+    if (!roomCode || isStartingGame) return;
+    setIsStartingGame(true);
     setIsLoading(true);
     try {
       const res = await fetch(`/api/rooms/${roomCode}`, {
@@ -708,9 +793,11 @@ function PlayArenaContent() {
         setRoom(data.room);
       } else {
         setErrorMessage(data.error || "No se pudo iniciar la partida.");
+        setIsStartingGame(false);
       }
     } catch {
       setErrorMessage("Error de conexión al iniciar la partida.");
+      setIsStartingGame(false);
     } finally {
       setIsLoading(false);
     }
@@ -792,7 +879,9 @@ function PlayArenaContent() {
           );
         }
         if (data.room) {
-          setRoom(data.room);
+          if (data.room.currentRound >= currentRoundRef.current) {
+            setRoom(data.room);
+          }
         }
       }
     } catch (err) {
@@ -2251,10 +2340,10 @@ function PlayArenaContent() {
                   {isHost ? (
                     <button
                       onClick={handleStartGame}
-                      disabled={isLoading}
+                      disabled={isLoading || isStartingGame}
                       className="w-full py-4 rounded-2xl bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime hover:opacity-95 text-black font-black text-sm tracking-wide shadow-xl shadow-emerald-500/25 transition cursor-pointer disabled:opacity-50"
                     >
-                      {isLoading ? "Cargando canciones..." : "¡Iniciar Partida Ranked!"}
+                      {isStartingGame || isLoading ? "Preparando canciones de la sala..." : "¡Iniciar Partida Ranked!"}
                     </button>
                   ) : (
                     <div className="p-4 rounded-2xl bg-white/[0.03] border border-emerald-500/15 text-center text-xs text-zinc-400">

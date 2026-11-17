@@ -1,3 +1,7 @@
+if (typeof process !== "undefined" && process.env) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+}
+
 import { NextResponse } from "next/server";
 import {
   getRoom,
@@ -9,6 +13,7 @@ import {
   changeRoomSettings,
   startRoomGame,
   submitPlayerAnswer,
+  advanceRoomRound,
   resetRoomToLobby,
   kickPlayer,
   transferHost,
@@ -23,7 +28,9 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 const NO_CACHE_HEADERS = {
-  "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+  "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, proxy-revalidate",
+  "Pragma": "no-cache",
+  "Expires": "0",
 };
 
 interface RouteParams {
@@ -228,13 +235,13 @@ export async function PATCH(request: Request, { params }: RouteParams) {
           );
         }
         const ansResult = await submitPlayerAnswer(
-          room,
+          code,
           playerId,
           body.optionIndex,
           body.timeMs || 5000,
           body.guessedFriendId
         );
-        const updated = await getRoom(code);
+        const updated = ansResult.room || (await getRoom(code));
         return NextResponse.json(
           {
             success: true,
@@ -242,6 +249,17 @@ export async function PATCH(request: Request, { params }: RouteParams) {
             isCorrect: ansResult.isCorrect,
             room: updated,
           },
+          { headers: NO_CACHE_HEADERS }
+        );
+      }
+
+      case "next_round": {
+        const expectedRoundIndex =
+          typeof body.expectedRoundIndex === "number" ? body.expectedRoundIndex : room.currentRound;
+        const advanceResult = await advanceRoomRound(code, playerId || "", expectedRoundIndex);
+        const updated = advanceResult.room || (await getRoom(code));
+        return NextResponse.json(
+          { success: true, room: updated },
           { headers: NO_CACHE_HEADERS }
         );
       }

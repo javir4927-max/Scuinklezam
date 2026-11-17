@@ -1,3 +1,7 @@
+if (typeof process !== "undefined" && process.env) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+}
+
 import { Redis } from "@upstash/redis";
 import { SpotifyTrackItem, FALLBACK_SPOTIFY_TRACKS, getFallbackArtwork } from "./spotifyTypes";
 import { searchVerifiedTracks } from "./musicService";
@@ -407,10 +411,10 @@ export async function createRoom(
  */
 export async function getRoom(code: string, activePlayerId?: string): Promise<RoomState | null> {
   const upperCode = code.toUpperCase().trim();
-  let room = rooms.get(upperCode) || null;
+  let room: RoomState | null = null;
 
-  // If not found in memory, check Upstash Redis
-  if (!room && redis) {
+  // 100% Upstash Redis first when configured (zero stale memory reads in serverless)
+  if (redis) {
     try {
       const remote = await redis.get<RoomState>(`${ROOM_KEY_PREFIX}${upperCode}`);
       if (remote) {
@@ -420,6 +424,11 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
     } catch (err) {
       console.error(`[Upstash Redis] Error retrieving room ${upperCode}:`, err);
     }
+  }
+
+  // Fallback to local memory ONLY if Redis is not configured or failed to connect
+  if (!room) {
+    room = rooms.get(upperCode) || null;
   }
 
   if (!room) return null;
@@ -523,7 +532,7 @@ export function checkRoomStateProgression(room: RoomState): boolean {
     if (now >= endsAt || allAnswered) {
       room.status = "round_reveal";
       room.revealStartTime = now;
-      room.revealEndsAt = now + 4000;
+      room.revealEndsAt = now + 3500;
       room.roundStartTime = 0;
       room.roundEndsAt = undefined;
 
@@ -543,10 +552,10 @@ export function checkRoomStateProgression(room: RoomState): boolean {
     }
   }
 
-  // 3. ROUND_REVEAL -> NEXT ROUND or FINISHED (when now >= revealEndsAt)
+  // 3. ROUND_REVEAL -> NEXT ROUND or FINISHED (when now >= revealEndsAt, at least 3.5s)
   if (room.status === "round_reveal") {
-    const endsAt = room.revealEndsAt || (room.revealStartTime ? room.revealStartTime + 4000 : now);
-    if (now >= endsAt) {
+    const endsAt = room.revealEndsAt || (room.revealStartTime ? room.revealStartTime + 3500 : undefined);
+    if (endsAt && now >= endsAt) {
       room.revealStartTime = undefined;
       room.revealEndsAt = undefined;
 
@@ -898,13 +907,9 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
   if (!room) return { success: false, error: "Sala no encontrada." };
   if (room.hostId !== hostId) return { success: false, error: "Solo el anfitrión puede iniciar la partida." };
 
-  // If already in countdown or playing, return current room state idempotently
-  if (room.status === "countdown" || room.status === "playing" || room.status === "round_reveal") {
-    return { success: true, room };
-  }
-
+  // If already active or started, return current room state idempotently without resetting
   if (room.status !== "lobby") {
-    return { success: false, error: "La sala no se encuentra en el lobby." };
+    return { success: true, room };
   }
 
   // DEMOCRATIC VOTING MODE: Launch 10-second live voting phase
@@ -1206,25 +1211,32 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
 
 /**
  * Submits an answer for a player.
+ * Immediately saves answer to Redis. When all online players answer, transitions
+ * to round_reveal for 3.5s without jumping to the next question.
  */
 export async function submitPlayerAnswer(
-  room: RoomState,
+  roomOrCode: RoomState | string,
   playerId: string,
   optionIndex: number,
   timeMs: number,
   guessedFriendId?: string
-): Promise<{ success: boolean; pointsEarned: number; isCorrect: boolean }> {
-  if (room.status !== "playing") {
+): Promise<{ success: boolean; pointsEarned: number; isCorrect: boolean; room?: RoomState }> {
+  const room = typeof roomOrCode === "string" ? await getRoom(roomOrCode) : roomOrCode;
+  if (!room) {
     return { success: false, pointsEarned: 0, isCorrect: false };
+  }
+
+  if (room.status !== "playing") {
+    return { success: false, pointsEarned: 0, isCorrect: false, room };
   }
 
   const player = room.players.find((p) => p.id === playerId);
   if (!player || player.currentAnswer !== null) {
-    return { success: false, pointsEarned: 0, isCorrect: false };
+    return { success: false, pointsEarned: 0, isCorrect: false, room };
   }
 
   const round = room.rounds[room.currentRound - 1];
-  if (!round) return { success: false, pointsEarned: 0, isCorrect: false };
+  if (!round) return { success: false, pointsEarned: 0, isCorrect: false, room };
 
   const isCorrect = optionIndex === round.correctIndex;
   let points = 0;
@@ -1267,11 +1279,66 @@ export async function submitPlayerAnswer(
     guessedFriendId,
   };
 
-  // Check if all active players have answered to immediately transition to round_reveal
-  checkRoomStateProgression(room);
+  // Check if all active online players have answered:
+  // If so, transition to round_reveal for 3.5s.
+  // DO NOT jump to next round immediately!
+  const activePlayers = room.players.filter((p) => p.isOnline);
+  const allAnswered =
+    activePlayers.length > 0 &&
+    activePlayers.every((p) => p.currentAnswer !== null);
+
+  if (allAnswered) {
+    const now = Date.now();
+    room.status = "round_reveal";
+    room.revealStartTime = now;
+    room.revealEndsAt = now + 3500;
+    room.roundStartTime = 0;
+    room.roundEndsAt = undefined;
+  }
 
   await saveRoom(room);
-  return { success: true, pointsEarned: points, isCorrect };
+  return { success: true, pointsEarned: points, isCorrect, room };
+}
+
+/**
+ * Authoritatively advances the room to the next round or finishes the game.
+ * Uses expectedRoundIndex for strict idempotency across multiple simultaneous calls.
+ */
+export async function advanceRoomRound(
+  code: string,
+  playerId: string,
+  expectedRoundIndex: number
+): Promise<{ success: boolean; room?: RoomState }> {
+  const room = await getRoom(code);
+  if (!room) return { success: false };
+
+  // Idempotency: only advance if currently revealing that specific round
+  if (room.status !== "round_reveal") {
+    return { success: true, room };
+  }
+
+  if (room.currentRound !== expectedRoundIndex) {
+    return { success: true, room };
+  }
+
+  const now = Date.now();
+  room.revealStartTime = undefined;
+  room.revealEndsAt = undefined;
+
+  if (room.currentRound < room.rounds.length) {
+    room.currentRound += 1;
+    room.status = "playing";
+    room.roundStartTime = now;
+    room.roundEndsAt = now + (room.roundDuration || 15) * 1000;
+    room.players.forEach((p) => {
+      p.currentAnswer = null;
+    });
+  } else {
+    room.status = "finished";
+  }
+
+  await saveRoom(room);
+  return { success: true, room };
 }
 
 /**
