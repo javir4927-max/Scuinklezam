@@ -238,18 +238,29 @@ export const DEMOCRATIC_VOTING_CATALOG = [
   },
 ];
 
+/**
+ * True Fisher-Yates (Knuth) shuffle algorithm for uniform, unbiased random ordering
+ */
+export function fisherYatesShuffle<T>(array: T[]): T[] {
+  const arr = [...array];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 export function buildRoundsFromTracks(tracks: SpotifyTrackItem[], totalRounds: number): RoundData[] {
   const valid = tracks.filter((t) => t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl);
   const catalog = valid.length >= 4 ? valid : FALLBACK_SPOTIFY_TRACKS;
-  const shuffled = [...catalog].sort(() => 0.5 - Math.random());
+  const shuffled = fisherYatesShuffle(catalog);
   const count = Math.min(totalRounds, shuffled.length);
   const rounds: RoundData[] = [];
 
   for (let i = 0; i < count; i++) {
     const target = shuffled[i];
     const others = shuffled.filter((t) => t.id !== target.id);
-    const distractors: RoundOption[] = others
-      .sort(() => 0.5 - Math.random())
+    const distractors: RoundOption[] = fisherYatesShuffle(others)
       .slice(0, 3)
       .map((t) => ({
         title: t.title,
@@ -263,7 +274,7 @@ export function buildRoundsFromTracks(tracks: SpotifyTrackItem[], totalRounds: n
       artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
     };
 
-    const options: RoundOption[] = [correctOption, ...distractors].sort(() => 0.5 - Math.random());
+    const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractors]);
     const correctIndex = options.findIndex((o) => o.title === correctOption.title && o.artist === correctOption.artist);
 
     rounds.push({
@@ -668,7 +679,7 @@ export async function joinRoom(
     room.players[existingIndex].isOnline = true;
     room.players[existingIndex].lastSeen = Date.now();
     if (playerData.favoriteArtists && playerData.favoriteArtists.length > 0) {
-      room.players[existingIndex].favoriteArtists = playerData.favoriteArtists.slice(0, 10);
+      room.players[existingIndex].favoriteArtists = playerData.favoriteArtists.slice(0, 5);
     }
   } else {
     // New player
@@ -687,7 +698,7 @@ export async function joinRoom(
       lastSeen: Date.now(),
       favoriteArtists:
         playerData.favoriteArtists && playerData.favoriteArtists.length > 0
-          ? playerData.favoriteArtists.slice(0, 10)
+          ? playerData.favoriteArtists.slice(0, 5)
           : [],
       spotifyConnected: !!playerData.spotifyConnected,
       score: 0,
@@ -756,7 +767,7 @@ export async function updatePlayerTaste(code: string, playerId: string, favorite
   const player = room.players.find((p) => p.id === playerId);
   if (!player) return false;
 
-  player.favoriteArtists = favoriteArtists.filter((a) => a.trim().length > 0).slice(0, 10);
+  player.favoriteArtists = favoriteArtists.filter((a) => a.trim().length > 0).slice(0, 5);
   await saveRoom(room);
   return true;
 }
@@ -786,9 +797,9 @@ export async function injectSpotifyTracksToRoom(
   player.injectedTracks = validTracks;
 
   if (artists && artists.length > 0) {
-    player.favoriteArtists = artists.filter((a) => a.trim().length > 0).slice(0, 10);
+    player.favoriteArtists = artists.filter((a) => a.trim().length > 0).slice(0, 5);
   } else if (validTracks.length > 0) {
-    const extracted = Array.from(new Set(validTracks.map((t) => t.artist.split(",")[0].trim()).filter(Boolean))).slice(0, 10);
+    const extracted = Array.from(new Set(validTracks.map((t) => t.artist.split(",")[0].trim()).filter(Boolean))).slice(0, 5);
     if (extracted.length > 0) {
       player.favoriteArtists = extracted;
     }
@@ -1016,7 +1027,7 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
 
   // DEMOCRATIC VOTING MODE: Launch 10-second live voting phase
   if (room.gameMode === "vote") {
-    const shuffledCatalog = [...DEMOCRATIC_VOTING_CATALOG].sort(() => 0.5 - Math.random());
+    const shuffledCatalog = fisherYatesShuffle(DEMOCRATIC_VOTING_CATALOG);
     const candidates: VotingCandidate[] = shuffledCatalog.slice(0, 4).map((c) => ({
       id: c.id,
       name: c.name,
@@ -1070,12 +1081,13 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
 
   const pool: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
 
-  // 1. Gather tracks from room's imported playlists
+  // 1. Gather tracks from room's imported playlists (Fisher-Yates shuffled)
   const playlistItems: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
   if (room.playlists && room.playlists.length > 0) {
     for (const pl of room.playlists) {
       if (pl.tracks && pl.tracks.length > 0) {
-        pl.tracks.forEach((track) => {
+        const shuffledTracks = fisherYatesShuffle(pl.tracks);
+        shuffledTracks.forEach((track) => {
           let art = track.artworkUrl;
           if (!art || (pl.imageUrl && art === pl.imageUrl)) {
             art = getFallbackArtwork(track.title, track.artist);
@@ -1101,7 +1113,7 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
 
   // 2. Build song pool based on Game Mode
   if (room.gameMode === "blend" || room.gameMode === "who_listens") {
-    // Collect player injected tracks
+    // Collect player injected tracks (Fisher-Yates shuffled)
     for (const player of room.players) {
       if (player.injectedTracks && player.injectedTracks.length > 0) {
         const validInjected = player.injectedTracks
@@ -1109,19 +1121,19 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
           .map((track) => ({ track, playerId: player.id, playerName: player.name }));
 
         if (validInjected.length > 0) {
-          injectedByPlayer.set(player.id, [...validInjected].sort(() => 0.5 - Math.random()));
+          injectedByPlayer.set(player.id, fisherYatesShuffle(validInjected));
           validInjected.forEach((item) => pool.push(item));
         }
       }
     }
 
-    // Collect all unique artists across players (up to 10 per player)
+    // Collect all unique artists across players (up to 5 per player)
     const allArtistsWithPlayers: Array<{ artist: string; playerId: string; playerName: string }> = [];
     const seenArtistNames = new Set<string>();
 
     for (const player of room.players) {
       if (player.favoriteArtists && player.favoriteArtists.length > 0) {
-        for (const art of player.favoriteArtists) {
+        for (const art of player.favoriteArtists.slice(0, 5)) {
           const clean = art.trim();
           if (clean && !seenArtistNames.has(clean.toLowerCase())) {
             seenArtistNames.add(clean.toLowerCase());
@@ -1145,7 +1157,7 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
 
       for (const res of artistResults) {
         if (res.items.length > 0) {
-          artistBuckets.set(res.artist, [...res.items].sort(() => 0.5 - Math.random()));
+          artistBuckets.set(res.artist, fisherYatesShuffle(res.items));
           res.items.forEach((item) => pool.push(item));
         }
       }
@@ -1235,7 +1247,7 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
   }
 
   // If still under totalRounds, fill from remainder of pool (playlists or hits)
-  const remainderShuffled = [...validUniquePool].sort(() => 0.5 - Math.random());
+  const remainderShuffled = fisherYatesShuffle(validUniquePool);
   for (const item of remainderShuffled) {
     if (selectedTargets.length >= room.totalRounds) break;
     if (!selectedTargetIds.has(item.track.id)) {
@@ -1244,12 +1256,15 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
     }
   }
 
+  // True Fisher-Yates shuffle across target tracks so round progression is 100% unpredictable
+  const randomizedTargets = fisherYatesShuffle(selectedTargets);
+
   // Assemble rounds
-  const roundsToGenerate = Math.min(room.totalRounds, selectedTargets.length);
+  const roundsToGenerate = Math.min(room.totalRounds, randomizedTargets.length);
   const rounds: RoundData[] = [];
 
   for (let i = 0; i < roundsToGenerate; i++) {
-    const item = selectedTargets[i];
+    const item = randomizedTargets[i];
     const target = item.track;
 
     // Distractors from other tracks in validUniquePool
@@ -1258,7 +1273,7 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
         u.track.id !== target.id &&
         u.track.title.toLowerCase().trim() !== target.title.toLowerCase().trim()
     );
-    const shuffledOthers = [...otherTracks].sort(() => 0.5 - Math.random()).slice(0, 3);
+    const shuffledOthers = fisherYatesShuffle(otherTracks).slice(0, 3);
 
     const correctOption: RoundOption = {
       title: target.title,
@@ -1272,8 +1287,8 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
       artworkUrl: o.track.artworkUrl || getFallbackArtwork(o.track.title, o.track.artist),
     }));
 
-    // Merge & shuffle options
-    const options: RoundOption[] = [correctOption, ...distractorOptions].sort(() => 0.5 - Math.random());
+    // Merge & shuffle options with Fisher-Yates
+    const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractorOptions]);
     const correctIndex = options.findIndex(
       (opt) => opt.title === correctOption.title && opt.artist === correctOption.artist
     );

@@ -40,6 +40,7 @@ import {
   Copy,
   Pencil,
   Loader2,
+  BarChart3,
 } from "lucide-react";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
 import type { RoomState, Player, GameMode, GuessType, RoundOption } from "@/lib/roomStore";
@@ -92,6 +93,7 @@ function normalizeRoundOption(opt: RoundOption | string): RoundOption {
   };
 }
 import SpotifyConnectModal from "@/components/SpotifyConnectModal";
+import SpotifyStatsDetailModal from "@/components/SpotifyStatsDetailModal";
 import Navbar from "@/components/Navbar";
 import { PRELOADED_ARTIST_PHOTOS } from "@/lib/artistPhotosCatalog";
 import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
@@ -202,6 +204,7 @@ function PlayArenaContent() {
   const [showInviteModal, setShowInviteModal] = useState<boolean>(false);
   const [showTasteModal, setShowTasteModal] = useState<boolean>(false);
   const [showSpotifyModal, setShowSpotifyModal] = useState<boolean>(false);
+  const [showStatsDetailModal, setShowStatsDetailModal] = useState<boolean>(false);
   const [loadingSpotifyMode, setLoadingSpotifyMode] = useState<string | null>(null);
   const [spotifyModeNotice, setSpotifyModeNotice] = useState<{ type: "success" | "warning"; message: string } | null>(null);
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
@@ -370,10 +373,11 @@ function PlayArenaContent() {
   ) => {
     if (!roomCode || !playerId) return;
     try {
-      const topArtists =
+      const topArtists = (
         artists && artists.length > 0
           ? artists
-          : Array.from(new Set(tracks.map((t) => t.artist.split(",")[0].trim()).filter(Boolean))).slice(0, 10);
+          : Array.from(new Set(tracks.map((t) => t.artist.split(",")[0].trim()).filter(Boolean)))
+      ).slice(0, 5);
 
       const res = await fetch(`/api/rooms/${roomCode}`, {
         method: "PATCH",
@@ -1000,7 +1004,7 @@ function PlayArenaContent() {
   const handleAddArtistName = async (artistName: string) => {
     if (!room || !artistName.trim()) return;
     const me = room.players.find((p) => p.id === playerId);
-    const updated = [...(me?.favoriteArtists || []), artistName.trim()].slice(0, 10);
+    const updated = [...(me?.favoriteArtists || []), artistName.trim()].slice(0, 5);
 
     try {
       const res = await fetch(`/api/rooms/${roomCode}`, {
@@ -1770,10 +1774,11 @@ function PlayArenaContent() {
                         </div>
 
                         <button
-                          onClick={() => setShowSpotifyModal(true)}
-                          className="text-[11px] text-zinc-400 hover:text-white underline cursor-pointer"
+                          onClick={() => setShowStatsDetailModal(true)}
+                          className="bg-zinc-800/90 hover:bg-zinc-700 text-zinc-100 border border-white/10 rounded-lg px-3.5 py-1.5 text-xs font-medium transition flex items-center gap-1.5 shrink-0 cursor-pointer"
                         >
-                          Ver Stats
+                          <BarChart3 className="w-3.5 h-3.5 text-zinc-400" />
+                          <span>Ver stats a detalle</span>
                         </button>
                       </div>
 
@@ -1890,7 +1895,7 @@ function PlayArenaContent() {
                             <div className="font-bold text-[11px] text-white group-hover:text-goblinLime transition truncate">
                               Tus Artistas Favoritos
                             </div>
-                            <div className="text-[9px] text-zinc-400">Canciones de tus top 10 artistas</div>
+                            <div className="text-[9px] text-zinc-400">Canciones de tus top 5 artistas</div>
                           </div>
                         </button>
 
@@ -1954,12 +1959,12 @@ function PlayArenaContent() {
                     <div className="flex items-center justify-between text-xs font-bold">
                       <span className="text-zinc-300">Tus Artistas Favoritos (Manual)</span>
                       <span className="text-goblinLime">
-                        {currentMe?.favoriteArtists.length || 0}/10 añadidos
+                        {Math.min(5, currentMe?.favoriteArtists.length || 0)}/5 añadidos
                       </span>
                     </div>
 
                     <div className="flex flex-wrap gap-2">
-                      {currentMe?.favoriteArtists.map((artist, idx) => {
+                      {currentMe?.favoriteArtists.slice(0, 5).map((artist, idx) => {
                         const photo =
                           PRELOADED_ARTIST_PHOTOS[artist.toLowerCase()] ||
                           `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(artist)}&backgroundColor=0B1710`;
@@ -1999,7 +2004,7 @@ function PlayArenaContent() {
                       })}
                     </div>
 
-                    {(currentMe?.favoriteArtists.length || 0) < 10 && (
+                    {(currentMe?.favoriteArtists.length || 0) < 5 && (
                       <div ref={suggestionsRef} className="relative">
                         <div className="flex gap-2">
                           <div className="relative flex-1">
@@ -3225,6 +3230,13 @@ function PlayArenaContent() {
         onPlayPlaylist={(tracks, playlistName, artists) => {
           handleInjectSpotifyTracks(tracks, playlistName, artists);
         }}
+      />
+
+      {/* SPOTIFY DETAIL STATS MODAL (#1 - #50) */}
+      <SpotifyStatsDetailModal
+        isOpen={showStatsDetailModal}
+        onClose={() => setShowStatsDetailModal(false)}
+        userDisplayName={spotifyAuthUser?.displayName}
       />
     </div>
   );
