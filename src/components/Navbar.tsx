@@ -6,6 +6,7 @@ import { Users, Trophy, Play, ChevronDown, BarChart2, Flame, LogOut, Menu, X, Mu
 import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
 import GlobalVolumeControl from "@/components/GlobalVolumeControl";
 import SpotifyStatsDetailModal from "@/components/SpotifyStatsDetailModal";
+import SpotifyConnectModal from "@/components/SpotifyConnectModal";
 
 interface NavbarProps {
   onOpenMiniQuiz?: (topic?: string) => void;
@@ -25,6 +26,7 @@ export default function Navbar({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [showStatsDetailModal, setShowStatsDetailModal] = useState(false);
+  const [spotifyModalOpen, setSpotifyModalOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
   const { isConnected, user, logout } = useSpotifyAuth();
@@ -178,6 +180,22 @@ export default function Navbar({
                     <User className="w-4 h-4 text-goblinLime shrink-0" />
                     <span>Mi Perfil y Récords</span>
                   </Link>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUserMenuOpen(false);
+                      if (onOpenSpotifyModal) {
+                        onOpenSpotifyModal();
+                      } else {
+                        setSpotifyModalOpen(true);
+                      }
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-zinc-200 hover:text-white hover:bg-emerald-950/60 flex items-center gap-2.5 transition cursor-pointer"
+                  >
+                    <BarChart2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>Ver mis Stats de Spotify</span>
+                  </button>
 
                   {/* Botón Ver stats a detalle (Reutilizado del multiplayer) */}
                   <div className="py-0.5">
@@ -375,6 +393,12 @@ export default function Navbar({
         isOpen={showStatsDetailModal}
         onClose={() => setShowStatsDetailModal(false)}
         userDisplayName={user?.displayName}
+      />
+
+      {/* MODAL CONEXIÓN Y STATS SPOTIFY */}
+      <SpotifyConnectModal
+        isOpen={spotifyModalOpen}
+        onClose={() => setSpotifyModalOpen(false)}
       />
     </header>
   );

@@ -1,9 +1,10 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Flame, Trophy, Clock, FolderHeart, Link2, AlertTriangle, Gamepad2, FlaskConical, Settings, Heart, Sparkles, Loader2, Check } from "lucide-react";
+import { Flame, Trophy, Clock, FolderHeart, Link2, AlertTriangle, Gamepad2, FlaskConical, Settings, Heart, Sparkles, Loader2, Check, BarChart3 } from "lucide-react";
 import { SpotifyTrackItem, SpotifyPlaylistItem } from "@/lib/spotifyTypes";
 import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
+import SpotifyStatsDetailModal from "@/components/SpotifyStatsDetailModal";
 
 interface SpotifyConnectModalProps {
   isOpen: boolean;
@@ -19,6 +20,7 @@ export default function SpotifyConnectModal({
   onInjectTracks,
 }: SpotifyConnectModalProps) {
   const { isConnected, user, stats, playlists, isLoading, logout } = useSpotifyAuth();
+  const [showStatsDetailModal, setShowStatsDetailModal] = useState<boolean>(false);
 
   // Public playlist import state
   const [urlInput, setUrlInput] = useState<string>("");
@@ -287,12 +289,23 @@ export default function SpotifyConnectModal({
                 </div>
               </div>
 
-              <button
-                onClick={() => logout()}
-                className="text-xs text-zinc-400 hover:text-red-400 font-semibold transition"
-              >
-                Cerrar sesión
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowStatsDetailModal(true)}
+                  className="bg-zinc-800/90 hover:bg-zinc-700 text-zinc-100 border border-white/10 rounded-lg px-3.5 py-1.5 text-xs font-medium transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-sm"
+                >
+                  <BarChart3 className="w-3.5 h-3.5 text-zinc-400" />
+                  <span>Ver stats a detalle</span>
+                </button>
+
+                <button
+                  onClick={() => logout()}
+                  className="text-xs text-zinc-400 hover:text-red-400 font-semibold transition px-2 py-1"
+                >
+                  Cerrar sesión
+                </button>
+              </div>
             </div>
 
             {/* Top 5 Artists Carousel / Avatars */}
@@ -637,6 +650,13 @@ export default function SpotifyConnectModal({
           )}
         </div>
       </div>
+
+      {/* DETAIL STATS MODAL (#1 - #50) */}
+      <SpotifyStatsDetailModal
+        isOpen={showStatsDetailModal}
+        onClose={() => setShowStatsDetailModal(false)}
+        userDisplayName={user?.displayName}
+      />
     </div>
   );
 }
