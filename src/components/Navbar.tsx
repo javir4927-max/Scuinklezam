@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { Users, Trophy, Play, ChevronDown, BarChart2, Flame, LogOut, Menu, X, Music2, User } from "lucide-react";
 import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
+import GlobalVolumeControl from "@/components/GlobalVolumeControl";
 
 interface NavbarProps {
   onOpenMiniQuiz?: (topic?: string) => void;
@@ -241,10 +242,14 @@ export default function Navbar({
           >
             Jugar Ahora
           </Link>
+
+          {/* Global Premium Volume Control */}
+          <GlobalVolumeControl />
         </div>
 
         {/* Menú Móvil Button (lg:hidden) */}
         <div className="flex items-center gap-2 lg:hidden">
+          <GlobalVolumeControl compact />
           <Link
             href="/play"
             className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gradient-to-r from-emerald-500 to-lime-500 text-zinc-950 shadow-sm"

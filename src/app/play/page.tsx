@@ -241,8 +241,6 @@ function PlayArenaContent() {
     key: number;
   } | null>(null);
   const scorePopupTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const [volume, setVolume] = useState<number>(0.25);
-  const [audioMuted, setAudioMuted] = useState<boolean>(false);
   const [isAudioBlocked, setIsAudioBlocked] = useState<boolean>(false);
   const [savedTrackIds, setSavedTrackIds] = useState<Set<string>>(new Set());
   const [savingAll, setSavingAll] = useState<boolean>(false);
@@ -259,35 +257,6 @@ function PlayArenaContent() {
     });
     return () => unsub();
   }, []);
-
-  // Initialize volume from localStorage if available
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem("scuinklezam_volume");
-      if (saved !== null) {
-        const parsed = parseFloat(saved);
-        if (!isNaN(parsed) && parsed >= 0 && parsed <= 1) {
-          setVolume(parsed);
-          audioPlayer.setVolume(parsed);
-          return;
-        }
-      }
-      audioPlayer.setVolume(0.25);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  // Synchronize audio volume when muted or volume changes, and persist to localStorage
-  useEffect(() => {
-    const effective = audioMuted ? 0 : volume;
-    audioPlayer.setVolume(effective);
-    try {
-      localStorage.setItem("scuinklezam_volume", volume.toString());
-    } catch {
-      // ignore
-    }
-  }, [audioMuted, volume]);
 
   // Artist Autocomplete Debounce (250ms)
   useEffect(() => {
@@ -600,7 +569,7 @@ function PlayArenaContent() {
 
     prevStatusRef.current = room.status;
     prevRoundRef.current = room.currentRound;
-  }, [room?.status, room?.currentRound, audioMuted, playerId]);
+  }, [room?.status, room?.currentRound, playerId]);
 
   // 5. Cleanup Audio on unmount
   useEffect(() => {
@@ -1282,55 +1251,16 @@ function PlayArenaContent() {
         activeRoute="play"
         onOpenSpotifyModal={() => setShowSpotifyModal(true)}
         rightSlot={
-          <div className="flex items-center gap-2">
-            {/* Sound Volume Capsule */}
-            <div className="bg-zinc-900/80 backdrop-blur-md border border-white/10 rounded-full px-2.5 py-1 flex items-center gap-2">
-              <button
-                onClick={() => setAudioMuted(!audioMuted)}
-                className="text-zinc-300 hover:text-white transition flex items-center justify-center cursor-pointer"
-                title={audioMuted ? "Activar audio" : "Silenciar audio"}
-              >
-                {audioMuted || volume === 0 ? (
-                  <VolumeX className="w-3.5 h-3.5 text-zinc-400" />
-                ) : volume < 0.5 ? (
-                  <Volume1 className="w-3.5 h-3.5 text-emerald-400" />
-                ) : (
-                  <Volume2 className="w-3.5 h-3.5 text-goblinLime" />
-                )}
-              </button>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={audioMuted ? 0 : volume}
-                onChange={(e) => {
-                  const val = parseFloat(e.target.value);
-                  setVolume(val);
-                  if (audioMuted) {
-                    setAudioMuted(false);
-                  }
-                  audioPlayer.setVolume(val);
-                }}
-                className="accent-emerald-500 cursor-pointer w-16 sm:w-20 h-1.5 bg-zinc-700 rounded-lg appearance-none"
-                title="Volumen del juego"
-              />
-              <span className="text-[10px] font-mono text-zinc-300 min-w-[24px] text-right select-none">
-                {Math.round((audioMuted ? 0 : volume) * 100)}%
+          room ? (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/80 border border-emerald-500/30">
+              <span className="font-mono font-black text-goblinLime text-xs tracking-wider">
+                {room.code}
+              </span>
+              <span className="text-xs text-zinc-400 hidden xl:inline truncate max-w-[120px]">
+                {room.name}
               </span>
             </div>
-
-            {room && (
-              <div className="flex items-center gap-1.5 pl-2 border-l border-emerald-500/20">
-                <span className="font-mono font-black text-goblinLime bg-emerald-950/80 px-2 py-0.5 rounded-lg border border-emerald-500/30 text-xs tracking-wider">
-                  {room.code}
-                </span>
-                <span className="text-xs text-zinc-400 hidden xl:inline truncate max-w-[120px]">
-                  {room.name}
-                </span>
-              </div>
-            )}
-          </div>
+          ) : undefined
         }
       />
 

@@ -3,6 +3,8 @@
 // Web Audio API subtle arcade feedback sound generator
 // Synthesized in-browser without external mp3 files
 
+import { getEffectiveVolume } from "./globalVolume";
+
 let audioCtx: AudioContext | null = null;
 
 function getAudioContext(): AudioContext | null {
@@ -24,12 +26,16 @@ function getAudioContext(): AudioContext | null {
  * 523.25 Hz (Do5) -> 659.25 Hz (Mi5) en onda sine/triangle, gain ~ 0.07, duración ~140ms
  */
 export function playCorrectSound(customVolume: number = 0.07): void {
+  const effectiveVol = getEffectiveVolume();
+  if (effectiveVol <= 0) return; // Muted
+
   const ctx = getAudioContext();
   if (!ctx) return;
 
+  const scaledVolume = customVolume * (effectiveVol / 0.25);
   const now = ctx.currentTime;
   const masterGain = ctx.createGain();
-  masterGain.gain.setValueAtTime(customVolume, now);
+  masterGain.gain.setValueAtTime(scaledVolume, now);
   masterGain.connect(ctx.destination);
 
   // Tone 1: 523.25 Hz (Do5)
@@ -63,12 +69,16 @@ export function playCorrectSound(customVolume: number = 0.07): void {
  * 180 Hz -> 130 Hz en onda triangle, gain ~ 0.06, duración ~160ms con caída rápida
  */
 export function playWrongSound(customVolume: number = 0.06): void {
+  const effectiveVol = getEffectiveVolume();
+  if (effectiveVol <= 0) return; // Muted
+
   const ctx = getAudioContext();
   if (!ctx) return;
 
+  const scaledVolume = customVolume * (effectiveVol / 0.25);
   const now = ctx.currentTime;
   const masterGain = ctx.createGain();
-  masterGain.gain.setValueAtTime(customVolume, now);
+  masterGain.gain.setValueAtTime(scaledVolume, now);
   masterGain.connect(ctx.destination);
 
   const osc = ctx.createOscillator();

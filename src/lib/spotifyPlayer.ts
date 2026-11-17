@@ -1,6 +1,7 @@
 "use client";
 
 import { SpotifyTrackItem } from "./spotifyTypes";
+import { getEffectiveVolume } from "./globalVolume";
 
 declare global {
   interface Window {
@@ -20,8 +21,15 @@ class SpotifyPlayerController {
 
   constructor() {
     if (typeof window !== "undefined") {
+      this.currentVolume = getEffectiveVolume();
       this.audioEl = new Audio();
       this.audioEl.volume = this.currentVolume;
+
+      window.addEventListener("scuinklezam_volume_change", (e: any) => {
+        if (e?.detail) {
+          this.setVolume(e.detail.volume);
+        }
+      });
     }
   }
 

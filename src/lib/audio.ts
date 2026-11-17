@@ -1,4 +1,5 @@
 // Web Audio API Synthesizer Helper
+import { getEffectiveVolume } from "./globalVolume";
 
 let audioCtx: AudioContext | null = null;
 
@@ -17,17 +18,21 @@ function getAudioContext(): AudioContext | null {
 }
 
 export function playSynthNote(freq: number, duration: number = 0.35, gainValue: number = 0.12) {
+  const effectiveVol = getEffectiveVolume();
+  if (effectiveVol <= 0) return; // Muted
+
   try {
     const ctx = getAudioContext();
     if (!ctx) return;
 
+    const scaledGain = gainValue * (effectiveVol / 0.25);
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
 
     osc.type = "triangle";
     osc.frequency.setValueAtTime(freq, ctx.currentTime);
 
-    gain.gain.setValueAtTime(gainValue, ctx.currentTime);
+    gain.gain.setValueAtTime(scaledGain, ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
 
     osc.connect(gain);

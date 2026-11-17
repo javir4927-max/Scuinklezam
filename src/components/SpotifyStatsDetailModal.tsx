@@ -14,6 +14,7 @@ import {
   Volume2,
 } from "lucide-react";
 import { SpotifyTrackItem } from "@/lib/spotifyTypes";
+import { getEffectiveVolume } from "@/lib/globalVolume";
 
 interface ArtistStatItem {
   id: string;
@@ -65,6 +66,17 @@ export default function SpotifyStatsDetailModal({
       stopAudio();
     }
   }, [isOpen]);
+
+  // Synchronize audio element volume with global volume changes
+  useEffect(() => {
+    const handleVolume = (e: any) => {
+      if (audioRef.current && e?.detail) {
+        audioRef.current.volume = Math.max(0, Math.min(1, e.detail.volume));
+      }
+    };
+    window.addEventListener("scuinklezam_volume_change", handleVolume);
+    return () => window.removeEventListener("scuinklezam_volume_change", handleVolume);
+  }, []);
 
   // Fetch stats when tab or range changes
   useEffect(() => {
@@ -129,7 +141,7 @@ export default function SpotifyStatsDetailModal({
 
     try {
       const audio = new Audio(track.previewUrl);
-      audio.volume = 0.5;
+      audio.volume = getEffectiveVolume();
       audio.onended = () => {
         setPlayingTrackId(null);
       };
