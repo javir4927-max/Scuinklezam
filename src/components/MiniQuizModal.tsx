@@ -1,8 +1,9 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Play, Volume2, Timer, Sparkles, Heart, ExternalLink, Crown, Check, X, Music2 } from "lucide-react";
+import { Play, Pause, Volume2, Timer, Sparkles, Heart, ExternalLink, Crown, Check, X, Music2 } from "lucide-react";
 import { playSynthNote } from "@/lib/audio";
+import { playCorrectSound, playWrongSound } from "@/lib/soundEffects";
 import { audioPlayer, AudioPlayerState } from "@/lib/audioPlayer";
 import { SpotifyTrackItem, FALLBACK_SPOTIFY_TRACKS, getFallbackArtwork } from "@/lib/spotifyTypes";
 
@@ -53,6 +54,10 @@ export default function MiniQuizModal({
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [savedFeedback, setSavedFeedback] = useState<string | null>(null);
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+  const [answersHistory, setAnswersHistory] = useState<
+    Array<{ track: SpotifyTrackItem; isCorrect: boolean; points: number }>
+  >([]);
+  const [playingPreviewUrl, setPlayingPreviewUrl] = useState<string | null>(null);
   const [scorePopup, setScorePopup] = useState<{
     points: number;
     isCorrect: boolean;
@@ -85,14 +90,14 @@ export default function MiniQuizModal({
     onClose();
   }, [onClose]);
 
-  // Build 5 structured quiz rounds from a validated pool
+  // Build 10 structured quiz rounds from a validated pool
   const buildRounds = useCallback((pool: SpotifyTrackItem[]) => {
     const validPool = pool.filter(
       (t) => t.previewUrl && t.previewUrl.startsWith("http")
     );
     const catalog = validPool.length >= 4 ? validPool : FALLBACK_SPOTIFY_TRACKS;
     const shuffled = [...catalog].sort(() => 0.5 - Math.random());
-    const count = Math.min(5, shuffled.length);
+    const count = Math.min(10, shuffled.length);
     const generated: QuizRoundData[] = [];
 
     for (let i = 0; i < count; i++) {
@@ -135,6 +140,8 @@ export default function MiniQuizModal({
     setTimeLeft(15);
     setIsFinished(false);
     setScore(0);
+    setAnswersHistory([]);
+    setPlayingPreviewUrl(null);
     setIsLoading(false);
     setFailedImages({});
 
@@ -226,14 +233,23 @@ export default function MiniQuizModal({
       setAnsweredIdx(idx);
 
       const isCorrect = idx === currentRound.correctIndex;
-      const pointsEarned = isCorrect ? Math.round(500 + (timeLeft / 15) * 500) : 0;
+      const pointsEarned = isCorrect ? Math.max(25, Math.round(100 * (timeLeft / 15))) : 0;
 
       if (isCorrect) {
         setScore((prev) => prev + pointsEarned);
-        playSynthNote(659.25, 0.35);
+        playCorrectSound();
       } else {
-        playSynthNote(196.0, 0.35);
+        playWrongSound();
       }
+
+      setAnswersHistory((prev) => [
+        ...prev,
+        {
+          track: currentRound.correctTrack,
+          isCorrect,
+          points: pointsEarned,
+        },
+      ]);
 
       // Trigger floating arcade score animation (+X pts / 0 puntos)
       if (scorePopupTimerRef.current) clearTimeout(scorePopupTimerRef.current);
@@ -607,29 +623,107 @@ export default function MiniQuizModal({
           </>
         )}
 
-        {/* Finished Screen */}
+        {/* Finished Screen with Songs Breakdown */}
         {!isLoading && isFinished && (
-          <div className="text-center py-6 space-y-4">
-            <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-goblinPrimary to-goblinLime flex items-center justify-center font-bold text-2xl text-black mx-auto shadow-lg shadow-emerald-500/30">
-              <Crown className="w-8 h-8 text-black" />
+          <div className="py-4 space-y-4">
+            <div className="text-center space-y-2">
+              <div className="w-14 h-14 rounded-full bg-gradient-to-tr from-goblinPrimary to-goblinLime flex items-center justify-center font-bold text-2xl text-black mx-auto shadow-lg shadow-emerald-500/30">
+                <Crown className="w-7 h-7 text-black" />
+              </div>
+              <div className="font-display font-black text-3xl sm:text-4xl text-goblinLime">
+                {score} <span className="text-xl sm:text-2xl text-zinc-400 font-normal">/ 1000 pts</span>
+              </div>
+              <p className="text-xs text-zinc-300">
+                ¡Completaste las 10 rondas! {answersHistory.filter((a) => a.isCorrect).length} de {answersHistory.length} acertadas
+              </p>
             </div>
-            <div className="font-display font-black text-4xl text-goblinLime">{score} pts!</div>
-            <p className="text-sm text-zinc-300 max-w-xs mx-auto">
-              ¡Completaste las 5 rondas con audio verificado! ¿Te atreves con la arena ranked multijugador?
-            </p>
-            <div className="pt-2 flex flex-col gap-2">
-              <a
-                href="/play"
-                className="w-full py-3.5 rounded-full bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime text-black font-extrabold text-sm shadow-lg shadow-emerald-500/30 hover:scale-[1.02] transition block"
-              >
-                Entrar a la Arena Ranked Gratis →
-              </a>
+
+            {/* Song Breakdown (10 canciones) */}
+            <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+              {answersHistory.map((item, idx) => {
+                const isCurrentPlaying = playingPreviewUrl === item.track.previewUrl;
+                return (
+                  <div
+                    key={idx}
+                    className="p-2.5 rounded-xl bg-black/40 border border-emerald-500/15 flex items-center justify-between gap-3"
+                  >
+                    <div
+                      className={`w-1 self-stretch -my-2.5 -ml-2.5 rounded-l-xl shrink-0 ${
+                        item.isCorrect ? "bg-emerald-400" : "bg-rose-500"
+                      }`}
+                    />
+
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1 pl-1">
+                      <img
+                        src={item.track.artworkUrl}
+                        alt={item.track.title}
+                        className="w-9 h-9 rounded-lg object-cover shrink-0 border border-emerald-500/30 bg-emerald-950"
+                      />
+                      <div className="min-w-0 text-left">
+                        <div className="font-bold text-xs text-white truncate">
+                          {item.track.title}
+                        </div>
+                        <div className="text-[10px] text-zinc-400 truncate">
+                          {item.track.artist}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span
+                        className={`text-[11px] font-mono font-bold px-2 py-0.5 rounded-full ${
+                          item.isCorrect
+                            ? "text-emerald-300 bg-emerald-950/80 border border-emerald-500/40"
+                            : "text-rose-400 bg-rose-950/80 border border-rose-500/40"
+                        }`}
+                      >
+                        {item.isCorrect ? `+${item.points} pts` : "0 pts"}
+                      </span>
+
+                      {item.track.previewUrl && (
+                        <button
+                          onClick={() => {
+                            if (isCurrentPlaying) {
+                              audioPlayer.stop();
+                              setPlayingPreviewUrl(null);
+                            } else {
+                              audioPlayer.playTrack(item.track.previewUrl);
+                              setPlayingPreviewUrl(item.track.previewUrl);
+                            }
+                          }}
+                          className={`w-7 h-7 rounded-full flex items-center justify-center transition cursor-pointer ${
+                            isCurrentPlaying
+                              ? "bg-goblinLime text-black"
+                              : "bg-white/[0.08] hover:bg-white/[0.16] text-white"
+                          }`}
+                          title={isCurrentPlaying ? "Pausar" : "Escuchar fragmento de 30s"}
+                        >
+                          {isCurrentPlaying ? (
+                            <Pause className="w-3 h-3 fill-current" />
+                          ) : (
+                            <Play className="w-3 h-3 fill-current ml-0.5" />
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="pt-2 flex flex-col sm:flex-row gap-2">
               <button
                 onClick={() => buildRounds(FALLBACK_SPOTIFY_TRACKS)}
-                className="w-full py-3 rounded-full bg-white/5 hover:bg-white/10 text-emerald-300 font-bold text-xs transition cursor-pointer"
+                className="flex-1 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-emerald-300 font-bold text-xs transition cursor-pointer"
               >
                 Jugar Mini-Quiz de Nuevo
               </button>
+              <a
+                href="/ranked"
+                className="flex-1 py-3 rounded-xl bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime text-black font-extrabold text-xs text-center shadow-lg shadow-emerald-500/30 hover:scale-[1.02] transition block"
+              >
+                Ir a la Arena Ranked (Tappz) →
+              </a>
             </div>
           </div>
         )}

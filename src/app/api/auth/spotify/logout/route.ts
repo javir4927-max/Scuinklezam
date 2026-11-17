@@ -33,6 +33,11 @@ export async function POST(request: Request) {
     maxAge: 0,
   });
 
+  response.cookies.set("spotify_user_id", "", {
+    path: "/",
+    maxAge: 0,
+  });
+
   return response;
 }
 

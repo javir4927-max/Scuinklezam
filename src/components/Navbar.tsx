@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import Link from "next/link";
-import { Users, Trophy, Play, ChevronDown, BarChart2, Flame, LogOut, Menu, X, Music2 } from "lucide-react";
+import { Users, Trophy, Play, ChevronDown, BarChart2, Flame, LogOut, Menu, X, Music2, User } from "lucide-react";
 import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
 
 interface NavbarProps {
@@ -10,7 +10,7 @@ interface NavbarProps {
   onOpenSpotifyModal?: () => void;
   onOpenAuthModal?: () => void;
   rightSlot?: React.ReactNode;
-  activeRoute?: "home" | "play" | "ranked";
+  activeRoute?: "home" | "play" | "ranked" | "perfil";
 }
 
 export default function Navbar({
@@ -110,6 +110,16 @@ export default function Navbar({
             <span>Ranked</span>
           </Link>
 
+          <Link
+            href="/perfil"
+            className={`whitespace-nowrap transition flex items-center gap-1.5 ${
+              activeRoute === "perfil" ? "text-goblinLime font-bold" : "hover:text-white"
+            }`}
+          >
+            <User className="w-3.5 h-3.5 text-goblinLime" />
+            <span>Mi Perfil</span>
+          </Link>
+
           {onOpenMiniQuiz && (
             <button
               onClick={handleQuizClick}
@@ -156,6 +166,15 @@ export default function Navbar({
                       {user.email || "Cuenta de Spotify conectada"}
                     </div>
                   </div>
+
+                  <Link
+                    href="/perfil"
+                    onClick={() => setUserMenuOpen(false)}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-goblinLime hover:bg-emerald-950/60 flex items-center gap-2.5 transition block"
+                  >
+                    <User className="w-4 h-4 text-goblinLime shrink-0" />
+                    <span>Mi Perfil y Récords</span>
+                  </Link>
 
                   <button
                     onClick={() => {
@@ -275,6 +294,14 @@ export default function Navbar({
             <span className="text-[10px] uppercase font-black px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-300">
               TOP
             </span>
+          </Link>
+          <Link
+            href="/perfil"
+            onClick={() => setMobileMenuOpen(false)}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold text-zinc-300 hover:text-white hover:bg-emerald-950/60"
+          >
+            <User className="w-4 h-4 text-goblinLime" />
+            <span>Mi Perfil y Récords</span>
           </Link>
           {onOpenMiniQuiz && (
             <button

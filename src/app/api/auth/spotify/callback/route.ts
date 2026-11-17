@@ -68,6 +68,7 @@ export async function GET(request: Request) {
     let userDisplayName = "";
     let userAvatarUrl = "";
     let userEmail = "";
+    let spotifyUserId = "";
     try {
       const userRes = await fetch("https://api.spotify.com/v1/me", {
         headers: { Authorization: `Bearer ${data.access_token}` },
@@ -77,6 +78,7 @@ export async function GET(request: Request) {
         userDisplayName = profile.display_name || "";
         userAvatarUrl = profile.images?.[0]?.url || "";
         userEmail = profile.email || "";
+        spotifyUserId = profile.id || "";
       }
     } catch (profileErr) {
       console.warn("[Spotify Callback Profile Fetch Error]:", profileErr);
@@ -141,6 +143,16 @@ export async function GET(request: Request) {
 
     if (userAvatarUrl) {
       res.cookies.set("spotify_user_avatar", encodeURIComponent(userAvatarUrl), {
+        httpOnly: false,
+        secure: isSecure,
+        path: "/",
+        maxAge: 30 * 24 * 60 * 60,
+        sameSite: "lax",
+      });
+    }
+
+    if (spotifyUserId) {
+      res.cookies.set("spotify_user_id", spotifyUserId, {
         httpOnly: false,
         secure: isSecure,
         path: "/",

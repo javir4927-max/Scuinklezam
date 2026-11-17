@@ -142,7 +142,7 @@ export const DEMOCRATIC_VOTING_CATALOG = [
     id: "top50_es",
     name: "Top 50 España",
     description: "Los mayores éxitos sonando ahora mismo en las listas españolas",
-    query: "Quevedo Saiko Bad Bunny Aitana",
+    query: "Quevedo Saiko JC Reyes Lucho RK Bad Gyal Omar Montes Morad Aitana Lola Indigo",
     icon: "Flame",
   },
   {
@@ -198,7 +198,7 @@ export const DEMOCRATIC_VOTING_CATALOG = [
     id: "under_urbano",
     name: "Under / Urbano",
     description: "El sonido de culto de las islas y la calle con barras infinitas",
-    query: "Cruz Cafuné Delaossa Recycled J Abhir Soto Asa",
+    query: "Cruz Cafune Delaossa Hoke Lucho RK Soto Asa Gloosito Ill Pekeno Ergo Pro",
     icon: "Headphones",
   },
   {

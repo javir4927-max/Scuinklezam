@@ -7,13 +7,13 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const { categoryId, score, guestNickname, guestUserId } = body;
+    const { categoryId, score, guestNickname, guestUserId, categoryName, correctCount } = body;
 
     if (!categoryId || typeof score !== "number") {
       return NextResponse.json({ success: false, error: "Datos de partida inválidos" }, { status: 400 });
     }
 
-    // Check if user is authenticated
+    // Check if user is authenticated (Email session or Spotify)
     const sessionUser = await getSessionUser();
     const userId = sessionUser?.id || guestUserId || `guest_${Date.now()}`;
     const nickname = sessionUser?.nickname || guestNickname || "Jugador Ranked";
@@ -21,7 +21,15 @@ export async function POST(request: Request) {
       sessionUser?.avatarUrl ||
       `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(nickname)}&backgroundColor=0B1710`;
 
-    const result = await submitRankedScore(userId, nickname, avatarUrl, categoryId, score);
+    const result = await submitRankedScore(
+      userId,
+      nickname,
+      avatarUrl,
+      categoryId,
+      score,
+      categoryName,
+      correctCount
+    );
 
     return NextResponse.json(result);
   } catch (err: any) {

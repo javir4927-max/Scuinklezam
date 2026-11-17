@@ -1,33 +1,12 @@
-// Known high-res artist face photos directly from Deezer/Spotify CDN
-export const PRELOADED_ARTIST_PHOTOS: Record<string, string> = {
-  "bad bunny": "https://cdn-images.dzcdn.net/images/artist/044a3f315b041864887a8dd8709e6926/500x500-000000-80-0-0.jpg",
-  "quevedo": "https://cdn-images.dzcdn.net/images/artist/574e4c3a7029b935ceba4849615598ae/500x500-000000-80-0-0.jpg",
-  "feid": "https://cdn-images.dzcdn.net/images/artist/5bb3ae0e4eb1e66c4ef0a9504c86ee94/500x500-000000-80-0-0.jpg",
-  "myke towers": "https://cdn-images.dzcdn.net/images/artist/bf5ae6df8ff39fa1cfc3e55c6544be36/500x500-000000-80-0-0.jpg",
-  "duki": "https://cdn-images.dzcdn.net/images/artist/8126b86d1a93883a48e8e788bc59e86c/500x500-000000-80-0-0.jpg",
-  "mora": "https://cdn-images.dzcdn.net/images/artist/3ba836bfa57161b97aeb7ff3a31c5bb1/500x500-000000-80-0-0.jpg",
-  "rosalía": "https://cdn-images.dzcdn.net/images/artist/0b1d30325d30aa4f31c5efb0e3624e52/500x500-000000-80-0-0.jpg",
-  "rosalia": "https://cdn-images.dzcdn.net/images/artist/0b1d30325d30aa4f31c5efb0e3624e52/500x500-000000-80-0-0.jpg",
-  "taylor swift": "https://cdn-images.dzcdn.net/images/artist/20c74902148286a111a43a059d0b67cf/500x500-000000-80-0-0.jpg",
-  "the weeknd": "https://cdn-images.dzcdn.net/images/artist/561b32bb3da658f8b3fbcf5957388701/500x500-000000-80-0-0.jpg",
-  "drake": "https://cdn-images.dzcdn.net/images/artist/5f9c490a597a76572eb0f88fa5384666/500x500-000000-80-0-0.jpg",
-  "billie eilish": "https://cdn-images.dzcdn.net/images/artist/1e7c5cb92d21be55c3c0a52f9b8b21ba/500x500-000000-80-0-0.jpg",
-  "eminem": "https://cdn-images.dzcdn.net/images/artist/1c93a0b85a3fa088d890b0e52701f530/500x500-000000-80-0-0.jpg",
-  "ariana grande": "https://cdn-images.dzcdn.net/images/artist/d1e2bb475fdf915f532a26c99fcf6f34/500x500-000000-80-0-0.jpg",
-  "lana del rey": "https://cdn-images.dzcdn.net/images/artist/8121665a3b2b9ceb9cbbfae35058c426/500x500-000000-80-0-0.jpg",
-  "olivia rodrigo": "https://cdn-images.dzcdn.net/images/artist/3b5d2753faee1846b9a896d11f5fae2d/500x500-000000-80-0-0.jpg",
-  "kendrick lamar": "https://cdn-images.dzcdn.net/images/artist/d90e94bb775c92c57176a6cf38965682/500x500-000000-80-0-0.jpg",
-  "bruno mars": "https://cdn-images.dzcdn.net/images/artist/bbdc8ba06616b77ae4b4b27eead9f485/500x500-000000-80-0-0.jpg",
-  "frank ocean": "https://cdn-images.dzcdn.net/images/artist/821f9850c90d8a56fa2b0b1ad02e9bc4/500x500-000000-80-0-0.jpg",
-  "travis scott": "https://cdn-images.dzcdn.net/images/artist/a895513adbe4910cfab5eeabdb555e09/500x500-000000-80-0-0.jpg",
-  "dua lipa": "https://cdn-images.dzcdn.net/images/artist/a1f592186835a63964d4b1a473e6dcf3/500x500-000000-80-0-0.jpg",
-  "michael jackson": "https://cdn-images.dzcdn.net/images/artist/2534f590fc3be5b0266e744ec4917ae2/500x500-000000-80-0-0.jpg",
-  "juice wrld": "https://cdn-images.dzcdn.net/images/artist/e94fa00bb466ea85eb04d80a15320c1d/500x500-000000-80-0-0.jpg",
-  "bizarrap": "https://cdn-images.dzcdn.net/images/artist/d531d2ba5108bb68b3f46f33333342eb/500x500-000000-80-0-0.jpg",
-  "rauw alejandro": "https://cdn-images.dzcdn.net/images/artist/3bb0fa84226f31522f281e0507a27eb0/500x500-000000-80-0-0.jpg",
-  "anuel aa": "https://cdn-images.dzcdn.net/images/artist/7732a3fc26330ce9a0f4a86f9f688847/500x500-000000-80-0-0.jpg",
-  "saiko": "https://cdn-images.dzcdn.net/images/artist/ec6ea717b99335a089bf8d47bfa2b322/500x500-000000-80-0-0.jpg",
-};
+// Bypass local Windows certificate verification issues for external music APIs
+if (typeof process !== "undefined" && process.env) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+}
+
+import { getSpotifyAppToken } from "./spotifyAppToken";
+import { PRELOADED_ARTIST_PHOTOS } from "./artistPhotosCatalog";
+
+export { PRELOADED_ARTIST_PHOTOS } from "./artistPhotosCatalog";
 
 // Global in-memory cache to avoid redundant network lookups
 const inMemoryCache = new Map<string, string>();
@@ -39,15 +18,23 @@ export async function getArtistFacePhoto(artistName: string): Promise<string> {
   if (!artistName || !artistName.trim()) return "";
   const clean = artistName.trim();
   const lower = clean.toLowerCase();
+  const normalizedKey = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
   if (PRELOADED_ARTIST_PHOTOS[lower]) {
     return PRELOADED_ARTIST_PHOTOS[lower];
+  }
+  if (PRELOADED_ARTIST_PHOTOS[normalizedKey]) {
+    return PRELOADED_ARTIST_PHOTOS[normalizedKey];
   }
 
   if (inMemoryCache.has(lower)) {
     return inMemoryCache.get(lower)!;
   }
+  if (inMemoryCache.has(normalizedKey)) {
+    return inMemoryCache.get(normalizedKey)!;
+  }
 
+  // 1. Try Deezer API
   try {
     const res = await fetch(`https://api.deezer.com/search/artist?q=${encodeURIComponent(clean)}`, {
       headers: { "User-Agent": "Scuinklezam/1.0" },
@@ -58,18 +45,70 @@ export async function getArtistFacePhoto(artistName: string): Promise<string> {
       const data = await res.json();
       if (data && data.data && data.data.length > 0) {
         const artist = data.data[0];
-        const photo = artist.picture_xl || artist.picture_medium || artist.picture_big || artist.picture_small || "";
+        const photo = artist.picture_xl || artist.picture_big || artist.picture_medium;
         if (photo) {
           inMemoryCache.set(lower, photo);
+          inMemoryCache.set(normalizedKey, photo);
           return photo;
         }
       }
     }
   } catch (err) {
-    console.warn(`[getArtistFacePhoto] Failed for ${artistName}:`, err);
+    console.warn(`[getArtistFacePhoto] Deezer failed for ${artistName}:`, err);
   }
 
-  // Fallback to stylized DiceBear avatar
+  // 2. Fallback to Spotify API (server-side with app token)
+  try {
+    const token = await getSpotifyAppToken();
+    if (token) {
+      const sRes = await fetch(
+        `https://api.spotify.com/v1/search?q=${encodeURIComponent(clean)}&type=artist&limit=1`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          next: { revalidate: 86400 },
+        }
+      );
+      if (sRes.ok) {
+        const sData = await sRes.json();
+        const artist = sData?.artists?.items?.[0];
+        const sPhoto = artist?.images?.[0]?.url;
+        if (sPhoto) {
+          inMemoryCache.set(lower, sPhoto);
+          inMemoryCache.set(normalizedKey, sPhoto);
+          return sPhoto;
+        }
+      }
+    }
+  } catch (spotErr) {
+    console.warn(`[getArtistFacePhoto] Spotify search failed for ${artistName}:`, spotErr);
+  }
+
+  // 3. Fallback to iTunes Search API (single HD artwork 600x600)
+  try {
+    const itRes = await fetch(
+      `https://itunes.apple.com/search?term=${encodeURIComponent(clean)}&entity=song&limit=3&country=ES`,
+      {
+        headers: { "User-Agent": "Scuinklezam/1.0" },
+        next: { revalidate: 86400 },
+      }
+    );
+    if (itRes.ok) {
+      const itData = await itRes.json();
+      if (itData?.results?.length > 0) {
+        const item = itData.results[0];
+        if (item.artworkUrl100) {
+          const itPhoto = item.artworkUrl100.replace("100x100bb", "600x600bb");
+          inMemoryCache.set(lower, itPhoto);
+          inMemoryCache.set(normalizedKey, itPhoto);
+          return itPhoto;
+        }
+      }
+    }
+  } catch (itErr) {
+    console.warn(`[getArtistFacePhoto] iTunes search failed for ${artistName}:`, itErr);
+  }
+
+  // 4. Fallback to stylized DiceBear avatar
   const fallback = `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(clean)}&backgroundColor=0B1710`;
   inMemoryCache.set(lower, fallback);
   return fallback;

@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useTransition, Suspense } from "rea
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { playSynthNote } from "@/lib/audio";
+import { playCorrectSound, playWrongSound } from "@/lib/soundEffects";
 import { audioPlayer } from "@/lib/audioPlayer";
 import {
   FlaskConical,
@@ -92,7 +93,7 @@ function normalizeRoundOption(opt: RoundOption | string): RoundOption {
 }
 import SpotifyConnectModal from "@/components/SpotifyConnectModal";
 import Navbar from "@/components/Navbar";
-import { PRELOADED_ARTIST_PHOTOS } from "@/lib/artistPhotos";
+import { PRELOADED_ARTIST_PHOTOS } from "@/lib/artistPhotosCatalog";
 import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
 
 function renderModeIcon(modeId: GameMode, className: string = "w-5 h-5") {
@@ -805,12 +806,11 @@ function PlayArenaContent() {
       setScorePopup(null);
     }, 1800);
 
-    // Audio feedback
+    // Audio feedback with Web Audio API soundEffects
     if (isCorrect) {
-      playSynthNote(523.25, 0.12);
-      setTimeout(() => playSynthNote(659.25, 0.18), 70);
+      playCorrectSound();
     } else {
-      playSynthNote(220, 0.22);
+      playWrongSound();
     }
 
     try {

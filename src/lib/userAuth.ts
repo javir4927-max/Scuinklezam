@@ -18,6 +18,7 @@ export interface UserSession {
   email: string;
   nickname: string;
   avatarUrl: string;
+  provider?: "email" | "spotify";
 }
 
 // In-memory fallback if Redis is unreachable
@@ -200,28 +201,57 @@ export async function createSession(userId: string): Promise<string> {
 export async function getSessionUser(): Promise<UserSession | null> {
   const cookieStore = cookies();
   const token = cookieStore.get("scuinklezam_session")?.value;
-  if (!token) return null;
 
-  let userId = memorySessions.get(token);
-  if (!userId && redis) {
-    try {
-      const res = await redis.get<string>(`scuinklezam:session:${token}`);
-      if (res) userId = res;
-    } catch (err) {
-      console.warn("[getSessionUser] Redis get error:", err);
+  if (token) {
+    let userId = memorySessions.get(token);
+    if (!userId && redis) {
+      try {
+        const res = await redis.get<string>(`scuinklezam:session:${token}`);
+        if (res) userId = res;
+      } catch (err) {
+        console.warn("[getSessionUser] Redis get error:", err);
+      }
+    }
+
+    if (userId) {
+      const user = await getUserById(userId);
+      if (user) {
+        return {
+          id: user.id,
+          email: user.email,
+          nickname: user.nickname,
+          avatarUrl: user.avatarUrl,
+          provider: "email",
+        };
+      }
     }
   }
 
-  if (!userId) return null;
-  const user = await getUserById(userId);
-  if (!user) return null;
+  // Check Spotify login
+  const spotifyConnected = cookieStore.get("spotify_user_connected")?.value === "1";
+  const spotifyName = cookieStore.get("spotify_user_name")?.value;
+  const spotifyAvatar = cookieStore.get("spotify_user_avatar")?.value;
+  const spotifyId = cookieStore.get("spotify_user_id")?.value;
 
-  return {
-    id: user.id,
-    email: user.email,
-    nickname: user.nickname,
-    avatarUrl: user.avatarUrl,
-  };
+  if (spotifyConnected && spotifyName) {
+    const cleanName = decodeURIComponent(spotifyName);
+    const cleanAvatar = spotifyAvatar
+      ? decodeURIComponent(spotifyAvatar)
+      : `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(cleanName)}&backgroundColor=0B1710`;
+    const cleanId = spotifyId
+      ? `spotify_${spotifyId}`
+      : `spotify_${cleanName.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+
+    return {
+      id: cleanId,
+      email: `${cleanId}@spotify.scuinklezam.app`,
+      nickname: cleanName,
+      avatarUrl: cleanAvatar,
+      provider: "spotify",
+    };
+  }
+
+  return null;
 }
 
 export async function setSessionCookie(token: string, user: UserAccount) {

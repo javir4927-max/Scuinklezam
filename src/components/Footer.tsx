@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Users, Trophy, Play, Music2 } from "lucide-react";
 
 interface FooterProps {
-  onOpenMiniQuiz: (topic?: string) => void;
+  onOpenMiniQuiz?: (topic?: string) => void;
 }
 
 const LANGUAGES = [
@@ -75,7 +75,7 @@ export default function Footer({ onOpenMiniQuiz }: FooterProps) {
             </li>
             <li>
               <button
-                onClick={() => onOpenMiniQuiz("Éxitos Pop")}
+                onClick={() => onOpenMiniQuiz && onOpenMiniQuiz("Éxitos Pop")}
                 className="hover:text-goblinLime transition cursor-pointer text-left flex items-center gap-1.5"
               >
                 <Play className="w-3.5 h-3.5 text-emerald-400" />
