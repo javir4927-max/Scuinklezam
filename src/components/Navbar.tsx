@@ -7,6 +7,7 @@ import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
 import GlobalVolumeControl from "@/components/GlobalVolumeControl";
 import SpotifyStatsDetailModal from "@/components/SpotifyStatsDetailModal";
 import SpotifyConnectModal from "@/components/SpotifyConnectModal";
+import SpotifyStatsWrappedModal from "@/components/SpotifyStatsWrappedModal";
 
 interface NavbarProps {
   onOpenMiniQuiz?: (topic?: string) => void;
@@ -27,6 +28,7 @@ export default function Navbar({
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [showStatsDetailModal, setShowStatsDetailModal] = useState(false);
   const [spotifyModalOpen, setSpotifyModalOpen] = useState(false);
+  const [spotifyWrappedModalOpen, setSpotifyWrappedModalOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
   const { isConnected, user, logout } = useSpotifyAuth();
@@ -185,32 +187,13 @@ export default function Navbar({
                     type="button"
                     onClick={() => {
                       setUserMenuOpen(false);
-                      if (onOpenSpotifyModal) {
-                        onOpenSpotifyModal();
-                      } else {
-                        setSpotifyModalOpen(true);
-                      }
+                      setSpotifyWrappedModalOpen(true);
                     }}
                     className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-zinc-200 hover:text-white hover:bg-emerald-950/60 flex items-center gap-2.5 transition cursor-pointer"
                   >
                     <BarChart2 className="w-4 h-4 text-emerald-400 shrink-0" />
                     <span>Ver mis Stats de Spotify</span>
                   </button>
-
-                  {/* Botón Ver stats a detalle (Reutilizado del multiplayer) */}
-                  <div className="py-0.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setUserMenuOpen(false);
-                        setShowStatsDetailModal(true);
-                      }}
-                      className="w-full bg-zinc-800/90 hover:bg-zinc-700 text-zinc-100 border border-white/10 rounded-xl px-3.5 py-2 text-xs font-medium transition flex items-center gap-2 cursor-pointer shadow-sm text-left"
-                    >
-                      <BarChart3 className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <span>Ver stats a detalle</span>
-                    </button>
-                  </div>
 
                   <Link
                     href="/ranked"
@@ -365,12 +348,12 @@ export default function Navbar({
                   type="button"
                   onClick={() => {
                     setMobileMenuOpen(false);
-                    setShowStatsDetailModal(true);
+                    setSpotifyWrappedModalOpen(true);
                   }}
                   className="w-full bg-zinc-800/90 hover:bg-zinc-700 text-zinc-100 border border-white/10 rounded-xl px-3.5 py-2 text-xs font-medium transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
                 >
-                  <BarChart3 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>Ver stats a detalle</span>
+                  <BarChart2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Ver mis Stats de Spotify</span>
                 </button>
               </>
             ) : (
@@ -387,6 +370,12 @@ export default function Navbar({
           </div>
         </div>
       )}
+
+      {/* MODAL WRAPPED STATS DE SPOTIFY */}
+      <SpotifyStatsWrappedModal
+        isOpen={spotifyWrappedModalOpen}
+        onClose={() => setSpotifyWrappedModalOpen(false)}
+      />
 
       {/* MODAL DETALLE DE STATS DE SPOTIFY (#1 - #50) */}
       <SpotifyStatsDetailModal

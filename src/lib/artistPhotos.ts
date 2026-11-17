@@ -20,11 +20,22 @@ export async function getArtistFacePhoto(artistName: string): Promise<string> {
   const lower = clean.toLowerCase();
   const normalizedKey = lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
+  // Clean composite names ("Feid / Ferxxo" -> "Feid", "Morad feat. Beny Jr" -> "Morad")
+  const primaryName = clean.split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)/i)[0].trim();
+  const lowerPrimary = primaryName.toLowerCase();
+  const normPrimary = lowerPrimary.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
   if (PRELOADED_ARTIST_PHOTOS[lower]) {
     return PRELOADED_ARTIST_PHOTOS[lower];
   }
   if (PRELOADED_ARTIST_PHOTOS[normalizedKey]) {
     return PRELOADED_ARTIST_PHOTOS[normalizedKey];
+  }
+  if (PRELOADED_ARTIST_PHOTOS[lowerPrimary]) {
+    return PRELOADED_ARTIST_PHOTOS[lowerPrimary];
+  }
+  if (PRELOADED_ARTIST_PHOTOS[normPrimary]) {
+    return PRELOADED_ARTIST_PHOTOS[normPrimary];
   }
 
   if (inMemoryCache.has(lower)) {
@@ -33,10 +44,15 @@ export async function getArtistFacePhoto(artistName: string): Promise<string> {
   if (inMemoryCache.has(normalizedKey)) {
     return inMemoryCache.get(normalizedKey)!;
   }
+  if (inMemoryCache.has(lowerPrimary)) {
+    return inMemoryCache.get(lowerPrimary)!;
+  }
+
+  const queryName = primaryName || clean;
 
   // 1. Try Deezer API
   try {
-    const res = await fetch(`https://api.deezer.com/search/artist?q=${encodeURIComponent(clean)}`, {
+    const res = await fetch(`https://api.deezer.com/search/artist?q=${encodeURIComponent(queryName)}`, {
       headers: { "User-Agent": "Scuinklezam/1.0" },
       next: { revalidate: 86400 }, // Cache 24 hours
     });

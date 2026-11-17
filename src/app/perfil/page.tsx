@@ -23,6 +23,7 @@ import { RANKED_CATEGORIES, RankedCategory, calculateTier, RankedTier } from "@/
 import UserAuthModal from "@/components/UserAuthModal";
 import SpotifyConnectModal from "@/components/SpotifyConnectModal";
 import SpotifyStatsDetailModal from "@/components/SpotifyStatsDetailModal";
+import SpotifyStatsWrappedModal from "@/components/SpotifyStatsWrappedModal";
 
 interface ProfileStats {
   totalPlays: number;
@@ -194,7 +195,7 @@ export default function ProfilePage() {
                 <div className="font-display font-black text-2xl sm:text-3xl text-goblinLime">
                   {stats?.averageScore || 0} <span className="text-xs text-zinc-400 font-normal">/ 1000</span>
                 </div>
-                <div className="text-[10px] text-zinc-400">Media por quiz de 10</div>
+                <div className="text-[10px] text-zinc-400">Media por partida</div>
               </div>
 
               <div className="glass-card rounded-2xl p-5 border border-emerald-500/20 text-center space-y-1">
@@ -366,7 +367,7 @@ export default function ProfilePage() {
         }}
       />
 
-      <SpotifyConnectModal
+      <SpotifyStatsWrappedModal
         isOpen={spotifyModalOpen}
         onClose={() => setSpotifyModalOpen(false)}
       />

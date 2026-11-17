@@ -1,9 +1,18 @@
 import { NextResponse } from "next/server";
 import { searchVerifiedTracks, searchItunesCatalog } from "@/lib/musicService";
 import { RANKED_CATEGORIES } from "@/lib/rankedTypes";
-import { SpotifyTrackItem } from "@/lib/spotifyTypes";
+import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
 
 export const dynamic = "force-dynamic";
+
+// Bypass local Windows certificate verification issues for external music APIs
+if (typeof process !== "undefined" && process.env) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+}
+
+const NO_CACHE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+};
 
 // Curated artist pools per thematic category to guarantee 100% authentic music
 const THEME_ARTIST_POOLS: Record<string, string[]> = {
@@ -34,6 +43,132 @@ const THEME_ARTIST_POOLS: Record<string, string[]> = {
   ],
 };
 
+function normalizeSongTitle(title: string): string {
+  return title
+    .replace(/\s*[\(\[](feat|ft|with|remix|en vivo|live|acústico|acoustic).*?[\)\]]/gi, "")
+    .replace(/\s*-\s*(remix|en vivo|live|single|edit|acústico|acoustic).*/gi, "")
+    .replace(/[^\w\s\u00C0-\u017F]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Queries a deep pool of 60 to 100 songs for a specific artist combining
+ * iTunes Search API (limit=80) and Deezer API (top=50), filtered by primary artist
+ * and verified audio previews, deduplicated by normalized title.
+ */
+async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrackItem[]> {
+  const clean = artistName.split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)/i)[0].trim();
+  const lowerArtist = clean.toLowerCase();
+
+  // 1. Fetch iTunes Search API limit=80 country=ES with cache: 'no-store'
+  const itunesPromise = fetch(
+    `https://itunes.apple.com/search?term=${encodeURIComponent(clean)}&entity=song&country=ES&limit=80`,
+    {
+      headers: { "User-Agent": "Scuinklezam/1.0" },
+      cache: "no-store",
+    }
+  )
+    .then((r) => r.json())
+    .catch(() => ({ results: [] }));
+
+  // 2. Fetch Deezer Artist Top 50 with cache: 'no-store'
+  const deezerPromise = (async () => {
+    try {
+      const aRes = await fetch(
+        `https://api.deezer.com/search/artist?q=${encodeURIComponent(clean)}`,
+        {
+          headers: { "User-Agent": "Scuinklezam/1.0" },
+          cache: "no-store",
+        }
+      ).then((r) => r.json());
+
+      const artistId = aRes?.data?.[0]?.id;
+      if (artistId) {
+        const topRes = await fetch(
+          `https://api.deezer.com/artist/${artistId}/top?limit=50`,
+          {
+            headers: { "User-Agent": "Scuinklezam/1.0" },
+            cache: "no-store",
+          }
+        ).then((r) => r.json());
+        return (topRes?.data || []) as any[];
+      }
+    } catch (e) {
+      console.warn("[ranked/tracks] Deezer track search failed:", e);
+    }
+    return [] as any[];
+  })();
+
+  const [itData, dzTracks] = await Promise.all([itunesPromise, deezerPromise]);
+
+  const pool = new Map<string, SpotifyTrackItem>();
+
+  // Add iTunes tracks
+  for (const it of itData?.results || []) {
+    if (!it.previewUrl || typeof it.previewUrl !== "string" || !it.previewUrl.startsWith("http")) continue;
+    const itArt = (it.artistName || "").toLowerCase();
+    if (!itArt.includes(lowerArtist) && !lowerArtist.includes(itArt)) continue;
+    const itTit = it.trackName || "";
+    if (/karaoke|tribute|cover/i.test(itTit) || /karaoke|tribute/i.test(itArt)) continue;
+
+    const norm = normalizeSongTitle(itTit);
+    if (!norm) continue;
+
+    if (!pool.has(norm)) {
+      const artwork = it.artworkUrl100
+        ? it.artworkUrl100.replace("100x100bb", "600x600bb")
+        : getFallbackArtwork(itTit, it.artistName || clean);
+
+      pool.set(norm, {
+        id: `it_${it.trackId}`,
+        uri: `spotify:track:it_${it.trackId}`,
+        title: itTit,
+        artist: it.artistName || clean,
+        album: it.collectionName || "Single",
+        artworkUrl: artwork,
+        spotifyUrl: `https://open.spotify.com/search/${encodeURIComponent(`${itTit} ${clean}`)}`,
+        previewUrl: it.previewUrl,
+        durationMs: it.trackTimeMillis || 30000,
+      });
+    }
+  }
+
+  // Add Deezer tracks
+  for (const dz of dzTracks) {
+    if (!dz.preview || typeof dz.preview !== "string" || !dz.preview.startsWith("http")) continue;
+    const dzArt = (dz.artist?.name || "").toLowerCase();
+    if (!dzArt.includes(lowerArtist) && !lowerArtist.includes(dzArt)) continue;
+    const dzTit = dz.title || "";
+    if (/karaoke|tribute|cover/i.test(dzTit) || /karaoke|tribute/i.test(dzArt)) continue;
+
+    const norm = normalizeSongTitle(dzTit);
+    if (!norm) continue;
+
+    if (!pool.has(norm)) {
+      const artwork =
+        dz.album?.cover_xl ||
+        dz.album?.cover_big ||
+        dz.album?.cover_medium ||
+        getFallbackArtwork(dzTit, clean);
+
+      pool.set(norm, {
+        id: `dz_${dz.id}`,
+        uri: `spotify:track:dz_${dz.id}`,
+        title: dzTit,
+        artist: dz.artist?.name || clean,
+        album: dz.album?.title || "Single",
+        artworkUrl: artwork,
+        spotifyUrl: dz.link || `https://open.spotify.com/search/${encodeURIComponent(`${dzTit} ${clean}`)}`,
+        previewUrl: dz.preview,
+        durationMs: (dz.duration || 30) * 1000,
+      });
+    }
+  }
+
+  return Array.from(pool.values());
+}
+
 // Fallback tracks in Spanish so English tracks never leak into Spanish categories
 const SPANISH_FALLBACK_TRACKS: SpotifyTrackItem[] = [
   {
@@ -54,29 +189,18 @@ const SPANISH_FALLBACK_TRACKS: SpotifyTrackItem[] = [
     artist: "Saiko",
     album: "Sakura",
     artworkUrl: "https://cdn-images.dzcdn.net/images/artist/38f4945a0ca1b2900d26f5f504b3cae5/600x600-000000-80-0-0.jpg",
-    spotifyUrl: "https://open.spotify.com/artist/5X4LWVGLiB5Qmi0b59bda7",
-    previewUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview126/v4/bf/f4/1d/bff41d8e-9092-23ef-4f11-209f9fecad69/mzaf_1684347714157053531.plus.aac.p.m4a",
+    spotifyUrl: "https://open.spotify.com/artist/3WwJ7nOq4lZJ3n57b32q1d",
+    previewUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/4a/1b/c0/4a1bc0cf-2cb7-7f99-e64e-5e364687d3a0/mzaf_13506260195503463876.plus.aac.p.m4a",
     durationMs: 30000,
   },
   {
     id: "it_es_3",
     uri: "spotify:track:es3",
-    title: "RETRICA",
-    artist: "Lucho RK",
-    album: "Single",
-    artworkUrl: "https://cdn-images.dzcdn.net/images/artist/3095312c8ed2248c70c42bab0dd4745b/600x600-000000-80-0-0.jpg",
-    spotifyUrl: "https://open.spotify.com/artist/11o5Fk3eD5mE7zWb60k46i",
-    previewUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/a9/4d/97/a94d97ef-4171-ec56-e91b-8fce9765cb84/mzaf_15783515152341258169.plus.aac.p.m4a",
-    durationMs: 30000,
-  },
-  {
-    id: "it_es_4",
-    uri: "spotify:track:es4",
-    title: "Jjjj",
-    artist: "Hoke & Cruz Cafuné",
-    album: "BBO",
-    artworkUrl: "https://cdn-images.dzcdn.net/images/artist/bb773f14fbb13df8c06ec91cb8b936d9/600x600-000000-80-0-0.jpg",
-    spotifyUrl: "https://open.spotify.com/artist/3Y60U16E6Zz58E2Hj6o98q",
+    title: "Monaco",
+    artist: "Bad Bunny",
+    album: "Nadie Sabe Lo Que Va A Pasar Mañana",
+    artworkUrl: "https://cdn-images.dzcdn.net/images/artist/044a3f315b041864887a8dd8709e6926/600x600-000000-80-0-0.jpg",
+    spotifyUrl: "https://open.spotify.com/artist/4q3ewBCX7sLwd24euuV69X",
     previewUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview126/v4/4a/1b/c0/4a1bc0cf-2cb7-7f99-e64e-5e364687d3a0/mzaf_13506260195503463876.plus.aac.p.m4a",
     durationMs: 30000,
   },
@@ -94,61 +218,89 @@ export async function GET(request: Request) {
     categoryId === "theme_under_espana";
 
   try {
-    // 1. Case: Thematic Pool
-    if (THEME_ARTIST_POOLS[categoryId]) {
-      const pool = THEME_ARTIST_POOLS[categoryId];
-      // Pick 5 to 7 random artists from pool
-      const selectedArtists = [...pool].sort(() => 0.5 - Math.random()).slice(0, 7);
-      const collected: SpotifyTrackItem[] = [];
-
-      for (const artistName of selectedArtists) {
-        const itunesTracks = await searchItunesCatalog(artistName, 4);
-        itunesTracks.forEach((t) => {
-          if (t.previewUrl && !collected.some((x) => x.title === t.title && x.artist === t.artist)) {
-            collected.push(t);
-          }
-        });
-        if (collected.length >= 14) break;
-      }
-
-      if (collected.length >= 10) {
-        const shuffled = collected.sort(() => 0.5 - Math.random()).slice(0, 12);
-        return NextResponse.json({ success: true, tracks: shuffled });
-      }
-    }
-
-    // 2. Case: Specific Artist (predefined or custom search)
+    // 1. Case: Specific Artist (predefined category or custom search)
     const artistQuery = customArtist || (cat?.kind === "artist" ? cat.query : "");
     if (artistQuery) {
       const cleanArtist = artistQuery.trim();
-      const directTracks = await searchItunesCatalog(cleanArtist, 25);
-      const verified = directTracks.filter((t) => t.previewUrl);
+      const deepPool = await fetchDeepArtistTrackPool(cleanArtist);
 
-      if (verified.length >= 10) {
-        return NextResponse.json({
-          success: true,
-          tracks: verified.sort(() => 0.5 - Math.random()).slice(0, 12),
-        });
+      if (deepPool.length >= 10) {
+        return NextResponse.json(
+          {
+            success: true,
+            tracks: deepPool,
+            poolSize: deepPool.length,
+            artist: cleanArtist,
+          },
+          { headers: NO_CACHE_HEADERS }
+        );
       }
 
-      // Complement with unified search
-      const complement = await searchVerifiedTracks(cleanArtist, 12);
-      if (complement && complement.length >= 10) {
-        return NextResponse.json({ success: true, tracks: complement.slice(0, 12) });
+      // Complement with iTunes search if deep pool was small
+      const directTracks = await searchItunesCatalog(cleanArtist, 35);
+      const verified = directTracks.filter((t) => t.previewUrl);
+      const merged = [...deepPool];
+      for (const t of verified) {
+        const norm = normalizeSongTitle(t.title);
+        if (!merged.some((x) => normalizeSongTitle(x.title) === norm)) {
+          merged.push(t);
+        }
+      }
+
+      if (merged.length >= 8) {
+        return NextResponse.json(
+          { success: true, tracks: merged, poolSize: merged.length, artist: cleanArtist },
+          { headers: NO_CACHE_HEADERS }
+        );
+      }
+    }
+
+    // 2. Case: Thematic Pool
+    if (THEME_ARTIST_POOLS[categoryId]) {
+      const pool = THEME_ARTIST_POOLS[categoryId];
+      // Pick 6 to 9 random artists from pool
+      const selectedArtists = [...pool].sort(() => 0.5 - Math.random()).slice(0, 9);
+      const collected: SpotifyTrackItem[] = [];
+
+      for (const artistName of selectedArtists) {
+        const itunesTracks = await searchItunesCatalog(artistName, 5);
+        for (const t of itunesTracks) {
+          if (
+            t.previewUrl &&
+            !collected.some(
+              (x) => normalizeSongTitle(x.title) === normalizeSongTitle(t.title)
+            )
+          ) {
+            collected.push(t);
+          }
+        }
+        if (collected.length >= 25) break;
+      }
+
+      if (collected.length >= 10) {
+        return NextResponse.json(
+          { success: true, tracks: collected, poolSize: collected.length },
+          { headers: NO_CACHE_HEADERS }
+        );
       }
     }
 
     // 3. Fallback to generic search
     const query = cat ? cat.query : (customArtist || categoryId);
-    const tracks = await searchVerifiedTracks(query, 12);
+    const tracks = await searchVerifiedTracks(query, 25);
     if (tracks && tracks.length >= 8) {
-      return NextResponse.json({ success: true, tracks: tracks.slice(0, 12) });
+      return NextResponse.json(
+        { success: true, tracks, poolSize: tracks.length },
+        { headers: NO_CACHE_HEADERS }
+      );
     }
   } catch (err) {
     console.warn(`[ranked/tracks] search failed for ${categoryId}:`, err);
   }
 
-  // Safety return: use Spanish fallbacks for Spanish themes, never English pop
-  const fallback = isSpanishTheme ? SPANISH_FALLBACK_TRACKS : SPANISH_FALLBACK_TRACKS;
-  return NextResponse.json({ success: true, tracks: fallback });
+  // Safety return: use Spanish fallbacks
+  return NextResponse.json(
+    { success: true, tracks: SPANISH_FALLBACK_TRACKS, poolSize: SPANISH_FALLBACK_TRACKS.length },
+    { headers: NO_CACHE_HEADERS }
+  );
 }

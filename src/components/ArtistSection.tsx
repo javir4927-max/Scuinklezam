@@ -81,7 +81,8 @@ export default function ArtistSection({ onOpenMiniQuiz, onSelectArtist }: Artist
           const photoUrl =
             photos[name.toLowerCase()] ||
             photos[name] ||
-            `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(name)}&backgroundColor=0B1710`;
+            PRELOADED_ARTIST_PHOTOS[name.toLowerCase()] ||
+            `/api/artists/photo?name=${encodeURIComponent(name)}`;
 
           return (
             <div

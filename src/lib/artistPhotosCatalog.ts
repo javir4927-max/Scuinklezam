@@ -77,4 +77,10 @@ export const PRELOADED_ARTIST_PHOTOS: Record<string, string> = {
   "bruno mars": "https://cdn-images.dzcdn.net/images/artist/bbdc8ba06616b77ae4b4b27eead9f485/1000x1000-000000-80-0-0.jpg",
   "sabrina carpenter": "https://cdn-images.dzcdn.net/images/artist/b646cba26ba35728a493a388b3f114c0/1000x1000-000000-80-0-0.jpg",
   "post malone": "https://cdn-images.dzcdn.net/images/artist/33e9b1bb774b93b0b001a1db1587d6e5/1000x1000-000000-80-0-0.jpg",
+  "michael jackson": "https://cdn-images.dzcdn.net/images/artist/ff1c8cf777db1efc2043b90d79dcbfc3/1000x1000-000000-80-0-0.jpg",
+  "lana del rey": "https://cdn-images.dzcdn.net/images/artist/8994d3be1a59a72f887f1f8afd2d4c6c/1000x1000-000000-80-0-0.jpg",
+  "olivia rodrigo": "https://cdn-images.dzcdn.net/images/artist/2c9e480317183c037eaebcd7ba96daf4/1000x1000-000000-80-0-0.jpg",
+  "kendrick lamar": "https://cdn-images.dzcdn.net/images/artist/be0a7c550567f4af0ed202d7235b74d6/1000x1000-000000-80-0-0.jpg",
+  "kanye west": "https://cdn-images.dzcdn.net/images/artist/bb76c2ee3b068726ab4c37b0aabdb57a/1000x1000-000000-80-0-0.jpg",
+  "coldplay": "https://cdn-images.dzcdn.net/images/artist/3087954bca22f306324912e5ac8375c3/1000x1000-000000-80-0-0.jpg",
 };

@@ -58,6 +58,50 @@ const ARTIST_CLUSTERS = [
   ],
 ];
 
+export async function getDeezerRelatedArtists(
+  artistName: string
+): Promise<Array<{ name: string; slug: string; imageUrl: string }>> {
+  try {
+    const clean = artistName.split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)/i)[0].trim();
+    const searchRes = await fetch(
+      `https://api.deezer.com/search/artist?q=${encodeURIComponent(clean)}`,
+      {
+        headers: { "User-Agent": "Scuinklezam/1.0" },
+        next: { revalidate: 86400 },
+      }
+    );
+    if (!searchRes.ok) return [];
+    const searchData = await searchRes.json();
+    const artistId = searchData?.data?.[0]?.id;
+    if (!artistId) return [];
+
+    const relatedRes = await fetch(
+      `https://api.deezer.com/artist/${artistId}/related?limit=8`,
+      {
+        headers: { "User-Agent": "Scuinklezam/1.0" },
+        next: { revalidate: 86400 },
+      }
+    );
+    if (!relatedRes.ok) return [];
+    const relatedData = await relatedRes.json();
+    if (!relatedData?.data || !Array.isArray(relatedData.data)) return [];
+
+    return relatedData.data.slice(0, 8).map((a: any) => ({
+      name: a.name,
+      slug: toArtistSlug(a.name),
+      imageUrl:
+        a.picture_xl ||
+        a.picture_big ||
+        a.picture_medium ||
+        PRELOADED_ARTIST_PHOTOS[a.name.toLowerCase()] ||
+        `/api/artists/photo?name=${encodeURIComponent(a.name)}`,
+    }));
+  } catch (e) {
+    console.warn("[getDeezerRelatedArtists] Failed:", e);
+    return [];
+  }
+}
+
 export function getRelatedArtistsFor(artistName: string): Array<{ name: string; slug: string; imageUrl: string }> {
   const clean = artistName.trim().toLowerCase();
   const cleanNorm = clean.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -637,7 +681,7 @@ export async function getArtistProfileAndLeaderboard(
     }
   }
 
-  const relatedArtists = getRelatedArtistsFor(cleanName);
+  const relatedArtists = await getDeezerRelatedArtists(cleanName);
 
   return {
     artistName: cleanName,
