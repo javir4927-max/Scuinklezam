@@ -27,7 +27,11 @@ export async function GET(request: Request) {
         const artists = (data.artists?.items || []).map((a: any) => ({
           id: a.id,
           name: a.name,
-          imageUrl: a.images?.[0]?.url || a.images?.[1]?.url || a.images?.[2]?.url || "",
+          imageUrl:
+            a.images?.[0]?.url ||
+            a.images?.[1]?.url ||
+            a.images?.[2]?.url ||
+            `/api/artists/photo?name=${encodeURIComponent(a.name)}`,
           genres: (a.genres || []).slice(0, 2),
           followers: a.followers?.total || 0,
         }));
@@ -56,7 +60,7 @@ export async function GET(request: Request) {
         .map((r: any) => ({
           id: String(r.artistId || r.amgArtistId || Math.random()),
           name: r.artistName,
-          imageUrl: "",
+          imageUrl: `/api/artists/photo?name=${encodeURIComponent(r.artistName)}`,
           genres: r.primaryGenreName ? [r.primaryGenreName] : [],
           followers: 0,
         }));

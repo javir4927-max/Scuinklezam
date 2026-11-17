@@ -33,7 +33,6 @@ import {
   AlertTriangle,
   Gamepad2,
   Plus,
-  Bot,
   RotateCcw,
   Check,
   ExternalLink,
@@ -664,23 +663,6 @@ function PlayArenaContent() {
     }
   };
 
-  // Add Bot Player
-  const handleAddBot = async () => {
-    if (!roomCode) return;
-    try {
-      const res = await fetch(`/api/rooms/${roomCode}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "add_bot" }),
-      });
-      const data = await res.json();
-      if (data.success && data.room) {
-        setRoom(data.room);
-      }
-    } catch (err) {
-      console.error("Error adding bot:", err);
-    }
-  };
 
   // Update Game Mode or Settings
   const handleChangeSettings = async (settings: {
@@ -1415,9 +1397,9 @@ function PlayArenaContent() {
                 <div>Spotify Oficial</div>
               </div>
               <div>
-                <Bot className="w-5 h-5 text-amber-400 mx-auto mb-1" />
-                <div className="font-semibold text-zinc-300">+ Bots IA</div>
-                <div>Juega solo o amigos</div>
+                <Trophy className="w-5 h-5 text-amber-400 mx-auto mb-1" />
+                <div className="font-semibold text-zinc-300">Clasificación</div>
+                <div>Compite en directo</div>
               </div>
             </div>
           </div>
@@ -1441,7 +1423,7 @@ function PlayArenaContent() {
                   {room.name}
                 </h1>
                 <p className="mt-1 text-zinc-400 text-xs sm:text-sm">
-                  Comparte el código o añade bots inteligentes para probar la partida.
+                  Comparte el código con tus amigos para jugar juntos.
                 </p>
               </div>
 
@@ -1491,14 +1473,6 @@ function PlayArenaContent() {
                       <span>Copiar enlace</span>
                     </>
                   )}
-                </button>
-
-                <button
-                  onClick={handleAddBot}
-                  className="px-3.5 py-2.5 rounded-2xl bg-white/[0.06] hover:bg-white/[0.1] border border-emerald-500/30 text-white font-bold text-xs transition flex items-center gap-1.5"
-                >
-                  <Bot className="w-4 h-4 text-emerald-400" />
-                  <span>+ Añadir Bot</span>
                 </button>
               </div>
             </div>
@@ -2209,11 +2183,6 @@ function PlayArenaContent() {
                                 <span>{player.name}</span>
                                 {player.isHost && (
                                   <Crown className="w-3.5 h-3.5 text-amber-400 inline" />
-                                )}
-                                {player.isBot && (
-                                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-300 font-normal">
-                                    BOT
-                                  </span>
                                 )}
                                 {player.id === playerId && (
                                   <>

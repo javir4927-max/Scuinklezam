@@ -1,4 +1,5 @@
 import { redis } from "./roomStore";
+import { PRELOADED_ARTIST_PHOTOS } from "./artistPhotosCatalog";
 export * from "./rankedTypes";
 import {
   RankedTier,
@@ -6,10 +7,118 @@ import {
   LeaderboardEntry,
 } from "./rankedTypes";
 
+// Helper to normalize artist names to clean URL/Redis slugs
+export function toArtistSlug(name: string): string {
+  if (!name) return "artist";
+  return name
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "artist";
+}
+
 // In-memory fallback scores if Redis is unreachable
 const memoryScores = new Map<string, Map<string, { score: number; nickname: string; avatarUrl: string }>>();
 const memoryStats = new Map<string, { totalPlays: number; totalPoints: number }>();
 const memoryHistory = new Map<string, Array<any>>();
+
+// In-memory fallback for artist-specific Tapzz stats
+const memoryArtistStats = new Map<string, Map<string, {
+  totalPoints: number;
+  bestScore: number;
+  quizzesPlayed: number;
+  nickname: string;
+  avatarUrl: string;
+}>>();
+
+// Thematic clusters to discover 12 related artists with verified HD face photos
+const ARTIST_CLUSTERS = [
+  // España Urbano & Rap
+  [
+    "Quevedo", "Saiko", "JC Reyes", "Omar Montes", "Lucho RK", "La Pantera", "Rels B",
+    "Bad Gyal", "Morad", "Lola Indigo", "Cruz Cafuné", "Delaossa", "Hoke", "Recycled J",
+    "Cano", "Cyril Kamer", "Ana Mena", "Aitana", "Beny Jr", "Ill Pekeño", "Ergo Pro",
+    "Israel B", "Gloosito", "Soto Asa", "Yung Beef", "Kaydy Cain", "Abhir Hathi", "Juicy BAE"
+  ],
+  // Reggaetón & Urbano Latino
+  [
+    "Bad Bunny", "Feid", "Myke Towers", "Mora", "Rauw Alejandro", "Karol G", "Jhayco",
+    "Dei V", "Omar Courtz", "Luar La L", "Anuel AA", "Daddy Yankee", "Don Omar", "Bizarrap"
+  ],
+  // Trap Argentino & Cono Sur
+  [
+    "Duki", "YSY A", "KHEA", "Neo Pistea", "C.R.O", "Tiago PZK", "Trueno", "Milo J",
+    "Nicki Nicole", "Emilia", "Bizarrap"
+  ],
+  // Pop Mundial & Global
+  [
+    "The Weeknd", "Taylor Swift", "Dua Lipa", "Billie Eilish", "Bruno Mars",
+    "Ariana Grande", "Sabrina Carpenter", "Post Malone", "Travis Scott", "Drake", "Eminem"
+  ],
+];
+
+export function getRelatedArtistsFor(artistName: string): Array<{ name: string; slug: string; imageUrl: string }> {
+  const clean = artistName.trim().toLowerCase();
+  const cleanNorm = clean.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+  // Find primary cluster
+  let targetCluster = ARTIST_CLUSTERS.find((cluster) =>
+    cluster.some((a) => {
+      const lower = a.toLowerCase();
+      return lower === clean || lower.normalize("NFD").replace(/[\u0300-\u036f]/g, "") === cleanNorm;
+    })
+  );
+
+  if (!targetCluster) {
+    // Default to España Urbano
+    targetCluster = ARTIST_CLUSTERS[0];
+  }
+
+  const result: Array<{ name: string; slug: string; imageUrl: string }> = [];
+  const added = new Set<string>();
+  added.add(clean);
+  added.add(cleanNorm);
+
+  // 1. Add peers from same cluster
+  for (const name of targetCluster) {
+    const l = name.toLowerCase();
+    const ln = l.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    if (!added.has(l) && !added.has(ln)) {
+      added.add(l);
+      added.add(ln);
+      result.push({
+        name,
+        slug: toArtistSlug(name),
+        imageUrl: PRELOADED_ARTIST_PHOTOS[l] || PRELOADED_ARTIST_PHOTOS[ln] || `/api/artists/photo?name=${encodeURIComponent(name)}`,
+      });
+      if (result.length >= 12) break;
+    }
+  }
+
+  // 2. If fewer than 12, pull from other clusters
+  if (result.length < 12) {
+    for (const cluster of ARTIST_CLUSTERS) {
+      for (const name of cluster) {
+        const l = name.toLowerCase();
+        const ln = l.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        if (!added.has(l) && !added.has(ln)) {
+          added.add(l);
+          added.add(ln);
+          result.push({
+            name,
+            slug: toArtistSlug(name),
+            imageUrl: PRELOADED_ARTIST_PHOTOS[l] || PRELOADED_ARTIST_PHOTOS[ln] || `/api/artists/photo?name=${encodeURIComponent(name)}`,
+          });
+          if (result.length >= 12) break;
+        }
+      }
+      if (result.length >= 12) break;
+    }
+  }
+
+  return result.slice(0, 12);
+}
 
 export async function submitRankedScore(
   userId: string,
@@ -263,5 +372,285 @@ export async function getUserProfileData(userId: string) {
     bestScore,
     personalBests,
     recentMatches,
+  };
+}
+
+/**
+ * Submits a ranked quiz run score specifically for an individual artist.
+ * Updates the cumulative points, best score, quizzes played and sorted set leaderboard in Redis.
+ */
+export async function submitArtistRankedScore(
+  userId: string,
+  nickname: string,
+  avatarUrl: string,
+  artistName: string,
+  score: number,
+  correctCount?: number
+): Promise<{
+  success: boolean;
+  totalPoints: number;
+  bestScore: number;
+  quizzesPlayed: number;
+  userRank: number | null;
+}> {
+  const cleanName = artistName.trim();
+  const slug = toArtistSlug(cleanName);
+
+  // In-memory update
+  if (!memoryArtistStats.has(slug)) {
+    memoryArtistStats.set(slug, new Map());
+  }
+  const artistMap = memoryArtistStats.get(slug)!;
+  const current = artistMap.get(userId) || {
+    totalPoints: 0,
+    bestScore: 0,
+    quizzesPlayed: 0,
+    nickname,
+    avatarUrl,
+  };
+
+  const newTotalPoints = current.totalPoints + score;
+  const newBestScore = Math.max(current.bestScore, score);
+  const newQuizzesPlayed = current.quizzesPlayed + 1;
+
+  artistMap.set(userId, {
+    totalPoints: newTotalPoints,
+    bestScore: newBestScore,
+    quizzesPlayed: newQuizzesPlayed,
+    nickname,
+    avatarUrl,
+  });
+
+  let userRank: number | null = null;
+
+  if (redis) {
+    try {
+      const statsKey = `scuinklezam:artist_user_stats:${slug}:${userId}`;
+      const zsetKey = `scuinklezam:ranked:artist:${slug}`;
+
+      // 1. Increment cumulative points and quizzes in Redis hash
+      await redis.hincrby(statsKey, "totalPoints", score);
+      await redis.hincrby(statsKey, "quizzesPlayed", 1);
+
+      // 2. Update best score if higher
+      const prevBestRaw = await redis.hget<string>(statsKey, "bestScore");
+      const prevBest = Number(prevBestRaw || 0);
+      if (score > prevBest) {
+        await redis.hset(statsKey, { bestScore: score });
+      }
+
+      // 3. Update user metadata in hash
+      await redis.hset(statsKey, {
+        nickname,
+        avatarUrl,
+        lastPlayed: Date.now(),
+      });
+
+      // 4. Read updated total points from hash to ensure consistency
+      const updatedPointsRaw = await redis.hget<string>(statsKey, "totalPoints");
+      const updatedTotalPoints = Number(updatedPointsRaw || newTotalPoints);
+
+      // 5. Update artist leaderboard sorted set with cumulative totalPoints
+      await redis.zadd(zsetKey, {
+        score: updatedTotalPoints,
+        member: userId,
+      });
+
+      // 6. Save user profile for global lookups
+      await redis.set(
+        `scuinklezam:user_profile:${userId}`,
+        JSON.stringify({
+          userId,
+          nickname,
+          avatarUrl,
+          lastPlayed: Date.now(),
+        })
+      );
+
+      // 7. Get user's updated rank in artist sorted set (0-indexed descending)
+      const rankIdx = await redis.zrevrank(zsetKey, userId);
+      if (rankIdx !== null && rankIdx !== undefined) {
+        userRank = rankIdx + 1;
+      }
+    } catch (err) {
+      console.warn("[submitArtistRankedScore] Redis error:", err);
+    }
+  }
+
+  if (userRank === null) {
+    // In-memory rank calculation
+    const allPlayers = Array.from(artistMap.entries()).sort(
+      (a, b) => b[1].totalPoints - a[1].totalPoints
+    );
+    const idx = allPlayers.findIndex(([uid]) => uid === userId);
+    userRank = idx !== -1 ? idx + 1 : 1;
+  }
+
+  return {
+    success: true,
+    totalPoints: newTotalPoints,
+    bestScore: newBestScore,
+    quizzesPlayed: newQuizzesPlayed,
+    userRank,
+  };
+}
+
+/**
+ * Returns complete Tapzz-style Ficha de Artista data:
+ * user stats, visual podium, top 50 leaderboard, and 12 related artists.
+ */
+export async function getArtistProfileAndLeaderboard(
+  artistName: string,
+  userId?: string
+): Promise<{
+  artistName: string;
+  slug: string;
+  photoUrl: string;
+  userStats: {
+    userRank: number | null;
+    totalPlayers: number;
+    totalPoints: number;
+    quizzesPlayed: number;
+    bestScore: number;
+  };
+  leaderboard: Array<{
+    rank: number;
+    userId: string;
+    nickname: string;
+    avatarUrl: string;
+    totalPoints: number;
+    isCurrentUser: boolean;
+  }>;
+  relatedArtists: Array<{
+    name: string;
+    slug: string;
+    imageUrl: string;
+  }>;
+}> {
+  const cleanName = artistName.trim();
+  const slug = toArtistSlug(cleanName);
+  const photoUrl =
+    PRELOADED_ARTIST_PHOTOS[cleanName.toLowerCase()] ||
+    `/api/artists/photo?name=${encodeURIComponent(cleanName)}`;
+
+  let totalPlayers = 0;
+  let userRank: number | null = null;
+  let userTotalPoints = 0;
+  let userQuizzesPlayed = 0;
+  let userBestScore = 0;
+  const leaderboard: Array<{
+    rank: number;
+    userId: string;
+    nickname: string;
+    avatarUrl: string;
+    totalPoints: number;
+    isCurrentUser: boolean;
+  }> = [];
+
+  if (redis) {
+    try {
+      const zsetKey = `scuinklezam:ranked:artist:${slug}`;
+      totalPlayers = (await redis.zcard(zsetKey)) || 0;
+
+      // User stats
+      if (userId) {
+        const statsKey = `scuinklezam:artist_user_stats:${slug}:${userId}`;
+        const uStats = await redis.hgetall<Record<string, string>>(statsKey);
+        if (uStats) {
+          userTotalPoints = Number(uStats.totalPoints || 0);
+          userQuizzesPlayed = Number(uStats.quizzesPlayed || 0);
+          userBestScore = Number(uStats.bestScore || 0);
+        }
+        const rankIdx = await redis.zrevrank(zsetKey, userId);
+        if (rankIdx !== null && rankIdx !== undefined) {
+          userRank = rankIdx + 1;
+        }
+      }
+
+      // Leaderboard Top 50
+      const topIds = await redis.zrange<any[]>(zsetKey, 0, 49, {
+        rev: true,
+        withScores: true,
+      });
+
+      if (topIds && topIds.length > 0) {
+        for (let i = 0; i < topIds.length; i += 2) {
+          const mId = typeof topIds[i] === "object" ? (topIds[i] as any).member : topIds[i];
+          const mScore = typeof topIds[i] === "object" ? Number((topIds[i] as any).score) : Number(topIds[i + 1]);
+
+          const statsKey = `scuinklezam:artist_user_stats:${slug}:${mId}`;
+          const uStats = await redis.hgetall<Record<string, string>>(statsKey);
+          let nick = uStats?.nickname;
+          let av = uStats?.avatarUrl;
+
+          if (!nick) {
+            const profileRaw = await redis.get<string | any>(`scuinklezam:user_profile:${mId}`);
+            const profile = typeof profileRaw === "string" ? JSON.parse(profileRaw) : profileRaw;
+            nick = profile?.nickname;
+            av = profile?.avatarUrl;
+          }
+
+          nick = nick || `Jugador #${leaderboard.length + 1}`;
+          av = av || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(nick)}&backgroundColor=0B1710`;
+
+          leaderboard.push({
+            rank: leaderboard.length + 1,
+            userId: mId,
+            nickname: nick,
+            avatarUrl: av,
+            totalPoints: mScore,
+            isCurrentUser: !!userId && mId === userId,
+          });
+        }
+      }
+    } catch (err) {
+      console.warn("[getArtistProfileAndLeaderboard] Redis read error:", err);
+    }
+  }
+
+  // Memory fallback if no redis entries
+  if (leaderboard.length === 0 && memoryArtistStats.has(slug)) {
+    const artistMap = memoryArtistStats.get(slug)!;
+    totalPlayers = artistMap.size;
+    const sorted = Array.from(artistMap.entries()).sort(
+      (a, b) => b[1].totalPoints - a[1].totalPoints
+    );
+
+    sorted.slice(0, 50).forEach(([uid, val], idx) => {
+      leaderboard.push({
+        rank: idx + 1,
+        userId: uid,
+        nickname: val.nickname,
+        avatarUrl: val.avatarUrl,
+        totalPoints: val.totalPoints,
+        isCurrentUser: !!userId && uid === userId,
+      });
+    });
+
+    if (userId && artistMap.has(userId)) {
+      const u = artistMap.get(userId)!;
+      userTotalPoints = u.totalPoints;
+      userQuizzesPlayed = u.quizzesPlayed;
+      userBestScore = u.bestScore;
+      const idx = sorted.findIndex(([uid]) => uid === userId);
+      userRank = idx !== -1 ? idx + 1 : null;
+    }
+  }
+
+  const relatedArtists = getRelatedArtistsFor(cleanName);
+
+  return {
+    artistName: cleanName,
+    slug,
+    photoUrl,
+    userStats: {
+      userRank,
+      totalPlayers,
+      totalPoints: userTotalPoints,
+      quizzesPlayed: userQuizzesPlayed,
+      bestScore: userBestScore,
+    },
+    leaderboard,
+    relatedArtists,
   };
 }

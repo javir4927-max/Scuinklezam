@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import {
   getRoom,
   joinRoom,
-  addBotToRoom,
   updatePlayerTaste,
   injectSpotifyTracksToRoom,
   proposeTheme,
@@ -94,19 +93,6 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         );
       }
 
-      case "add_bot": {
-        const botResult = await addBotToRoom(code);
-        if (!botResult.success) {
-          return NextResponse.json(
-            { success: false, error: botResult.error },
-            { status: 400, headers: NO_CACHE_HEADERS }
-          );
-        }
-        return NextResponse.json(
-          { success: true, room: botResult.room, bot: botResult.bot },
-          { headers: NO_CACHE_HEADERS }
-        );
-      }
 
       case "update_taste": {
         if (!playerId || !Array.isArray(body.favoriteArtists)) {

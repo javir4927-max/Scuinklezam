@@ -638,7 +638,7 @@ export default function MiniQuizModal({
               </p>
             </div>
 
-            {/* Song Breakdown (10 canciones) */}
+            {/* Song Breakdown */}
             <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
               {answersHistory.map((item, idx) => {
                 const isCurrentPlaying = playingPreviewUrl === item.track.previewUrl;
@@ -716,7 +716,7 @@ export default function MiniQuizModal({
                 onClick={() => buildRounds(FALLBACK_SPOTIFY_TRACKS)}
                 className="flex-1 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-emerald-300 font-bold text-xs transition cursor-pointer"
               >
-                Jugar Mini-Quiz de Nuevo
+                Jugar de Nuevo
               </button>
               <a
                 href="/ranked"

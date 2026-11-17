@@ -20,7 +20,6 @@ export interface Player {
   isHost: boolean;
   isReady: boolean;
   isOnline: boolean;
-  isBot?: boolean;
   lastSeen: number;
   favoriteArtists: string[];
   spotifyConnected: boolean;
@@ -321,35 +320,6 @@ export async function deleteRoom(code: string): Promise<void> {
   }
 }
 
-// Pre-defined bot personalities with distinct music tastes
-export const BOT_CATALOG = [
-  {
-    name: "Maya",
-    avatarColor: "#10B981", // Emerald
-    favoriteArtists: ["Billie Eilish", "Dua Lipa", "Olivia Rodrigo"],
-  },
-  {
-    name: "Leo",
-    avatarColor: "#84CC16", // Lime
-    favoriteArtists: ["The Weeknd", "Drake", "Kendrick Lamar"],
-  },
-  {
-    name: "Zoé",
-    avatarColor: "#F59E0B", // Amber
-    favoriteArtists: ["Taylor Swift", "Sabrina Carpenter", "Rosalía"],
-  },
-  {
-    name: "Mateo",
-    avatarColor: "#06B6D4", // Cyan
-    favoriteArtists: ["Bad Bunny", "Feid", "Bizarrap"],
-  },
-  {
-    name: "Nora",
-    avatarColor: "#EC4899", // Pink
-    favoriteArtists: ["Lady Gaga", "Bruno Mars", "Coldplay"],
-  },
-];
-
 // Helper to generate 4-character room codes (like K7QP)
 function generateRoomCode(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -393,7 +363,6 @@ export async function createRoom(
     isHost: true,
     isReady: true,
     isOnline: true,
-    isBot: false,
     lastSeen: Date.now(),
     favoriteArtists:
       initialArtists && initialArtists.length > 0
@@ -467,9 +436,9 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
     }
   }
 
-  // Update online status in-memory: offline if no heartbeat in 45s (except bots)
+  // Update online status in-memory: offline if no heartbeat in 45s
   room.players.forEach((p) => {
-    if (!p.isBot && now - p.lastSeen > 45000 && p.isOnline) {
+    if (now - p.lastSeen > 45000 && p.isOnline) {
       p.isOnline = false;
     }
   });
@@ -495,7 +464,7 @@ export function checkRoomStateProgression(room: RoomState): boolean {
   // 0. VOTING -> COUNTDOWN (when now >= votingEndsAt OR all active players voted)
   if (room.status === "voting") {
     const endsAt = room.votingEndsAt || (room.votingStartTime ? room.votingStartTime + 10000 : now);
-    const activePlayers = room.players.filter((p) => p.isOnline || p.isBot);
+    const activePlayers = room.players.filter((p) => p.isOnline);
     const allVoted =
       activePlayers.length > 0 &&
       activePlayers.every((p) => p.votedTheme !== null);
@@ -539,8 +508,6 @@ export function checkRoomStateProgression(room: RoomState): boolean {
       room.players.forEach((p) => {
         p.currentAnswer = null;
       });
-      // Trigger bot answers
-      scheduleBotAnswers(room);
       changed = true;
     }
   }
@@ -548,7 +515,7 @@ export function checkRoomStateProgression(room: RoomState): boolean {
   // 2. PLAYING -> ROUND_REVEAL (when now >= roundEndsAt OR all active players answered)
   if (room.status === "playing") {
     const endsAt = room.roundEndsAt || (room.roundStartTime ? room.roundStartTime + 15500 : now);
-    const activePlayers = room.players.filter((p) => p.isOnline || p.isBot);
+    const activePlayers = room.players.filter((p) => p.isOnline);
     const allAnswered =
       activePlayers.length > 0 &&
       activePlayers.every((p) => p.currentAnswer !== null);
@@ -591,7 +558,6 @@ export function checkRoomStateProgression(room: RoomState): boolean {
         room.players.forEach((p) => {
           p.currentAnswer = null;
         });
-        scheduleBotAnswers(room);
       } else {
         room.status = "finished";
       }
@@ -600,47 +566,6 @@ export function checkRoomStateProgression(room: RoomState): boolean {
   }
 
   return changed;
-}
-
-/**
- * Simulates intelligent bot answer submissions with human-like delays.
- */
-function scheduleBotAnswers(room: RoomState): void {
-  const currentRoundData = room.rounds[room.currentRound - 1];
-  if (!currentRoundData) return;
-
-  const bots = room.players.filter((p) => p.isBot && p.currentAnswer === null);
-
-  bots.forEach((bot) => {
-    // Determine bot accuracy (70-85% accurate)
-    const isAccurate = Math.random() < 0.78;
-    let selectedOption = currentRoundData.correctIndex;
-
-    if (!isAccurate) {
-      // Pick random wrong option
-      const wrongOptions = [0, 1, 2, 3].filter((i) => i !== currentRoundData.correctIndex);
-      selectedOption = wrongOptions[Math.floor(Math.random() * wrongOptions.length)];
-    }
-
-    // Delay between 2.8s and 9.5s
-    const delayMs = Math.floor(2800 + Math.random() * 6700);
-
-    // Friend guess for who_listens mode
-    let guessedFriendId: string | undefined;
-    if (room.gameMode === "who_listens") {
-      const otherPlayers = room.players.filter((p) => p.id !== bot.id);
-      if (otherPlayers.length > 0) {
-        guessedFriendId = otherPlayers[Math.floor(Math.random() * otherPlayers.length)].id;
-      }
-    }
-
-    setTimeout(async () => {
-      // Check if room and round are still valid
-      if (room.status === "playing" && !bot.currentAnswer) {
-        await submitPlayerAnswer(room, bot.id, selectedOption, delayMs, guessedFriendId);
-      }
-    }, delayMs);
-  });
 }
 
 /**
@@ -694,7 +619,6 @@ export async function joinRoom(
       isHost: false,
       isReady: true,
       isOnline: true,
-      isBot: false,
       lastSeen: Date.now(),
       favoriteArtists:
         playerData.favoriteArtists && playerData.favoriteArtists.length > 0
@@ -713,48 +637,6 @@ export async function joinRoom(
 
   await saveRoom(room);
   return { success: true, room };
-}
-
-/**
- * Adds an intelligent bot player to the room.
- */
-export async function addBotToRoom(code: string): Promise<{ success: boolean; room?: RoomState; bot?: Player; error?: string }> {
-  const room = await getRoom(code);
-  if (!room) return { success: false, error: "Sala no encontrada." };
-
-  if (room.players.length >= 12) {
-    return { success: false, error: "La sala está llena (máximo 12 jugadores)." };
-  }
-
-  // Pick an unused bot from catalog or generate one
-  const existingNames = new Set(room.players.map((p) => p.name.toLowerCase()));
-  const availableBot = BOT_CATALOG.find((b) => !existingNames.has(b.name.toLowerCase()));
-
-  const botName = availableBot ? availableBot.name : `Bot ${room.players.length + 1}`;
-  const botColor = availableBot ? availableBot.avatarColor : "#84CC16";
-  const botTastes = availableBot ? availableBot.favoriteArtists : ["The Weeknd", "Rosalía", "Queen"];
-
-  const botPlayer: Player = {
-    id: `bot_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-    name: botName,
-    avatarColor: botColor,
-    isHost: false,
-    isReady: true,
-    isOnline: true,
-    isBot: true,
-    lastSeen: Date.now(),
-    favoriteArtists: botTastes,
-    spotifyConnected: false,
-    score: 0,
-    streak: 0,
-    lives: 3,
-    currentAnswer: null,
-    votedTheme: null,
-  };
-
-  room.players.push(botPlayer);
-  await saveRoom(room);
-  return { success: true, room, bot: botPlayer };
 }
 
 /**
@@ -1065,14 +947,6 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
       p.lives = 3;
       p.currentAnswer = null;
       p.votedTheme = null;
-    });
-
-    // Simulate realistic bot votes
-    const bots = room.players.filter((p) => p.isBot);
-    bots.forEach((bot) => {
-      const randomCand = candidates[Math.floor(Math.random() * candidates.length)];
-      bot.votedTheme = randomCand.id;
-      randomCand.votes.push(bot.id);
     });
 
     await saveRoom(room);
@@ -1451,7 +1325,7 @@ export async function kickPlayer(
 
   // If in playing mode and all remaining players have answered, progress round
   if (room.status === "playing") {
-    const activePlayers = room.players.filter((p) => p.isOnline || p.isBot);
+    const activePlayers = room.players.filter((p) => p.isOnline);
     const allAnswered =
       activePlayers.length > 0 &&
       activePlayers.every((p) => p.currentAnswer !== null);

@@ -68,6 +68,74 @@ export default function RankedArenaPage() {
   const [leaderboardEntries, setLeaderboardEntries] = useState<LeaderboardEntry[]>([]);
   const [loadingLeaderboard, setLoadingLeaderboard] = useState<boolean>(false);
 
+  // Ficha de Artista Estilo Tapzz State
+  const [selectedArtistName, setSelectedArtistName] = useState<string | null>(null);
+  const [artistSheetData, setArtistSheetData] = useState<{
+    artistName: string;
+    slug: string;
+    photoUrl: string;
+    userStats: {
+      userRank: number | null;
+      totalPlayers: number;
+      totalPoints: number;
+      quizzesPlayed: number;
+      bestScore: number;
+    };
+    leaderboard: Array<{
+      rank: number;
+      userId: string;
+      nickname: string;
+      avatarUrl: string;
+      totalPoints: number;
+      isCurrentUser: boolean;
+    }>;
+    relatedArtists: Array<{
+      name: string;
+      slug: string;
+      imageUrl: string;
+    }>;
+  } | null>(null);
+  const [loadingArtistSheet, setLoadingArtistSheet] = useState<boolean>(false);
+  const [fullArtistLeaderboardOpen, setFullArtistLeaderboardOpen] = useState<boolean>(false);
+
+  // Live real-time artist search in Ranked
+  const [liveSearchResults, setLiveSearchResults] = useState<Array<{
+    id: string;
+    name: string;
+    imageUrl: string;
+    genres: string[];
+    followers?: number;
+  }>>([]);
+  const [isSearchingLive, setIsSearchingLive] = useState<boolean>(false);
+  const [showLiveDropdown, setShowLiveDropdown] = useState<boolean>(false);
+  const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const searchContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Handler to open Ficha de Artista estilo Tapzz
+  const handleOpenArtistSheet = async (artistName: string) => {
+    const clean = artistName.trim();
+    if (!clean) return;
+    setSelectedArtistName(clean);
+    setLoadingArtistSheet(true);
+    setArtistSheetData(null);
+    setShowLiveDropdown(false);
+
+    try {
+      const guestId = user?.id || localStorage.getItem("scuinklezam_ranked_uid") || "";
+      const res = await fetch(`/api/ranked/artist?name=${encodeURIComponent(clean)}&userId=${guestId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setArtistSheetData(data);
+        }
+      }
+    } catch (err) {
+      console.error("Error loading artist sheet:", err);
+    } finally {
+      setLoadingArtistSheet(false);
+    }
+  };
+
   // Active Ranked Game Runner State
   const [activeCategory, setActiveCategory] = useState<RankedCategory | null>(null);
   const [gameState, setGameState] = useState<"idle" | "loading" | "playing" | "reveal" | "summary">("idle");
@@ -124,6 +192,61 @@ export default function RankedArenaPage() {
   useEffect(() => {
     loadInitialData();
   }, []);
+
+  // Close live search dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
+        setShowLiveDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // 300ms Debounced live artist search connecting to /api/spotify/artists
+  useEffect(() => {
+    if (activeTab !== "artist") {
+      setShowLiveDropdown(false);
+      return;
+    }
+
+    const trimmed = searchFilter.trim();
+    if (trimmed.length < 2) {
+      setLiveSearchResults([]);
+      setShowLiveDropdown(false);
+      setIsSearchingLive(false);
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+      return;
+    }
+
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    setIsSearchingLive(true);
+    setShowLiveDropdown(true);
+
+    searchDebounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/spotify/artists?q=${encodeURIComponent(trimmed)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && Array.isArray(data.artists)) {
+            setLiveSearchResults(data.artists);
+          } else {
+            setLiveSearchResults([]);
+          }
+        }
+      } catch (err) {
+        console.error("Live artist search error:", err);
+        setLiveSearchResults([]);
+      } finally {
+        setIsSearchingLive(false);
+      }
+    }, 300);
+
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
+  }, [searchFilter, activeTab]);
 
   // Filter categories
   const filteredCategories = categories.filter((c) => {
@@ -324,6 +447,7 @@ export default function RankedArenaPage() {
               body: JSON.stringify({
                 categoryId: activeCategory.id,
                 categoryName: activeCategory.name,
+                artistName: activeCategory.kind === "artist" ? (activeCategory.query || activeCategory.name) : undefined,
                 score: finalScore,
                 correctCount: isCorrect ? streak + 1 : streak,
                 guestUserId: guestId,
@@ -339,6 +463,19 @@ export default function RankedArenaPage() {
             });
             // Refresh category play counts
             loadInitialData();
+
+            // If this was an artist run, refresh artist sheet data in background
+            if (activeCategory.kind === "artist") {
+              const artistQueryName = activeCategory.query || activeCategory.name;
+              fetch(`/api/ranked/artist?name=${encodeURIComponent(artistQueryName)}&userId=${guestId}`)
+                .then((r) => r.json())
+                .then((sheetData) => {
+                  if (sheetData.success) {
+                    setArtistSheetData(sheetData);
+                  }
+                })
+                .catch(() => {});
+            }
           } catch {
             setSummaryData({
               finalScore,
@@ -419,7 +556,7 @@ export default function RankedArenaPage() {
               <div className="py-24 text-center space-y-4 max-w-xl mx-auto">
                 <div className="w-12 h-12 border-4 border-goblinLime border-t-transparent rounded-full animate-spin mx-auto" />
                 <div className="font-display font-bold text-lg text-white">
-                  Cargando quiz de 10 canciones...
+                  Cargando quiz...
                 </div>
                 <div className="text-xs text-zinc-400">
                   Verificando audios de 30 segundos y carátulas originales
@@ -615,19 +752,35 @@ export default function RankedArenaPage() {
                       <span>Volver a jugar</span>
                     </button>
 
-                    <button
-                      onClick={() => handleOpenLeaderboard(activeCategory!)}
-                      className="w-full py-2.5 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-white font-bold text-xs border border-emerald-500/30 transition flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <Trophy className="w-4 h-4 text-amber-400" />
-                      <span>Ver Ranking de {activeCategory?.name}</span>
-                    </button>
+                    {activeCategory?.kind === "artist" ? (
+                      <button
+                        onClick={() => {
+                          audioPlayer.stop();
+                          setGameState("idle");
+                          handleOpenArtistSheet(activeCategory.name);
+                        }}
+                        className="w-full py-2.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-bold text-xs border border-cyan-400/30 transition flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        <ArrowLeft className="w-4 h-4" />
+                        <span>Volver a la ficha de {activeCategory.name}</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleOpenLeaderboard(activeCategory!)}
+                        className="w-full py-2.5 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-white font-bold text-xs border border-emerald-500/30 transition flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        <Trophy className="w-4 h-4 text-amber-400" />
+                        <span>Ver Ranking de {activeCategory?.name}</span>
+                      </button>
+                    )}
 
                     <button
                       onClick={() => {
                         audioPlayer.stop();
                         setGameState("idle");
                         setActiveCategory(null);
+                        setSelectedArtistName(null);
+                        setArtistSheetData(null);
                       }}
                       className="w-full py-2 text-xs text-zinc-400 hover:text-white transition cursor-pointer text-center"
                     >
@@ -726,6 +879,322 @@ export default function RankedArenaPage() {
               </div>
             )}
           </div>
+        ) : selectedArtistName ? (
+          /* ========================================================
+              FICHA DE ARTISTA ESTILO TAPZZ (CON RANKING & 12 ARTISTAS)
+             ======================================================== */
+          loadingArtistSheet && !artistSheetData ? (
+            <div className="py-24 text-center space-y-4 max-w-xl mx-auto animate-fade-in">
+              <div className="w-12 h-12 border-4 border-cyan-400 border-t-transparent rounded-full animate-spin mx-auto" />
+              <div className="font-display font-bold text-lg text-white">
+                Cargando ficha de {selectedArtistName}...
+              </div>
+              <div className="text-xs text-zinc-400">
+                Obteniendo ranking en directo y artistas recomendados
+              </div>
+            </div>
+          ) : artistSheetData ? (
+            <div className="space-y-8 animate-fade-in">
+              {/* A. CABECERA FICHA ARTISTA ESTILO TAPZZ */}
+              <div className="relative overflow-hidden rounded-3xl bg-gradient-to-b from-cyan-950/40 via-zinc-900/70 to-black/90 border border-white/10 p-6 sm:p-10 backdrop-blur-xl shadow-2xl">
+                {/* Subtle background glow */}
+                <div className="absolute top-0 right-1/4 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
+                <div className="absolute -bottom-10 left-1/4 w-96 h-96 bg-purple-500/10 rounded-full blur-3xl pointer-events-none" />
+
+                {/* Back Button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedArtistName(null);
+                    setArtistSheetData(null);
+                  }}
+                  className="flex items-center gap-2 text-xs font-bold text-zinc-400 hover:text-white transition mb-6 px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 w-fit cursor-pointer"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>Volver al catálogo</span>
+                </button>
+
+                <div className="flex flex-col md:flex-row items-center md:items-start gap-8 relative z-10">
+                  {/* Large Circular Artist Photo */}
+                  <div className="relative group shrink-0">
+                    <img
+                      src={artistSheetData.photoUrl}
+                      alt={artistSheetData.artistName}
+                      className="w-36 h-36 sm:w-44 sm:h-44 rounded-full border-2 border-white/20 shadow-2xl object-cover ring-4 ring-cyan-500/20 bg-zinc-800"
+                    />
+                    <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 px-2.5 py-0.5 rounded-full bg-cyan-950 border border-cyan-400/40 text-[10px] font-black uppercase text-cyan-300 tracking-wider whitespace-nowrap shadow-md">
+                      Verificado
+                    </div>
+                  </div>
+
+                  {/* Info & Stats */}
+                  <div className="flex-1 text-center md:text-left space-y-4 min-w-0 w-full">
+                    <div>
+                      <span className="text-[10px] uppercase font-black px-2.5 py-1 rounded-full bg-cyan-950/80 border border-cyan-400/30 text-cyan-300 tracking-wider">
+                        ARTISTA RANKED
+                      </span>
+                      <h1 className="font-display font-black text-3xl sm:text-5xl text-white tracking-tight mt-2 truncate">
+                        {artistSheetData.artistName}
+                      </h1>
+                    </div>
+
+                    {/* 4 Stats in a row */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3 max-w-2xl">
+                      <div className="p-3 rounded-2xl bg-zinc-900/80 border border-white/10 text-center">
+                        <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5">
+                          PUESTO
+                        </span>
+                        <div className="text-base sm:text-xl font-black text-white">
+                          {artistSheetData.userStats.userRank ? `#${artistSheetData.userStats.userRank}` : "-"}
+                          <span className="text-xs text-zinc-400 font-normal"> / {artistSheetData.userStats.totalPlayers}</span>
+                        </div>
+                      </div>
+
+                      <div className="p-3 rounded-2xl bg-zinc-900/80 border border-white/10 text-center">
+                        <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5">
+                          PUNTOS
+                        </span>
+                        <div className="text-base sm:text-xl font-black text-cyan-400">
+                          {artistSheetData.userStats.totalPoints.toLocaleString()} <span className="text-xs text-zinc-400 font-normal">pts</span>
+                        </div>
+                      </div>
+
+                      <div className="p-3 rounded-2xl bg-zinc-900/80 border border-white/10 text-center">
+                        <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5">
+                          QUIZZES
+                        </span>
+                        <div className="text-base sm:text-xl font-black text-purple-400">
+                          {artistSheetData.userStats.quizzesPlayed}
+                        </div>
+                      </div>
+
+                      <div className="p-3 rounded-2xl bg-zinc-900/80 border border-white/10 text-center">
+                        <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5">
+                          MEJOR PUNTUACIÓN
+                        </span>
+                        <div className="text-base sm:text-xl font-black text-emerald-400">
+                          {artistSheetData.userStats.bestScore} <span className="text-xs text-zinc-400 font-normal">/ 1000</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Action Button: Continuar (if quizzesPlayed > 0) or Jugar (if 0) */}
+                    <div className="pt-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleStartRankedRun({
+                            id: `artist_${artistSheetData.slug}`,
+                            name: artistSheetData.artistName,
+                            kind: "artist",
+                            description: `Quiz de ${artistSheetData.artistName}`,
+                            imageUrl: artistSheetData.photoUrl,
+                            query: artistSheetData.artistName,
+                            playerCount: artistSheetData.userStats.totalPlayers,
+                          })
+                        }
+                        className="w-full sm:w-auto px-8 py-3.5 rounded-full bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-600 hover:opacity-95 text-white font-black text-base shadow-lg shadow-blue-500/25 transition hover:scale-105 active:scale-95 flex items-center justify-center gap-2.5 cursor-pointer"
+                      >
+                        <Play className="w-4 h-4 fill-current" />
+                        <span>{artistSheetData.userStats.quizzesPlayed > 0 ? "Continuar" : "Jugar"}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* B. DOS COLUMNAS INFERIORES */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                {/* Columna Izquierda (7 cols): Ranking con Podium Top 3 */}
+                <div className="lg:col-span-7 bg-zinc-900/70 border border-white/10 rounded-3xl p-6 sm:p-8 space-y-6 shadow-xl backdrop-blur-md flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                      <div className="flex items-center gap-2.5">
+                        <Trophy className="w-5 h-5 text-amber-400" />
+                        <h3 className="font-display font-black text-xl text-white">Ranking</h3>
+                      </div>
+                      <span className="text-xs text-zinc-400">
+                        {artistSheetData.leaderboard.length} clasificados
+                      </span>
+                    </div>
+
+                    {/* Podium Visual Top 3 */}
+                    {(() => {
+                      const top1 = artistSheetData.leaderboard.find((e) => e.rank === 1);
+                      const top2 = artistSheetData.leaderboard.find((e) => e.rank === 2);
+                      const top3 = artistSheetData.leaderboard.find((e) => e.rank === 3);
+
+                      return (
+                        <div className="flex items-end justify-center gap-2 sm:gap-4 pt-10 pb-4 px-2">
+                          {/* #2 Plata (Izquierda) */}
+                          <div className="flex flex-col items-center flex-1 max-w-[120px]">
+                            <div className="relative mb-2">
+                              <img
+                                src={top2?.avatarUrl || "https://api.dicebear.com/7.x/identicon/svg?seed=p2&backgroundColor=0B1710"}
+                                alt={top2?.nickname || "Plata"}
+                                className="w-12 h-12 sm:w-14 sm:h-14 rounded-full border-2 border-zinc-300 object-cover shadow-lg bg-zinc-800"
+                              />
+                              <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-zinc-400 text-black font-black text-[10px] flex items-center justify-center shadow">
+                                2
+                              </span>
+                            </div>
+                            <div className="w-full text-center mb-2 px-1">
+                              <div className="text-xs font-bold text-white truncate">{top2?.nickname || "Vacante"}</div>
+                              <div className="text-[10px] font-mono text-zinc-300 font-bold">{top2 ? `${top2.totalPoints} pts` : "-"}</div>
+                            </div>
+                            <div className="w-full h-24 sm:h-28 bg-gradient-to-t from-zinc-800 to-zinc-700/60 border-t-2 border-zinc-400/80 rounded-t-2xl flex items-center justify-center shadow-lg">
+                              <span className="text-zinc-400 font-black text-sm tracking-wider">#2</span>
+                            </div>
+                          </div>
+
+                          {/* #1 Oro (Centro - El más alto) */}
+                          <div className="flex flex-col items-center flex-1 max-w-[140px]">
+                            <div className="relative mb-2">
+                              <Crown className="w-6 h-6 text-amber-300 mx-auto -mb-1 animate-bounce" />
+                              <img
+                                src={top1?.avatarUrl || "https://api.dicebear.com/7.x/identicon/svg?seed=p1&backgroundColor=0B1710"}
+                                alt={top1?.nickname || "Oro"}
+                                className="w-16 h-16 sm:w-18 sm:h-18 rounded-full border-2 border-amber-300 object-cover shadow-2xl ring-4 ring-amber-400/30 bg-zinc-800"
+                              />
+                              <span className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-amber-400 text-black font-black text-xs flex items-center justify-center shadow-lg">
+                                1
+                              </span>
+                            </div>
+                            <div className="w-full text-center mb-2 px-1">
+                              <div className="text-xs sm:text-sm font-black text-amber-200 truncate">{top1?.nickname || "Vacante"}</div>
+                              <div className="text-xs font-mono text-amber-300 font-extrabold">{top1 ? `${top1.totalPoints} pts` : "-"}</div>
+                            </div>
+                            <div className="w-full h-32 sm:h-36 bg-gradient-to-t from-amber-950/80 to-amber-700/70 border-t-2 border-amber-300 rounded-t-2xl flex items-center justify-center shadow-2xl ring-1 ring-amber-400/20">
+                              <span className="text-amber-200 font-black text-base tracking-wider">#1</span>
+                            </div>
+                          </div>
+
+                          {/* #3 Bronce (Derecha) */}
+                          <div className="flex flex-col items-center flex-1 max-w-[120px]">
+                            <div className="relative mb-2">
+                              <img
+                                src={top3?.avatarUrl || "https://api.dicebear.com/7.x/identicon/svg?seed=p3&backgroundColor=0B1710"}
+                                alt={top3?.nickname || "Bronce"}
+                                className="w-12 h-12 sm:w-14 sm:h-14 rounded-full border-2 border-amber-600 object-cover shadow-md bg-zinc-800"
+                              />
+                              <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-amber-600 text-white font-black text-[10px] flex items-center justify-center shadow">
+                                3
+                              </span>
+                            </div>
+                            <div className="w-full text-center mb-2 px-1">
+                              <div className="text-xs font-bold text-white truncate">{top3?.nickname || "Vacante"}</div>
+                              <div className="text-[10px] font-mono text-amber-400/80 font-bold">{top3 ? `${top3.totalPoints} pts` : "-"}</div>
+                            </div>
+                            <div className="w-full h-20 sm:h-24 bg-gradient-to-t from-amber-950/40 to-amber-900/50 border-t-2 border-amber-600/70 rounded-t-2xl flex items-center justify-center shadow-md">
+                              <span className="text-amber-500 font-black text-sm tracking-wider">#3</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Rows #4 and #5 */}
+                    <div className="space-y-2 mt-4">
+                      {artistSheetData.leaderboard
+                        .filter((e) => e.rank === 4 || e.rank === 5)
+                        .map((entry) => (
+                          <div
+                            key={entry.userId}
+                            className="p-3 rounded-xl bg-black/40 border border-white/5 flex items-center justify-between"
+                          >
+                            <div className="flex items-center gap-3">
+                              <span className="font-mono font-bold text-xs text-zinc-400 w-6">#{entry.rank}</span>
+                              <img
+                                src={entry.avatarUrl}
+                                alt={entry.nickname}
+                                className="w-7 h-7 rounded-full object-cover border border-white/10"
+                              />
+                              <span className="text-xs font-bold text-white truncate max-w-[140px] sm:max-w-[200px]">
+                                {entry.nickname}
+                              </span>
+                            </div>
+                            <span className="font-mono text-xs text-zinc-300 font-semibold">{entry.totalPoints} pts</span>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-3 pt-4 border-t border-white/10">
+                    {/* Fila Destacada del Usuario (Yo) */}
+                    <div className="p-3.5 rounded-2xl bg-cyan-500/15 border border-cyan-400/30 flex items-center justify-between shadow-lg shadow-cyan-500/5">
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono font-black text-xs text-cyan-300 w-7">
+                          {artistSheetData.userStats.userRank ? `#${artistSheetData.userStats.userRank}` : "-"}
+                        </span>
+                        <img
+                          src={user?.avatarUrl || "https://api.dicebear.com/7.x/identicon/svg?seed=me&backgroundColor=0B1710"}
+                          alt="Yo"
+                          className="w-8 h-8 rounded-full border border-cyan-400 object-cover"
+                        />
+                        <div>
+                          <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                            <span>Yo</span>
+                            {user?.nickname && <span className="text-zinc-400 font-normal">({user.nickname})</span>}
+                          </div>
+                          <div className="text-[10px] text-cyan-300">
+                            {artistSheetData.userStats.quizzesPlayed > 0
+                              ? `${artistSheetData.userStats.quizzesPlayed} quizzes completados`
+                              : "Aún no has jugado"}
+                          </div>
+                        </div>
+                      </div>
+                      <span className="font-mono text-sm font-black text-cyan-300">
+                        {artistSheetData.userStats.totalPoints} pts
+                      </span>
+                    </div>
+
+                    {/* Botón Ver el ranking completo > */}
+                    <button
+                      type="button"
+                      onClick={() => setFullArtistLeaderboardOpen(true)}
+                      className="w-full py-3 rounded-xl bg-white/5 hover:bg-white/10 text-cyan-400 font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer border border-cyan-500/20 hover:border-cyan-400/40"
+                    >
+                      <span>Ver el ranking completo</span>
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Columna Derecha (5 cols): Sus fans también juegan (12 artistas) */}
+                <div className="lg:col-span-5 bg-zinc-900/70 border border-white/10 rounded-3xl p-6 sm:p-8 space-y-5 shadow-xl backdrop-blur-md">
+                  <div className="border-b border-white/10 pb-4 flex items-center justify-between">
+                    <h3 className="font-display font-black text-lg text-white">Sus fans también juegan</h3>
+                    <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">12 ARTISTAS</span>
+                  </div>
+
+                  {/* Grid 4 cols x 3 rows */}
+                  <div className="grid grid-cols-4 gap-3 sm:gap-4 pt-1">
+                    {artistSheetData.relatedArtists.map((rel) => (
+                      <button
+                        key={rel.slug}
+                        type="button"
+                        onClick={() => handleOpenArtistSheet(rel.name)}
+                        className="flex flex-col items-center group text-center cursor-pointer transition focus:outline-none"
+                        title={`Abrir ficha de ${rel.name}`}
+                      >
+                        <div className="relative">
+                          <img
+                            src={rel.imageUrl}
+                            alt={rel.name}
+                            className="w-16 h-16 sm:w-18 sm:h-18 rounded-full object-cover border-2 border-white/10 group-hover:border-cyan-400 group-hover:scale-105 shadow-md transition duration-300 bg-zinc-800"
+                            loading="lazy"
+                          />
+                        </div>
+                        <span className="text-[11px] font-semibold text-zinc-300 group-hover:text-cyan-300 transition truncate max-w-[70px] sm:max-w-[80px] mt-2 block">
+                          {rel.name}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null
         ) : (
           /* ========================================================
               CATÁLOGO RANKED ESTILO TAPPZ (ARTISTAS & TEMAS)
@@ -742,7 +1211,7 @@ export default function RankedArenaPage() {
                   Demuestra tu nivel musical
                 </h1>
                 <p className="text-zinc-300 text-sm sm:text-base max-w-xl">
-                  Quizzes de <strong>10 canciones</strong> sobre <strong>1000 puntos</strong>. Compite por artistas o temáticas y sube de rango desde <strong>Bronce</strong> hasta <strong>Maestro</strong>.
+                  Compite en partidas sobre <strong>1000 puntos</strong>. Compite por artistas o temáticas y sube de rango desde <strong>Bronce</strong> hasta <strong>Maestro</strong>.
                 </p>
               </div>
 
@@ -789,7 +1258,10 @@ export default function RankedArenaPage() {
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
               <div className="flex rounded-2xl bg-black/50 p-1 border border-emerald-500/20 w-full sm:w-auto">
                 <button
-                  onClick={() => setActiveTab("artist")}
+                  onClick={() => {
+                    setActiveTab("artist");
+                    setShowLiveDropdown(false);
+                  }}
                   className={`flex-1 sm:flex-none px-6 py-2.5 rounded-xl font-bold text-xs transition cursor-pointer flex items-center justify-center gap-2 ${
                     activeTab === "artist"
                       ? "bg-goblinPrimary text-black shadow-md"
@@ -800,7 +1272,10 @@ export default function RankedArenaPage() {
                   <span>Por Artista</span>
                 </button>
                 <button
-                  onClick={() => setActiveTab("theme")}
+                  onClick={() => {
+                    setActiveTab("theme");
+                    setShowLiveDropdown(false);
+                  }}
                   className={`flex-1 sm:flex-none px-6 py-2.5 rounded-xl font-bold text-xs transition cursor-pointer flex items-center justify-center gap-2 ${
                     activeTab === "theme"
                       ? "bg-goblinPrimary text-black shadow-md"
@@ -812,8 +1287,8 @@ export default function RankedArenaPage() {
                 </button>
               </div>
 
-              {/* Search Bar */}
-              <div className="relative w-full sm:w-80">
+              {/* Real-time Debounced Search Bar with Dropdown */}
+              <div ref={searchContainerRef} className="relative w-full sm:w-80">
                 <Search className="w-4 h-4 text-zinc-400 absolute left-3.5 top-3.5" />
                 <input
                   type="text"
@@ -824,8 +1299,67 @@ export default function RankedArenaPage() {
                   }
                   value={searchFilter}
                   onChange={(e) => setSearchFilter(e.target.value)}
+                  onFocus={() => {
+                    if (activeTab === "artist" && searchFilter.trim().length >= 2) {
+                      setShowLiveDropdown(true);
+                    }
+                  }}
                   className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-black/60 border border-emerald-500/20 text-white text-xs focus:outline-none focus:border-goblinLime placeholder:text-zinc-400"
                 />
+
+                {/* Live Dropdown for Artist Search */}
+                {showLiveDropdown && activeTab === "artist" && searchFilter.trim().length >= 2 && (
+                  <div className="absolute top-full left-0 right-0 mt-2 bg-zinc-900/95 backdrop-blur-xl border border-white/15 rounded-2xl shadow-2xl z-50 overflow-hidden divide-y divide-white/5 max-h-80 overflow-y-auto">
+                    {isSearchingLive ? (
+                      <div className="p-4 text-center text-xs text-zinc-400 flex items-center justify-center gap-2">
+                        <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+                        <span>Buscando artistas en directo...</span>
+                      </div>
+                    ) : liveSearchResults.length > 0 ? (
+                      liveSearchResults.map((artist) => (
+                        <button
+                          key={artist.id}
+                          type="button"
+                          onClick={() => {
+                            setShowLiveDropdown(false);
+                            setSearchFilter("");
+                            handleOpenArtistSheet(artist.name);
+                          }}
+                          className="w-full px-4 py-3 text-left hover:bg-white/[0.08] transition flex items-center gap-3 group cursor-pointer"
+                        >
+                          <img
+                            src={artist.imageUrl || `/api/artists/photo?name=${encodeURIComponent(artist.name)}`}
+                            alt={artist.name}
+                            className="w-10 h-10 rounded-full object-cover border border-white/15 group-hover:border-cyan-400 transition shrink-0 bg-zinc-800"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="font-bold text-sm text-white group-hover:text-cyan-300 transition truncate">
+                              {artist.name}
+                            </div>
+                            <div className="text-[11px] text-zinc-400 truncate">
+                              {artist.genres?.length ? artist.genres.join(", ") : "Artista musical"}
+                            </div>
+                          </div>
+                          <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-cyan-400 group-hover:translate-x-0.5 transition shrink-0" />
+                        </button>
+                      ))
+                    ) : (
+                      <div className="p-4 text-center text-xs text-zinc-400">
+                        No se encontraron coincidencias.{" "}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowLiveDropdown(false);
+                            handleOpenArtistSheet(searchFilter.trim());
+                          }}
+                          className="text-cyan-400 underline font-bold ml-1 hover:text-cyan-300"
+                        >
+                          Abrir ficha de &quot;{searchFilter.trim()}&quot;
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -846,27 +1380,18 @@ export default function RankedArenaPage() {
                       Jugar Ranked de &ldquo;{searchFilter.trim()}&rdquo;
                     </h3>
                     <p className="text-xs text-zinc-300">
-                      Quiz de 10 canciones en directo con audio verificado de {searchFilter.trim()}
+                      Quiz en directo con audio verificado de {searchFilter.trim()}
                     </p>
                   </div>
                 </div>
 
                 <button
-                  onClick={() =>
-                    handleStartRankedRun({
-                      id: `custom_${encodeURIComponent(searchFilter.trim().toLowerCase())}`,
-                      name: searchFilter.trim(),
-                      kind: "artist",
-                      description: `Quiz de 10 canciones de ${searchFilter.trim()}`,
-                      imageUrl: `/api/artists/photo?name=${encodeURIComponent(searchFilter.trim())}`,
-                      query: searchFilter.trim(),
-                      playerCount: 0,
-                    })
-                  }
+                  type="button"
+                  onClick={() => handleOpenArtistSheet(searchFilter.trim())}
                   className="px-6 py-3 rounded-xl bg-gradient-to-r from-goblinPrimary to-goblinLime text-black font-extrabold text-xs shadow-md transition hover:scale-105 flex items-center gap-2 cursor-pointer shrink-0"
                 >
                   <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>Jugar Quiz (10 Preguntas)</span>
+                  <span>Jugar</span>
                 </button>
               </div>
             )}
@@ -876,7 +1401,14 @@ export default function RankedArenaPage() {
               {filteredCategories.map((cat) => (
                 <div
                   key={cat.id}
-                  className="glass-card rounded-3xl p-5 border border-emerald-500/20 hover:border-goblinLime/60 transition group flex flex-col justify-between space-y-4"
+                  onClick={() => {
+                    if (cat.kind === "artist") {
+                      handleOpenArtistSheet(cat.name);
+                    }
+                  }}
+                  className={`glass-card rounded-3xl p-5 border border-emerald-500/20 hover:border-goblinLime/60 transition group flex flex-col justify-between space-y-4 ${
+                    cat.kind === "artist" ? "cursor-pointer" : ""
+                  }`}
                 >
                   <div className="flex items-start gap-3.5">
                     <img
@@ -902,17 +1434,33 @@ export default function RankedArenaPage() {
 
                   <div className="flex items-center gap-2 pt-2 border-t border-emerald-500/10">
                     <button
-                      onClick={() => handleStartRankedRun(cat)}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (cat.kind === "artist") {
+                          handleOpenArtistSheet(cat.name);
+                        } else {
+                          handleStartRankedRun(cat);
+                        }
+                      }}
                       className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-goblinPrimary to-goblinLime text-black font-extrabold text-xs shadow-md transition hover:scale-[1.02] flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <Play className="w-3.5 h-3.5 fill-current" />
-                      <span>Jugar Ranked (10 Q)</span>
+                      <span>Jugar</span>
                     </button>
 
                     <button
-                      onClick={() => handleOpenLeaderboard(cat)}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (cat.kind === "artist") {
+                          handleOpenArtistSheet(cat.name);
+                        } else {
+                          handleOpenLeaderboard(cat);
+                        }
+                      }}
                       className="p-2.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-emerald-500/20 text-zinc-300 hover:text-white transition cursor-pointer"
-                      title="Ver tabla de clasificación"
+                      title={cat.kind === "artist" ? "Ver ficha y ranking" : "Ver tabla de clasificación"}
                     >
                       <Trophy className="w-4 h-4 text-amber-400" />
                     </button>
@@ -1018,6 +1566,101 @@ export default function RankedArenaPage() {
                 })}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Modal Top 50 del Artista (Ficha Tapzz) */}
+      {fullArtistLeaderboardOpen && artistSheetData && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="glass-card rounded-3xl max-w-lg w-full p-6 border border-white/15 space-y-5 animate-scaleUp bg-[#0C120E] max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-white/10 shrink-0">
+              <div className="flex items-center gap-3">
+                <img
+                  src={artistSheetData.photoUrl}
+                  alt={artistSheetData.artistName}
+                  className="w-10 h-10 rounded-full object-cover border border-cyan-400 shadow-md"
+                />
+                <div>
+                  <h3 className="font-display font-black text-base text-white">
+                    Ranking Top 50 · {artistSheetData.artistName}
+                  </h3>
+                  <div className="text-xs text-zinc-400">
+                    {artistSheetData.leaderboard.length} jugadores clasificados
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFullArtistLeaderboardOpen(false)}
+                className="p-1.5 rounded-full hover:bg-white/10 text-zinc-400 hover:text-white transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+              {artistSheetData.leaderboard.length === 0 ? (
+                <div className="py-12 text-center text-xs text-zinc-400 space-y-2">
+                  <Trophy className="w-8 h-8 text-zinc-600 mx-auto" />
+                  <div>Aún no hay puntuaciones registradas para este artista.</div>
+                  <div className="text-cyan-400 font-semibold">¡Sé el primero en jugar y coronarte!</div>
+                </div>
+              ) : (
+                artistSheetData.leaderboard.map((entry) => (
+                  <div
+                    key={entry.userId}
+                    className={`p-3 rounded-2xl flex items-center justify-between border transition ${
+                      entry.isCurrentUser
+                        ? "bg-cyan-500/15 border-cyan-400/40 shadow-md shadow-cyan-500/5"
+                        : "bg-black/40 border-white/5 hover:border-white/15"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span
+                        className={`font-mono font-bold text-xs w-6 text-center shrink-0 ${
+                          entry.rank === 1
+                            ? "text-amber-300 font-black"
+                            : entry.rank === 2
+                            ? "text-zinc-300 font-black"
+                            : entry.rank === 3
+                            ? "text-amber-500 font-black"
+                            : "text-zinc-400"
+                        }`}
+                      >
+                        {entry.rank === 1 ? "👑" : entry.rank === 2 ? "🥈" : entry.rank === 3 ? "🥉" : `#${entry.rank}`}
+                      </span>
+                      <img
+                        src={entry.avatarUrl}
+                        alt={entry.nickname}
+                        className="w-8 h-8 rounded-full object-cover border border-white/10 shrink-0 bg-zinc-800"
+                      />
+                      <div className="truncate max-w-[160px] sm:max-w-[220px]">
+                        <span className="text-xs font-bold text-white truncate block">
+                          {entry.nickname}
+                          {entry.isCurrentUser && (
+                            <span className="text-cyan-300 ml-1.5 font-normal">(Tú)</span>
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                    <span className="font-mono text-xs font-extrabold text-cyan-300 shrink-0">
+                      {entry.totalPoints} pts
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="pt-2 border-t border-white/10 shrink-0">
+              <button
+                type="button"
+                onClick={() => setFullArtistLeaderboardOpen(false)}
+                className="w-full py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-white font-bold text-xs transition cursor-pointer"
+              >
+                Cerrar
+              </button>
+            </div>
           </div>
         </div>
       )}
