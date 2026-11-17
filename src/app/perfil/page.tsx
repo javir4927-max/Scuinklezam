@@ -17,10 +17,12 @@ import {
   Disc3,
   Loader2,
   ArrowRight,
+  BarChart3,
 } from "lucide-react";
 import { RANKED_CATEGORIES, RankedCategory, calculateTier, RankedTier } from "@/lib/rankedTypes";
 import UserAuthModal from "@/components/UserAuthModal";
 import SpotifyConnectModal from "@/components/SpotifyConnectModal";
+import SpotifyStatsDetailModal from "@/components/SpotifyStatsDetailModal";
 
 interface ProfileStats {
   totalPlays: number;
@@ -47,6 +49,7 @@ export default function ProfilePage() {
 
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [spotifyModalOpen, setSpotifyModalOpen] = useState(false);
+  const [showStatsDetailModal, setShowStatsDetailModal] = useState(false);
 
   const fetchProfile = async () => {
     setLoading(true);
@@ -154,7 +157,18 @@ export default function ProfilePage() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
+                {user.provider === "spotify" && (
+                  <button
+                    type="button"
+                    onClick={() => setShowStatsDetailModal(true)}
+                    className="bg-zinc-800/90 hover:bg-zinc-700 text-zinc-100 border border-white/10 rounded-xl px-4 py-2.5 text-xs font-semibold transition flex items-center gap-2 cursor-pointer shadow-sm"
+                  >
+                    <BarChart3 className="w-4 h-4 text-emerald-400" />
+                    <span>Ver stats a detalle</span>
+                  </button>
+                )}
+
                 <Link
                   href="/ranked"
                   className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-goblinPrimary to-goblinLime text-black font-extrabold text-xs shadow-md transition hover:scale-105 flex items-center gap-2 cursor-pointer"
@@ -355,6 +369,12 @@ export default function ProfilePage() {
       <SpotifyConnectModal
         isOpen={spotifyModalOpen}
         onClose={() => setSpotifyModalOpen(false)}
+      />
+
+      <SpotifyStatsDetailModal
+        isOpen={showStatsDetailModal}
+        onClose={() => setShowStatsDetailModal(false)}
+        userDisplayName={user?.nickname}
       />
     </div>
   );

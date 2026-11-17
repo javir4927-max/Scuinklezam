@@ -2,9 +2,10 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import Link from "next/link";
-import { Users, Trophy, Play, ChevronDown, BarChart2, Flame, LogOut, Menu, X, Music2, User } from "lucide-react";
+import { Users, Trophy, Play, ChevronDown, BarChart2, Flame, LogOut, Menu, X, Music2, User, BarChart3 } from "lucide-react";
 import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
 import GlobalVolumeControl from "@/components/GlobalVolumeControl";
+import SpotifyStatsDetailModal from "@/components/SpotifyStatsDetailModal";
 
 interface NavbarProps {
   onOpenMiniQuiz?: (topic?: string) => void;
@@ -23,6 +24,7 @@ export default function Navbar({
 }: NavbarProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [showStatsDetailModal, setShowStatsDetailModal] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
   const { isConnected, user, logout } = useSpotifyAuth();
@@ -177,16 +179,20 @@ export default function Navbar({
                     <span>Mi Perfil y Récords</span>
                   </Link>
 
-                  <button
-                    onClick={() => {
-                      setUserMenuOpen(false);
-                      onOpenSpotifyModal && onOpenSpotifyModal();
-                    }}
-                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-zinc-200 hover:text-white hover:bg-emerald-950/60 flex items-center gap-2.5 transition cursor-pointer"
-                  >
-                    <BarChart2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                    <span>Ver mis Stats de Spotify</span>
-                  </button>
+                  {/* Botón Ver stats a detalle (Reutilizado del multiplayer) */}
+                  <div className="py-0.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUserMenuOpen(false);
+                        setShowStatsDetailModal(true);
+                      }}
+                      className="w-full bg-zinc-800/90 hover:bg-zinc-700 text-zinc-100 border border-white/10 rounded-xl px-3.5 py-2 text-xs font-medium transition flex items-center gap-2 cursor-pointer shadow-sm text-left"
+                    >
+                      <BarChart3 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>Ver stats a detalle</span>
+                    </button>
+                  </div>
 
                   <Link
                     href="/ranked"
@@ -318,22 +324,37 @@ export default function Navbar({
             </button>
           )}
 
-          <div className="pt-2 border-t border-emerald-500/15 flex items-center justify-between">
+          <div className="pt-2 border-t border-emerald-500/15 flex flex-col gap-2.5">
             {isConnected && user ? (
-              <div className="flex items-center justify-between w-full">
-                <span className="text-xs text-white font-bold truncate max-w-[200px]">
-                  {user.displayName}
-                </span>
+              <>
+                <div className="flex items-center justify-between w-full">
+                  <span className="text-xs text-white font-bold truncate max-w-[200px]">
+                    {user.displayName}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      logout();
+                    }}
+                    className="text-xs text-rose-400 font-semibold"
+                  >
+                    Cerrar sesión
+                  </button>
+                </div>
+
                 <button
+                  type="button"
                   onClick={() => {
                     setMobileMenuOpen(false);
-                    logout();
+                    setShowStatsDetailModal(true);
                   }}
-                  className="text-xs text-rose-400 font-semibold"
+                  className="w-full bg-zinc-800/90 hover:bg-zinc-700 text-zinc-100 border border-white/10 rounded-xl px-3.5 py-2 text-xs font-medium transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
                 >
-                  Cerrar sesión
+                  <BarChart3 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Ver stats a detalle</span>
                 </button>
-              </div>
+              </>
             ) : (
               <a
                 href="/api/auth/spotify/login"
@@ -348,6 +369,13 @@ export default function Navbar({
           </div>
         </div>
       )}
+
+      {/* MODAL DETALLE DE STATS DE SPOTIFY (#1 - #50) */}
+      <SpotifyStatsDetailModal
+        isOpen={showStatsDetailModal}
+        onClose={() => setShowStatsDetailModal(false)}
+        userDisplayName={user?.displayName}
+      />
     </header>
   );
 }
