@@ -157,6 +157,7 @@ export default function MiniQuizModal({
       return;
     }
 
+    audioPlayer.unlock();
     setIsLoading(true);
     setRounds([]);
     setCurrentRoundIdx(0);

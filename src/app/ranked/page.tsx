@@ -314,6 +314,7 @@ export default function RankedArenaPage() {
 
   // Launch a Ranked Run (10 Questions Exact / 1000 Pts Max)
   const handleStartRankedRun = async (cat: RankedCategory) => {
+    audioPlayer.unlock();
     setActiveCategory(cat);
     setGameState("loading");
     setScore(0);

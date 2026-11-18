@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { playSynthNote } from "@/lib/audio";
 import { playCorrectSound, playWrongSound } from "@/lib/soundEffects";
-import { audioPlayer } from "@/lib/audioPlayer";
+import { audioPlayer, SILENT_WAV } from "@/lib/audioPlayer";
+import { useGlobalVolume, getEffectiveVolume } from "@/lib/globalVolume";
 import { calculateRoundPoints, ROUND_DURATION_SEC, REVEAL_DURATION_MS } from "@/lib/scoring";
 import { normalizeSongTitle, matchSongTitleStrict, deepNormalize } from "@/lib/songMatching";
 import {
@@ -242,7 +243,12 @@ function PlayArenaContent() {
     key: number;
   } | null>(null);
   const scorePopupTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const [isAudioBlocked, setIsAudioBlocked] = useState<boolean>(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [showAudioUnlockButton, setShowAudioUnlockButton] = useState<boolean>(false);
+  const [audioUnavailable, setAudioUnavailable] = useState<boolean>(false);
+  const hasRescuedAudioRef = useRef<string | null>(null);
+  const hasUnlockedAudioRef = useRef<boolean>(false);
+  const { volume: globalVolume, muted: isGlobalMutedState } = useGlobalVolume();
   const [savedTrackIds, setSavedTrackIds] = useState<Set<string>>(new Set());
   const [savingAll, setSavingAll] = useState<boolean>(false);
 
@@ -269,13 +275,106 @@ function PlayArenaContent() {
     }
   }, [room?.currentRound, room?.status]);
 
-  // Subscribe to audio player state
+  // Audio unlock helper using silent WAV
+  const unlockAudioElement = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (!hasUnlockedAudioRef.current) {
+      try {
+        if (!audio.src) {
+          audio.src = SILENT_WAV;
+          audio.muted = false;
+          audio.volume = Math.max(0.05, getEffectiveVolume() || 0.25);
+          const p = audio.play();
+          if (p !== undefined) {
+            p.then(() => {
+              audio.pause();
+              audio.currentTime = 0;
+              hasUnlockedAudioRef.current = true;
+            }).catch(() => {});
+          }
+        } else {
+          hasUnlockedAudioRef.current = true;
+        }
+      } catch {}
+    }
+  };
+
+  // Unlock audio on first user gesture (click or tap)
   useEffect(() => {
-    const unsub = audioPlayer.subscribe((state) => {
-      setIsAudioBlocked(state.isBlocked);
-    });
-    return () => unsub();
+    const onFirstGesture = () => {
+      unlockAudioElement();
+      audioPlayer.unlock();
+    };
+    window.addEventListener("click", onFirstGesture, { once: true, passive: true });
+    window.addEventListener("touchstart", onFirstGesture, { once: true, passive: true });
+    return () => {
+      window.removeEventListener("click", onFirstGesture);
+      window.removeEventListener("touchstart", onFirstGesture);
+    };
   }, []);
+
+  // Synchronize persistent audio element with global volume
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.muted = isGlobalMutedState;
+      audioRef.current.volume = isGlobalMutedState ? 0 : Math.max(0.05, globalVolume);
+    }
+  }, [globalVolume, isGlobalMutedState]);
+
+  useEffect(() => {
+    const handleVol = (e: any) => {
+      if (audioRef.current && e.detail) {
+        audioRef.current.muted = e.detail.volume === 0;
+        audioRef.current.volume = Math.max(0.05, e.detail.volume);
+      }
+    };
+    window.addEventListener("scuinklezam_volume_change", handleVol);
+    return () => window.removeEventListener("scuinklezam_volume_change", handleVol);
+  }, []);
+
+  // Safe fallback resolver for missing or failing audio previews without desynchronizing rounds
+  const handleAudioFallback = async (roundData: any) => {
+    const target = roundData?.targetTrack;
+    if (!target?.name) return;
+    const rescueKey = `${target.name}-${target.artist || ""}`;
+    if (hasRescuedAudioRef.current === rescueKey) {
+      setAudioUnavailable(true);
+      return;
+    }
+    hasRescuedAudioRef.current = rescueKey;
+
+    try {
+      const res = await fetch(
+        `/api/audio/resolve?title=${encodeURIComponent(target.name)}&artist=${encodeURIComponent(target.artist || "")}`
+      );
+      if (!res.ok) throw new Error("Resolve failed");
+      const data = await res.json();
+      if (data.success && data.previewUrl && audioRef.current) {
+        const audio = audioRef.current;
+        audio.pause();
+        audio.currentTime = 0;
+        audio.src = data.previewUrl;
+        audio.muted = isGlobalMutedState;
+        audio.volume = isGlobalMutedState ? 0 : Math.max(0.05, globalVolume);
+        audio.play().then(() => {
+          setShowAudioUnlockButton(false);
+          setAudioUnavailable(false);
+        }).catch((err) => {
+          if (err.name === "AbortError") return;
+          if (err.name === "NotAllowedError") {
+            setShowAudioUnlockButton(true);
+          } else {
+            setAudioUnavailable(true);
+          }
+        });
+        return;
+      }
+    } catch (err) {
+      console.warn("[Audio] Fallback resolve failed:", err);
+    }
+    setAudioUnavailable(true);
+  };
 
   // Artist Autocomplete Debounce (250ms)
   useEffect(() => {
@@ -642,6 +741,9 @@ function PlayArenaContent() {
 
     // Status changed to Countdown
     if (room.status === "countdown" && prevStatusRef.current !== "countdown") {
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
       playSynthNote(440, 0.2);
       activeTimerRoundRef.current = room.currentRound;
       hasSubmittedRef.current = false;
@@ -660,22 +762,37 @@ function PlayArenaContent() {
       setSelectedOption(null);
       setSelectedFriend(null);
       setScorePopup(null);
+      setAudioUnavailable(false);
 
-      // Play audio preview via centralized audioPlayer
-      if (currentRoundData?.targetTrack?.previewUrl) {
-        audioPlayer.playTrack(currentRoundData.targetTrack.previewUrl);
-        // Preload next round audio
-        if (room.rounds[room.currentRound]) {
-          audioPlayer.preloadNext(room.rounds[room.currentRound]?.targetTrack?.previewUrl);
+      const previewUrl = currentRoundData?.targetTrack?.previewUrl;
+      const audio = audioRef.current;
+      if (audio) {
+        if (previewUrl) {
+          audio.pause();
+          audio.currentTime = 0;
+          audio.src = previewUrl;
+          audio.muted = isGlobalMutedState;
+          audio.volume = isGlobalMutedState ? 0 : Math.max(0.05, globalVolume);
+          audio.play().then(() => {
+            setShowAudioUnlockButton(false);
+          }).catch((err: any) => {
+            if (err?.name === "AbortError") return;
+            if (err?.name === "NotAllowedError") {
+              setShowAudioUnlockButton(true);
+            } else {
+              handleAudioFallback(currentRoundData);
+            }
+          });
+        } else {
+          handleAudioFallback(currentRoundData);
         }
       }
     }
 
     // Status changed to Round Reveal
     if (room.status === "round_reveal" && prevStatusRef.current !== "round_reveal") {
-      // Preload next track while revealing
-      if (room.rounds[room.currentRound]) {
-        audioPlayer.preloadNext(room.rounds[room.currentRound]?.targetTrack?.previewUrl);
+      if (audioRef.current) {
+        audioRef.current.pause();
       }
 
       // Reveal sound (only if answer sound was not already played in this round)
@@ -692,6 +809,9 @@ function PlayArenaContent() {
 
     // Status changed to Finished
     if (room.status === "finished" && prevStatusRef.current !== "finished") {
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
       audioPlayer.stop();
       playSynthNote(523.25, 0.2);
       setTimeout(() => playSynthNote(659.25, 0.2), 150);
@@ -700,11 +820,15 @@ function PlayArenaContent() {
 
     prevStatusRef.current = room.status;
     prevRoundRef.current = room.currentRound;
-  }, [room?.status, room?.currentRound, playerId]);
+  }, [room?.status, room?.currentRound, playerId, globalVolume, isGlobalMutedState]);
 
   // 5. Cleanup Audio on unmount
   useEffect(() => {
     return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+      }
       audioPlayer.stop();
     };
   }, []);
@@ -727,6 +851,7 @@ function PlayArenaContent() {
 
   // Create Room (0 initial artists by default)
   const handleCreateRoom = async (initialArtist?: string) => {
+    unlockAudioElement();
     setIsLoading(true);
     setErrorMessage(null);
     try {
@@ -760,6 +885,7 @@ function PlayArenaContent() {
 
   // Join Room (0 initial artists by default)
   const handleJoinRoom = async (codeToJoin: string) => {
+    unlockAudioElement();
     const cleanCode = codeToJoin.trim().toUpperCase();
     if (!cleanCode) return;
 
@@ -824,6 +950,7 @@ function PlayArenaContent() {
 
   // Start Ranked Match
   const handleStartGame = async () => {
+    unlockAudioElement();
     if (!roomCode || isStartingGame) return;
     setIsStartingGame(true);
     setIsLoading(true);
@@ -1375,6 +1502,22 @@ function PlayArenaContent() {
 
   return (
     <div className="min-h-screen bg-[#060D09] text-white flex flex-col font-sans selection:bg-goblinPrimary selection:text-black">
+      {/* Persistent Single Audio Element (no dynamic key, no crossOrigin) */}
+      <audio
+        ref={audioRef}
+        preload="auto"
+        playsInline
+        onError={() => {
+          if (room?.status === "playing" && room?.rounds?.[room.currentRound - 1]) {
+            handleAudioFallback(room.rounds[room.currentRound - 1]);
+          }
+        }}
+        onPlaying={() => {
+          setShowAudioUnlockButton(false);
+          setAudioUnavailable(false);
+        }}
+        className="hidden"
+      />
       {/* Unified Top Navbar */}
       <Navbar
         activeRoute="play"
@@ -2692,14 +2835,28 @@ function PlayArenaContent() {
 
               {/* Synchronized 15s Timer & Audio */}
               <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-                {isAudioBlocked && (
+                {showAudioUnlockButton && (
                   <button
-                    onClick={() => audioPlayer.resume()}
-                    className="px-2.5 py-1 rounded-xl bg-goblinLime text-black font-bold text-xs hover:bg-emerald-400 animate-bounce transition flex items-center gap-1 shadow-lg cursor-pointer"
+                    type="button"
+                    onClick={() => {
+                      if (audioRef.current) {
+                        audioRef.current.muted = false;
+                        audioRef.current.play().then(() => {
+                          setShowAudioUnlockButton(false);
+                        }).catch(() => {});
+                      }
+                    }}
+                    className="px-2.5 py-1 rounded-xl bg-goblinLime text-black font-bold text-xs hover:bg-emerald-400 animate-bounce transition flex items-center gap-1.5 shadow-lg cursor-pointer shrink-0"
                   >
-                    <Volume2 className="w-3.5 h-3.5" />
-                    <span>🔊 Tocar para activar sonido</span>
+                    <Volume2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>Tocar para activar sonido</span>
                   </button>
+                )}
+
+                {audioUnavailable && (
+                  <span className="text-[11px] font-semibold text-amber-400/90 bg-amber-950/60 border border-amber-500/30 px-2 py-0.5 rounded-lg shrink-0">
+                    ⚠️ Audio no disponible en este fragmento
+                  </span>
                 )}
 
                 {/* Audio Equalizer visualizer animation */}

@@ -2,6 +2,9 @@
 
 import { playSynthBeat } from "./audio";
 
+export const SILENT_WAV =
+  "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
+
 export interface AudioPlayerState {
   isPlaying: boolean;
   isBlocked: boolean;
@@ -15,12 +18,12 @@ class AudioPlayerService {
   private preloaderEl: HTMLAudioElement | null = null;
   private currentUrl: string | null = null;
   private currentVolume: number = 0.25;
-  private stallTimer: NodeJS.Timeout | null = null;
   private beatInterval: NodeJS.Timeout | null = null;
   private isFallbackBeating: boolean = false;
   private listeners: Set<AudioStateListener> = new Set();
   public isBlocked: boolean = false;
   public isPlaying: boolean = false;
+  public isUnlocked: boolean = false;
 
   constructor() {
     if (typeof window !== "undefined") {
@@ -37,14 +40,13 @@ class AudioPlayerService {
       }
 
       this.audioEl = new Audio();
-      this.audioEl.crossOrigin = "anonymous";
-      this.audioEl.volume = this.currentVolume;
+      // DO NOT set crossOrigin="anonymous": causes CORS failures with Apple CDN (audio-ssl.itunes.apple.com)
+      this.audioEl.volume = Math.max(0.05, this.currentVolume);
 
       this.preloaderEl = new Audio();
       this.preloaderEl.preload = "auto";
 
       this.audioEl.addEventListener("playing", () => {
-        this.clearStallTimer();
         this.stopFallbackBeats();
         this.isPlaying = true;
         this.isBlocked = false;
@@ -61,12 +63,9 @@ class AudioPlayerService {
         this.notify();
       });
 
-      this.audioEl.addEventListener("error", () => {
+      this.audioEl.addEventListener("error", (e) => {
+        console.warn("[AudioPlayer] Media error event:", e);
         this.handlePlaybackFailure();
-      });
-
-      this.audioEl.addEventListener("stalled", () => {
-        // Handled by stallTimer
       });
     }
   }
@@ -89,20 +88,44 @@ class AudioPlayerService {
   }
 
   /**
+   * Unlocks audio on first user gesture with silent WAV
+   */
+  public async unlock(): Promise<boolean> {
+    if (typeof window === "undefined" || !this.audioEl) return false;
+    try {
+      this.audioEl.muted = false;
+      this.audioEl.volume = Math.max(0.05, this.currentVolume);
+      this.audioEl.src = SILENT_WAV;
+      const playPromise = this.audioEl.play();
+      if (playPromise !== undefined) {
+        await playPromise;
+        this.audioEl.pause();
+        this.audioEl.currentTime = 0;
+        this.isUnlocked = true;
+        this.isBlocked = false;
+        this.notify();
+        return true;
+      }
+    } catch {
+      // Ignored if user hasn't interacted yet
+    }
+    return false;
+  }
+
+  /**
    * Preloads the next round's audio URL so transitions are instantaneous
    */
   public preloadNext(url?: string | null) {
     if (typeof window === "undefined" || !url || !this.preloaderEl) return;
     try {
       this.preloaderEl.src = url;
-      this.preloaderEl.load();
     } catch {
       // Ignore preloader exceptions
     }
   }
 
   /**
-   * Plays a track preview cleanly stopping previous audio immediately.
+   * Plays a track preview cleanly stopping previous audio immediately without audio.load()
    */
   public async playTrack(url?: string | null): Promise<boolean> {
     this.stop();
@@ -120,31 +143,33 @@ class AudioPlayerService {
     this.notify();
 
     try {
-      this.audioEl.src = url;
+      this.audioEl.pause();
       this.audioEl.currentTime = 0;
-      this.audioEl.volume = this.currentVolume;
-      this.audioEl.load();
-
-      // Arm 2000ms safety timer: if playback hasn't started, activate rhythmic Web Audio fallback
-      this.clearStallTimer();
-      this.stallTimer = setTimeout(() => {
-        if (!this.isPlaying) {
-          this.handlePlaybackFailure();
-        }
-      }, 2000);
+      this.audioEl.src = url;
+      this.audioEl.volume = Math.max(0.05, this.currentVolume);
 
       const playPromise = this.audioEl.play();
       if (playPromise !== undefined) {
         await playPromise;
-        this.clearStallTimer();
         this.stopFallbackBeats();
         this.isPlaying = true;
         this.isBlocked = false;
         this.notify();
         return true;
       }
-    } catch (err) {
-      console.warn("Audio autoplay blocked or network error:", err);
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        // Fast track switch, safe to ignore
+        return false;
+      }
+      if (err?.name === "NotAllowedError") {
+        // Real autoplay block
+        this.isBlocked = true;
+        this.isPlaying = false;
+        this.notify();
+        return false;
+      }
+      console.warn("[AudioPlayer] Playback error:", err?.name, url);
       this.handlePlaybackFailure();
     }
 
@@ -159,15 +184,15 @@ class AudioPlayerService {
     if (!this.audioEl || !this.currentUrl) return false;
 
     try {
+      this.audioEl.muted = false;
+      this.audioEl.volume = Math.max(0.05, this.currentVolume);
       await this.audioEl.play();
-      this.clearStallTimer();
       this.isPlaying = true;
       this.isBlocked = false;
       this.notify();
       return true;
     } catch (err) {
-      console.warn("Manual resume failed:", err);
-      this.handlePlaybackFailure();
+      console.warn("[AudioPlayer] Manual resume failed:", err);
       return false;
     }
   }
@@ -176,7 +201,6 @@ class AudioPlayerService {
    * Activates musical synth rhythm as audio fallback when previewUrl stalls or is blocked
    */
   private handlePlaybackFailure() {
-    this.isBlocked = true;
     this.isPlaying = false;
     this.notify();
 
@@ -200,15 +224,7 @@ class AudioPlayerService {
     }
   }
 
-  private clearStallTimer() {
-    if (this.stallTimer) {
-      clearTimeout(this.stallTimer);
-      this.stallTimer = null;
-    }
-  }
-
   public stop() {
-    this.clearStallTimer();
     this.stopFallbackBeats();
     this.isPlaying = false;
     if (this.audioEl) {
@@ -219,7 +235,6 @@ class AudioPlayerService {
   }
 
   public pause() {
-    this.clearStallTimer();
     this.stopFallbackBeats();
     this.isPlaying = false;
     if (this.audioEl) {
@@ -231,12 +246,16 @@ class AudioPlayerService {
   public setVolume(vol: number) {
     this.currentVolume = Math.max(0, Math.min(1, vol));
     if (this.audioEl) {
-      this.audioEl.volume = this.currentVolume;
+      this.audioEl.volume = Math.max(0.05, this.currentVolume);
     }
   }
 
   public getVolume(): number {
     return this.currentVolume;
+  }
+
+  public getAudioElement(): HTMLAudioElement | null {
+    return this.audioEl;
   }
 }
 

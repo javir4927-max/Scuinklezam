@@ -4,7 +4,7 @@ if (typeof process !== "undefined" && process.env) {
 
 import { Redis } from "@upstash/redis";
 import { SpotifyTrackItem, FALLBACK_SPOTIFY_TRACKS, getFallbackArtwork } from "./spotifyTypes";
-import { searchVerifiedTracks } from "./musicService";
+import { searchVerifiedTracks, resolveAudioStream } from "./musicService";
 import {
   getTrackTopic,
   getCoherentDistractors,
@@ -284,7 +284,21 @@ export async function buildRoundsFromTracks(tracks: SpotifyTrackItem[], totalRou
   const count = Math.min(totalRounds, shuffled.length);
 
   const rounds: RoundData[] = await Promise.all(
-    shuffled.slice(0, count).map(async (target, i) => {
+    shuffled.slice(0, count).map(async (rawTarget, i) => {
+      const target = { ...rawTarget };
+      // Prioritize permanent iTunes preview URLs over Deezer/ephemeral URLs
+      if (!target.previewUrl || !target.previewUrl.includes("apple.com")) {
+        try {
+          const fresh = await resolveAudioStream(target.title, target.artist);
+          if (fresh?.previewUrl && fresh.previewUrl.includes("apple.com")) {
+            target.previewUrl = fresh.previewUrl;
+            if (fresh.artworkUrl) target.artworkUrl = fresh.artworkUrl;
+          }
+        } catch {
+          // keep original
+        }
+      }
+
       const targetTopic = getTrackTopic(target);
 
       const correctOption: RoundOption = {
@@ -1214,7 +1228,20 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
 
   const rounds: RoundData[] = await Promise.all(
     randomizedTargets.slice(0, roundsToGenerate).map(async (item, i) => {
-      const target = item.track;
+      const target = { ...item.track };
+      // Prioritize permanent iTunes preview URLs over Deezer/ephemeral URLs
+      if (!target.previewUrl || !target.previewUrl.includes("apple.com")) {
+        try {
+          const fresh = await resolveAudioStream(target.title, target.artist);
+          if (fresh?.previewUrl && fresh.previewUrl.includes("apple.com")) {
+            target.previewUrl = fresh.previewUrl;
+            if (fresh.artworkUrl) target.artworkUrl = fresh.artworkUrl;
+          }
+        } catch {
+          // keep original
+        }
+      }
+
       const targetTopic = getTrackTopic(target);
 
       const correctOption: RoundOption = {
