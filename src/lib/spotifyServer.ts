@@ -142,16 +142,21 @@ export async function getSpotifyUserToken(): Promise<string | null> {
 }
 
 /**
- * Enriches an array of raw Spotify API tracks in parallel chunks.
- * Prioritizes Spotify preview_url, falling back to iTunes audio snippet if null.
+ * Enriches an array of raw Spotify API tracks in controlled parallel chunks (10 at a time).
+ * Prioritizes Spotify preview_url, falling back to iTunes & Deezer audio snippets if null.
+ * Strictly preserves original Spotify cover art and attaches source provenance.
  */
-export async function enrichSpotifyTracks(rawTracks: any[]): Promise<SpotifyTrackItem[]> {
+export async function enrichSpotifyTracks(
+  rawTracks: any[],
+  sourcePlayerName?: string,
+  sourceMode?: string
+): Promise<SpotifyTrackItem[]> {
   if (!Array.isArray(rawTracks) || rawTracks.length === 0) return [];
 
   const items: SpotifyTrackItem[] = [];
 
-  for (let i = 0; i < rawTracks.length; i += 6) {
-    const chunk = rawTracks.slice(i, i + 6);
+  for (let i = 0; i < rawTracks.length; i += 10) {
+    const chunk = rawTracks.slice(i, i + 10);
     const resolvedChunk = await Promise.all(
       chunk.map(async (t: any) => {
         if (!t || !t.id || !t.name) return null;
@@ -164,7 +169,9 @@ export async function enrichSpotifyTracks(rawTracks: any[]): Promise<SpotifyTrac
           t.album?.images?.[0]?.url ||
           t.album?.images?.[1]?.url;
 
-        let previewUrl = t.preview_url || null;
+        let previewUrl = (t.preview_url && typeof t.preview_url === "string" && t.preview_url.startsWith("http"))
+          ? t.preview_url
+          : null;
 
         // Background fallback audio stream resolution if preview_url is missing
         if (!previewUrl || !artworkUrl) {
@@ -185,6 +192,8 @@ export async function enrichSpotifyTracks(rawTracks: any[]): Promise<SpotifyTrac
           spotifyUrl: t.external_urls?.spotify || `https://open.spotify.com/track/${t.id}`,
           previewUrl,
           durationMs: t.duration_ms || 30000,
+          sourcePlayerName: sourcePlayerName || t.sourcePlayerName,
+          sourceMode: sourceMode || t.sourceMode,
         } as SpotifyTrackItem;
       })
     );

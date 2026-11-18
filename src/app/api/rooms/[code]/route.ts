@@ -123,7 +123,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
-        await injectSpotifyTracksToRoom(code, playerId, body.tracks, body.artists, body.label);
+        await injectSpotifyTracksToRoom(code, playerId, body.tracks, body.artists, body.label, body.modeName);
         const updated = await getRoom(code);
         return NextResponse.json(
           { success: true, room: updated },

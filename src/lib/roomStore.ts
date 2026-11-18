@@ -29,6 +29,9 @@ export interface Player {
   spotifyConnected: boolean;
   spotifyBadge?: string;
   injectedTracks?: SpotifyTrackItem[];
+  injectedModeName?: string;
+  injectedTracksCount?: number;
+  injectedTracksSample?: string[];
   score: number;
   streak: number;
   lives: number;
@@ -71,6 +74,7 @@ export interface RoundData {
   correctIndex: number;
   contributedByPlayerId?: string;
   contributedByPlayerName?: string;
+  sourceMode?: string;
 }
 
 export interface RoomPlaylist {
@@ -668,7 +672,8 @@ export async function injectSpotifyTracksToRoom(
   playerId: string,
   tracks: SpotifyTrackItem[],
   artists?: string[],
-  label?: string
+  label?: string,
+  modeName?: string
 ): Promise<boolean> {
   const room = await getRoom(code);
   if (!room) return false;
@@ -683,6 +688,9 @@ export async function injectSpotifyTracksToRoom(
     (t) => t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl
   );
   player.injectedTracks = validTracks;
+  player.injectedModeName = modeName || label || "Spotify";
+  player.injectedTracksCount = validTracks.length;
+  player.injectedTracksSample = validTracks.slice(0, 3).map((t) => `"${t.title} - ${t.artist}"`);
 
   if (artists && artists.length > 0) {
     player.favoriteArtists = artists.filter((a) => a.trim().length > 0).slice(0, 5);
@@ -957,8 +965,11 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
 
   const pool: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
 
+  // Structures for balanced round selection
+  const injectedByPlayer = new Map<string, Array<{ track: SpotifyTrackItem; playerId: string; playerName: string }>>();
+  const artistBuckets = new Map<string, Array<{ track: SpotifyTrackItem; playerId: string; playerName: string }>>();
+
   // 1. Gather tracks from room's imported playlists (Fisher-Yates shuffled)
-  const playlistItems: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
   if (room.playlists && room.playlists.length > 0) {
     for (const pl of room.playlists) {
       if (pl.tracks && pl.tracks.length > 0) {
@@ -977,64 +988,61 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
             playerName: pl.addedByPlayerName,
           };
           pool.push(item);
-          playlistItems.push(item);
         });
       }
     }
   }
 
-  // Structures for balanced round selection
-  const injectedByPlayer = new Map<string, Array<{ track: SpotifyTrackItem; playerId: string; playerName: string }>>();
-  const artistBuckets = new Map<string, Array<{ track: SpotifyTrackItem; playerId: string; playerName: string }>>();
+  // 2. CRITICAL: Strictly collect player injected Spotify tracks across ALL game modes
+  for (const player of room.players) {
+    if (player.injectedTracks && player.injectedTracks.length > 0) {
+      const validInjected = player.injectedTracks
+        .filter((t) => t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl)
+        .map((track) => ({ track, playerId: player.id, playerName: player.name }));
 
-  // 2. Build song pool based on Game Mode
-  if (room.gameMode === "blend" || room.gameMode === "who_listens") {
-    // Collect player injected tracks (Fisher-Yates shuffled)
-    for (const player of room.players) {
-      if (player.injectedTracks && player.injectedTracks.length > 0) {
-        const validInjected = player.injectedTracks
-          .filter((t) => t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl)
-          .map((track) => ({ track, playerId: player.id, playerName: player.name }));
-
-        if (validInjected.length > 0) {
-          injectedByPlayer.set(player.id, fisherYatesShuffle(validInjected));
-          validInjected.forEach((item) => pool.push(item));
-        }
+      if (validInjected.length > 0) {
+        injectedByPlayer.set(player.id, fisherYatesShuffle(validInjected));
+        validInjected.forEach((item) => pool.push(item));
       }
     }
+  }
 
-    // Collect all unique artists across players (up to 5 per player)
-    const allArtistsWithPlayers: Array<{ artist: string; playerId: string; playerName: string }> = [];
-    const seenArtistNames = new Set<string>();
+  // 3. Fallback or additional tracks based on Game Mode ONLY if pool is empty or blend/who_listens needs variety
+  if (room.gameMode === "blend" || room.gameMode === "who_listens") {
+    // Collect all unique artists across players if pool needs more songs
+    if (pool.length < room.totalRounds * 2) {
+      const allArtistsWithPlayers: Array<{ artist: string; playerId: string; playerName: string }> = [];
+      const seenArtistNames = new Set<string>();
 
-    for (const player of room.players) {
-      if (player.favoriteArtists && player.favoriteArtists.length > 0) {
-        for (const art of player.favoriteArtists.slice(0, 5)) {
-          const clean = art.trim();
-          if (clean && !seenArtistNames.has(clean.toLowerCase())) {
-            seenArtistNames.add(clean.toLowerCase());
-            allArtistsWithPlayers.push({ artist: clean, playerId: player.id, playerName: player.name });
+      for (const player of room.players) {
+        if (player.favoriteArtists && player.favoriteArtists.length > 0) {
+          for (const art of player.favoriteArtists.slice(0, 5)) {
+            const clean = art.trim();
+            if (clean && !seenArtistNames.has(clean.toLowerCase())) {
+              seenArtistNames.add(clean.toLowerCase());
+              allArtistsWithPlayers.push({ artist: clean, playerId: player.id, playerName: player.name });
+            }
           }
         }
       }
-    }
 
-    // Fetch verified tracks for each artist in parallel (4 tracks per artist)
-    if (allArtistsWithPlayers.length > 0) {
-      const artistResults = await Promise.all(
-        allArtistsWithPlayers.map(async ({ artist, playerId, playerName }) => {
-          const found = await searchVerifiedTracks(artist, 4);
-          return {
-            artist,
-            items: found.map((track) => ({ track, playerId, playerName })),
-          };
-        })
-      );
+      // Fetch verified tracks for each artist in parallel
+      if (allArtistsWithPlayers.length > 0) {
+        const artistResults = await Promise.all(
+          allArtistsWithPlayers.map(async ({ artist, playerId, playerName }) => {
+            const found = await searchVerifiedTracks(artist, 4);
+            return {
+              artist,
+              items: found.map((track) => ({ track, playerId, playerName })),
+            };
+          })
+        );
 
-      for (const res of artistResults) {
-        if (res.items.length > 0) {
-          artistBuckets.set(res.artist, fisherYatesShuffle(res.items));
-          res.items.forEach((item) => pool.push(item));
+        for (const res of artistResults) {
+          if (res.items.length > 0) {
+            artistBuckets.set(res.artist, fisherYatesShuffle(res.items));
+            res.items.forEach((item) => pool.push(item));
+          }
         }
       }
     }
@@ -1045,14 +1053,19 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
       globalHits.forEach((track) => pool.push({ track }));
     }
   } else if (room.gameMode === "top50") {
-    const found = await searchVerifiedTracks("Global Top 50 Hits", room.totalRounds + 8);
-    found.forEach((track) => pool.push({ track }));
-  } else {
-    // Random chaos / Survival / TV Party
-    const genres = ["Pop Hits", "Rock Classics", "Latin Hits", "Hip Hop Hits", "80s Hits", "Electronic Hits"];
-    for (const g of genres) {
-      const found = await searchVerifiedTracks(g, 5);
+    // Only fetch generic Top 50 if room players didn't provide any Spotify tracks
+    if (pool.length === 0) {
+      const found = await searchVerifiedTracks("Global Top 50 Hits", room.totalRounds + 8);
       found.forEach((track) => pool.push({ track }));
+    }
+  } else {
+    // Random / Survival / TV Party: Only populate if pool is empty
+    if (pool.length === 0) {
+      const genres = ["Pop Hits", "Rock Classics", "Latin Hits", "Hip Hop Hits", "80s Hits", "Electronic Hits"];
+      for (const g of genres) {
+        const found = await searchVerifiedTracks(g, 5);
+        found.forEach((track) => pool.push({ track }));
+      }
     }
   }
 
@@ -1074,12 +1087,11 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
     }
   }
 
-  // Minimum required pool for distractors
-  const minRequired = room.totalRounds + 8;
-  if (validUniquePool.length < minRequired) {
-    const emergencyTracks = await searchVerifiedTracks("Top Hits Global", minRequired - validUniquePool.length + 5);
+  // Emergency fallback ONLY if the total pool has fewer than 4 tracks (needed to build 4 quiz options)
+  if (validUniquePool.length < 4) {
+    const needed = Math.max(4 - validUniquePool.length, room.totalRounds);
+    const emergencyTracks = await searchVerifiedTracks("Top Hits Global", needed + 4);
     for (const et of emergencyTracks) {
-      if (validUniquePool.length >= minRequired) break;
       const titleKey = `${et.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${et.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
       if (!seenIds.has(et.id) && !seenTitles.has(titleKey)) {
         seenIds.add(et.id);
@@ -1122,13 +1134,21 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
     }
   }
 
-  // If still under totalRounds, fill from remainder of pool (playlists or hits)
+  // If still under totalRounds, fill from remainder of pool (without adding generic hits if validUniquePool has items)
   const remainderShuffled = fisherYatesShuffle(validUniquePool);
   for (const item of remainderShuffled) {
     if (selectedTargets.length >= room.totalRounds) break;
     if (!selectedTargetIds.has(item.track.id)) {
       selectedTargetIds.add(item.track.id);
       selectedTargets.push(item);
+    }
+  }
+
+  // If totalRounds > unique songs (e.g. user selected 10 rounds but only has 8 songs), cycle songs from pool
+  if (selectedTargets.length < room.totalRounds && validUniquePool.length > 0) {
+    while (selectedTargets.length < room.totalRounds) {
+      const cycleItem = remainderShuffled[selectedTargets.length % remainderShuffled.length];
+      selectedTargets.push(cycleItem);
     }
   }
 
@@ -1143,7 +1163,7 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
     const item = randomizedTargets[i];
     const target = item.track;
 
-    // Distractors from other tracks in validUniquePool
+    // Distractors STRICTLY from other tracks in validUniquePool
     const otherTracks = validUniquePool.filter(
       (u) =>
         u.track.id !== target.id &&
@@ -1169,6 +1189,8 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
       (opt) => opt.title === correctOption.title && opt.artist === correctOption.artist
     );
 
+    const playerSource = item.playerId ? room.players.find((p) => p.id === item.playerId) : undefined;
+
     rounds.push({
       roundNumber: i + 1,
       targetTrack: {
@@ -1178,7 +1200,8 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
       options,
       correctIndex: correctIndex >= 0 ? correctIndex : 0,
       contributedByPlayerId: item.playerId,
-      contributedByPlayerName: item.playerName,
+      contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name,
+      sourceMode: target.sourceMode || playerSource?.injectedModeName,
     });
   }
 

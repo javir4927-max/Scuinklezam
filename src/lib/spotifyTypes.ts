@@ -8,6 +8,8 @@ export interface SpotifyTrackItem {
   spotifyUrl: string;
   previewUrl: string | null;
   durationMs?: number;
+  sourcePlayerName?: string;
+  sourceMode?: string;
 }
 
 export interface SpotifyUserProfile {

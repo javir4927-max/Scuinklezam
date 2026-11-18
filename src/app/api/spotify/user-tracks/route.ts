@@ -30,6 +30,20 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({}));
     const mode = body.mode || "top_tracks"; // "recently_played" | "top_tracks" | "top_artists" | "liked_songs"
 
+    // Retrieve user's display name for attribution badge
+    let userDisplayName = "Tú";
+    try {
+      const meRes = await fetchSpotifyUserAPI("/v1/me");
+      if (meRes.res && meRes.res.ok) {
+        const meData = await meRes.res.json();
+        if (meData?.display_name) {
+          userDisplayName = meData.display_name;
+        }
+      }
+    } catch (e) {
+      console.warn("[/api/spotify/user-tracks] Could not fetch user display name:", e);
+    }
+
     let rawTracks: any[] = [];
     let modeName = "Canciones de Spotify";
     let topArtists: string[] = [];
@@ -39,47 +53,63 @@ export async function POST(request: Request) {
       const { res } = await fetchSpotifyUserAPI("/v1/me/player/recently-played?limit=50");
       if (res && res.ok) {
         const data = await res.json();
-        rawTracks = (data.items || []).map((i: any) => i.track).filter(Boolean);
+        const items = data.items || [];
+        // Deduplicate consecutive identical tracks
+        const deduped: any[] = [];
+        let lastId = "";
+        for (const i of items) {
+          const t = i.track;
+          if (t && t.id && t.id !== lastId) {
+            deduped.push(t);
+            lastId = t.id;
+          }
+        }
+        rawTracks = deduped;
       }
     } else if (mode === "top_tracks") {
       modeName = "Más Escuchadas";
-      // 1. Try medium_term (top 50)
-      let { res } = await fetchSpotifyUserAPI("/v1/me/top/tracks?limit=50&time_range=medium_term");
-      if (res && res.ok) {
-        const data = await res.json();
-        rawTracks = data.items || [];
+      // Parallel queries across long_term, medium_term, and short_term for exhaustive favorites
+      const [longRes, medRes, shortRes] = await Promise.all([
+        fetchSpotifyUserAPI("/v1/me/top/tracks?limit=50&time_range=long_term"),
+        fetchSpotifyUserAPI("/v1/me/top/tracks?limit=50&time_range=medium_term"),
+        fetchSpotifyUserAPI("/v1/me/top/tracks?limit=50&time_range=short_term"),
+      ]);
+
+      const gathered: any[] = [];
+      if (longRes.res && longRes.res.ok) {
+        const d = await longRes.res.json();
+        gathered.push(...(d.items || []));
       }
-      // 2. Fallback to long_term if empty
-      if (rawTracks.length === 0) {
-        const fallbackRes = await fetchSpotifyUserAPI("/v1/me/top/tracks?limit=50&time_range=long_term");
-        if (fallbackRes.res && fallbackRes.res.ok) {
-          const data = await fallbackRes.res.json();
-          rawTracks = data.items || [];
-        }
+      if (medRes.res && medRes.res.ok) {
+        const d = await medRes.res.json();
+        gathered.push(...(d.items || []));
       }
-      // 3. Fallback to short_term if still empty
-      if (rawTracks.length === 0) {
-        const fallbackRes = await fetchSpotifyUserAPI("/v1/me/top/tracks?limit=50&time_range=short_term");
-        if (fallbackRes.res && fallbackRes.res.ok) {
-          const data = await fallbackRes.res.json();
-          rawTracks = data.items || [];
-        }
+      if (shortRes.res && shortRes.res.ok) {
+        const d = await shortRes.res.json();
+        gathered.push(...(d.items || []));
       }
+      rawTracks = gathered;
     } else if (mode === "top_artists") {
       modeName = "Tus Artistas Favoritos";
-      // 1. Get user's Top 5 Artists
-      let fetchedArtists: any[] = [];
-      const artRes = await fetchSpotifyUserAPI("/v1/me/top/artists?limit=5&time_range=medium_term");
-      if (artRes.res && artRes.res.ok) {
-        const data = await artRes.res.json();
-        fetchedArtists = data.items || [];
-      }
+      // 1. Parallel fetch top artists from long_term and medium_term (up to 10 artists)
+      const [artLongRes, artMedRes] = await Promise.all([
+        fetchSpotifyUserAPI("/v1/me/top/artists?limit=10&time_range=long_term"),
+        fetchSpotifyUserAPI("/v1/me/top/artists?limit=10&time_range=medium_term"),
+      ]);
 
-      if (fetchedArtists.length === 0) {
-        const artLongRes = await fetchSpotifyUserAPI("/v1/me/top/artists?limit=5&time_range=long_term");
-        if (artLongRes.res && artLongRes.res.ok) {
-          const data = await artLongRes.res.json();
-          fetchedArtists = data.items || [];
+      const seenArtNames = new Set<string>();
+      let fetchedArtists: any[] = [];
+
+      for (const aRes of [artLongRes, artMedRes]) {
+        if (aRes.res && aRes.res.ok) {
+          const d = await aRes.res.json();
+          for (const item of d.items || []) {
+            const clean = item.name?.trim();
+            if (clean && !seenArtNames.has(clean.toLowerCase())) {
+              seenArtNames.add(clean.toLowerCase());
+              fetchedArtists.push({ id: item.id, name: clean });
+            }
+          }
         }
       }
 
@@ -88,22 +118,21 @@ export async function POST(request: Request) {
         const tracksRes = await fetchSpotifyUserAPI("/v1/me/top/tracks?limit=25");
         if (tracksRes.res && tracksRes.res.ok) {
           const tData = await tracksRes.res.json();
-          const items = tData.items || [];
-          const seenArt = new Set<string>();
-          for (const item of items) {
+          for (const item of tData.items || []) {
             for (const a of item.artists || []) {
-              if (a.name && !seenArt.has(a.name.toLowerCase())) {
-                seenArt.add(a.name.toLowerCase());
-                fetchedArtists.push({ id: a.id, name: a.name });
-                if (fetchedArtists.length >= 5) break;
+              const clean = a.name?.trim();
+              if (clean && !seenArtNames.has(clean.toLowerCase())) {
+                seenArtNames.add(clean.toLowerCase());
+                fetchedArtists.push({ id: a.id, name: clean });
+                if (fetchedArtists.length >= 10) break;
               }
             }
-            if (fetchedArtists.length >= 5) break;
+            if (fetchedArtists.length >= 10) break;
           }
         }
       }
 
-      // Fallback top Spanish/Latin artists if still empty
+      // Fallback top Spanish/Latin artists if user is brand new
       if (fetchedArtists.length === 0) {
         fetchedArtists = [
           { name: "Bad Bunny" },
@@ -111,43 +140,25 @@ export async function POST(request: Request) {
           { name: "Saiko" },
           { name: "Feid" },
           { name: "Myke Towers" },
+          { name: "Mora" },
+          { name: "Rauw Alejandro" },
+          { name: "Duki" },
+          { name: "Eladio Carrión" },
+          { name: "Maikel Delacalle" },
         ];
       }
 
-      topArtists = fetchedArtists.map((a: any) => a.name).filter(Boolean).slice(0, 5);
+      topArtists = fetchedArtists.map((a: any) => a.name).filter(Boolean).slice(0, 10);
 
-      // 2. Multi-source track search for each of the 5 artists (Spotify Search + iTunes Search API)
+      // 2. Fetch tracks for each artist via iTunes Search API (country=ES) and Deezer API
       const artistTracksPromises = topArtists.map(async (artistName) => {
         const collected: any[] = [];
         const cleanName = artistName.trim();
         const lowerName = cleanName.toLowerCase();
 
-        // 2a. Spotify Search: /v1/search?q=artist:...&type=track&market=ES&limit=10
+        // 2a. iTunes Search API (country=ES, limit=10)
         try {
-          const sRes = await fetchSpotifyUserAPI(
-            `/v1/search?q=artist:${encodeURIComponent(cleanName)}&type=track&market=ES&limit=10`
-          );
-          if (sRes.res && sRes.res.ok) {
-            const sData = await sRes.res.json();
-            const items = sData?.tracks?.items || [];
-            for (const item of items) {
-              const matchesArtist = (item.artists || []).some(
-                (a: any) =>
-                  a.name.toLowerCase().includes(lowerName) ||
-                  lowerName.includes(a.name.toLowerCase())
-              );
-              if (matchesArtist) {
-                collected.push(item);
-              }
-            }
-          }
-        } catch (sErr) {
-          console.warn(`[top_artists] Spotify search failed for ${cleanName}:`, sErr);
-        }
-
-        // 2b. iTunes Search API: entity=song&country=ES&limit=15
-        try {
-          const itUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(cleanName)}&entity=song&country=ES&limit=15`;
+          const itUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(cleanName)}&entity=song&country=ES&limit=10`;
           const itRes = await fetch(itUrl, {
             headers: { "User-Agent": "Scuinklezam/1.0" },
             next: { revalidate: 3600 },
@@ -187,6 +198,65 @@ export async function POST(request: Request) {
           console.warn(`[top_artists] iTunes search failed for ${cleanName}:`, itErr);
         }
 
+        // 2b. Deezer API Search (/search/track?q=...&limit=10)
+        try {
+          const dUrl = `https://api.deezer.com/search/track?q=${encodeURIComponent(cleanName)}&limit=10`;
+          const dRes = await fetch(dUrl, {
+            headers: { "User-Agent": "Scuinklezam/1.0" },
+            next: { revalidate: 3600 },
+          });
+          if (dRes.ok) {
+            const dData = await dRes.json();
+            for (const dItem of dData?.data || []) {
+              if (dItem.preview && typeof dItem.preview === "string" && dItem.preview.startsWith("http")) {
+                const dArtist = (dItem.artist?.name || "").toLowerCase();
+                if (dArtist.includes(lowerName) || lowerName.includes(dArtist)) {
+                  collected.push({
+                    id: `dz_${dItem.id}`,
+                    name: dItem.title,
+                    artists: [{ name: dItem.artist?.name || cleanName }],
+                    album: {
+                      name: dItem.album?.title || "Single",
+                      images: [
+                        {
+                          url: dItem.album?.cover_xl || dItem.album?.cover_big || "",
+                        },
+                      ],
+                    },
+                    preview_url: dItem.preview,
+                    duration_ms: (dItem.duration || 30) * 1000,
+                  });
+                }
+              }
+            }
+          }
+        } catch (dErr) {
+          console.warn(`[top_artists] Deezer search failed for ${cleanName}:`, dErr);
+        }
+
+        // 2c. Spotify Search fallback if available
+        try {
+          const sRes = await fetchSpotifyUserAPI(
+            `/v1/search?q=artist:${encodeURIComponent(cleanName)}&type=track&market=ES&limit=10`
+          );
+          if (sRes.res && sRes.res.ok) {
+            const sData = await sRes.res.json();
+            const items = sData?.tracks?.items || [];
+            for (const item of items) {
+              const matchesArtist = (item.artists || []).some(
+                (a: any) =>
+                  a.name.toLowerCase().includes(lowerName) ||
+                  lowerName.includes(a.name.toLowerCase())
+              );
+              if (matchesArtist) {
+                collected.push(item);
+              }
+            }
+          }
+        } catch (sErr) {
+          console.warn(`[top_artists] Spotify search failed for ${cleanName}:`, sErr);
+        }
+
         return collected.slice(0, 10);
       });
 
@@ -201,7 +271,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // Deduplicate raw tracks by id and name
+    // Deduplicate raw tracks by id and normalized name
     const seen = new Set<string>();
     const seenNames = new Set<string>();
     const uniqueRawTracks: any[] = [];
@@ -223,6 +293,7 @@ export async function POST(request: Request) {
           success: true,
           mode,
           modeName,
+          userDisplayName,
           count: 0,
           tracks: [],
           artists: [],
@@ -232,8 +303,8 @@ export async function POST(request: Request) {
       );
     }
 
-    // Pass through iTunes Search API enricher to guarantee 30s previewUrl and original HD artwork
-    const enriched = await enrichSpotifyTracks(uniqueRawTracks);
+    // Pass through parallel enricher (10 at a time) to guarantee 30s previewUrl and original HD artwork
+    const enriched = await enrichSpotifyTracks(uniqueRawTracks, userDisplayName, modeName);
     const validTracks = enriched.filter(
       (t) => t && t.previewUrl && t.previewUrl.startsWith("http")
     );
@@ -252,6 +323,7 @@ export async function POST(request: Request) {
         success: true,
         mode,
         modeName,
+        userDisplayName,
         count: shuffledTracks.length,
         tracks: shuffledTracks,
         artists: topArtists.slice(0, 5),

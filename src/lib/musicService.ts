@@ -9,41 +9,72 @@ if (typeof process !== "undefined" && process.env) {
 export { getFallbackArtwork };
 
 /**
- * Searches iTunes API with limit=10 and returns the first result that has a verified audio preview and HD artwork.
+ * Searches iTunes API (country=ES) and falls back to Deezer API to guarantee
+ * a verified 30s playable audio stream and HD 600x600 artwork.
  */
 export async function resolveAudioStream(
   title: string,
   artist: string
 ): Promise<{ previewUrl: string; artworkUrl: string } | null> {
+  const cleanTitle = title.replace(/\(.*?\)|\[.*?\]/g, "").trim();
+  const query = `${cleanTitle} ${artist}`.trim();
+  const lowerArtist = artist.toLowerCase().trim();
+
+  // 1. iTunes Search API (country=ES, limit=5)
   try {
-    const cleanTitle = title.replace(/\(.*?\)|\[.*?\]/g, "").trim();
-    const query = `${cleanTitle} ${artist}`.trim();
-    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&entity=song&limit=10`;
-    
+    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&entity=song&country=ES&limit=5`;
     const res = await fetch(url, {
       headers: { "User-Agent": "Scuinklezam/1.0" },
       next: { revalidate: 3600 },
     });
 
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data.results || data.results.length === 0) return null;
+    if (res.ok) {
+      const data = await res.json();
+      if (data.results && Array.isArray(data.results)) {
+        for (const item of data.results) {
+          if (item.previewUrl && typeof item.previewUrl === "string" && item.previewUrl.startsWith("http")) {
+            const art = item.artworkUrl100
+              ? item.artworkUrl100.replace("100x100bb", "600x600bb")
+              : getFallbackArtwork(title, artist);
 
-    for (const item of data.results) {
-      if (item.previewUrl && typeof item.previewUrl === "string" && item.previewUrl.startsWith("http")) {
-        const art = item.artworkUrl100
-          ? item.artworkUrl100.replace("100x100bb", "600x600bb")
-          : getFallbackArtwork(title, artist);
-
-        return {
-          previewUrl: item.previewUrl,
-          artworkUrl: art,
-        };
+            return {
+              previewUrl: item.previewUrl,
+              artworkUrl: art,
+            };
+          }
+        }
       }
     }
   } catch (err) {
-    console.warn("Error resolving audio stream in musicService:", err);
+    console.warn("[resolveAudioStream] iTunes search failed:", err);
   }
+
+  // 2. Deezer API Fallback (limit=3)
+  try {
+    const dUrl = `https://api.deezer.com/search/track?q=${encodeURIComponent(query)}&limit=3`;
+    const dRes = await fetch(dUrl, {
+      headers: { "User-Agent": "Scuinklezam/1.0" },
+      next: { revalidate: 3600 },
+    });
+
+    if (dRes.ok) {
+      const dData = await dRes.json();
+      if (dData.data && Array.isArray(dData.data)) {
+        for (const dItem of dData.data) {
+          if (dItem.preview && typeof dItem.preview === "string" && dItem.preview.startsWith("http")) {
+            const dArt = dItem.album?.cover_xl || dItem.album?.cover_big || getFallbackArtwork(title, artist);
+            return {
+              previewUrl: dItem.preview,
+              artworkUrl: dArt,
+            };
+          }
+        }
+      }
+    }
+  } catch (dErr) {
+    console.warn("[resolveAudioStream] Deezer search failed:", dErr);
+  }
+
   return null;
 }
 

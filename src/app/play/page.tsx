@@ -352,7 +352,8 @@ function PlayArenaContent() {
   const handleInjectSpotifyTracks = async (
     tracks: SpotifyTrackItem[],
     label: string,
-    artists?: string[]
+    artists?: string[],
+    modeName?: string
   ) => {
     if (!roomCode || !playerId) return;
     try {
@@ -372,6 +373,7 @@ function PlayArenaContent() {
           tracks,
           artists: topArtists,
           label,
+          modeName: modeName || label,
         }),
       });
       const data = await res.json();
@@ -416,7 +418,7 @@ function PlayArenaContent() {
         return;
       }
 
-      await handleInjectSpotifyTracks(data.tracks, data.modeName, data.artists);
+      await handleInjectSpotifyTracks(data.tracks, data.modeName, data.artists, data.modeName);
       setSpotifyModeNotice({
         type: "success",
         message: `Modo "${data.modeName}" cargado con éxito (${data.count} canciones listas para jugar).`,
@@ -1932,6 +1934,23 @@ function PlayArenaContent() {
                           <span className="text-[10px] text-emerald-400 font-semibold shrink-0">Abrir Explorador →</span>
                         </button>
                       </div>
+
+                      {/* Green Confirmation Badge for Loaded Mode with 3 Sample Titles */}
+                      {((currentMe?.injectedTracksCount || 0) > 0 || (currentMe?.injectedTracks?.length || 0) > 0) && (
+                        <div className="p-3 rounded-2xl bg-emerald-950/80 border border-emerald-400/50 shadow-[0_0_20px_rgba(16,185,129,0.2)] text-left flex items-start gap-2.5">
+                          <Check className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-emerald-300">
+                              ✓ {currentMe?.injectedTracksCount || currentMe?.injectedTracks?.length} canciones listas de tus {currentMe?.injectedModeName || "canciones de Spotify"}
+                            </div>
+                            {currentMe?.injectedTracksSample && currentMe.injectedTracksSample.length > 0 && (
+                              <div className="text-[10px] text-emerald-400/80 mt-0.5 truncate">
+                                (ej: {currentMe.injectedTracksSample.join(", ")})
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -2340,10 +2359,22 @@ function PlayArenaContent() {
                   {isHost ? (
                     <button
                       onClick={handleStartGame}
-                      disabled={isLoading || isStartingGame}
-                      className="w-full py-4 rounded-2xl bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime hover:opacity-95 text-black font-black text-sm tracking-wide shadow-xl shadow-emerald-500/25 transition cursor-pointer disabled:opacity-50"
+                      disabled={isLoading || isStartingGame || loadingSpotifyMode !== null}
+                      className="w-full py-4 rounded-2xl bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime hover:opacity-95 text-black font-black text-sm tracking-wide shadow-xl shadow-emerald-500/25 transition cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
                     >
-                      {isStartingGame || isLoading ? "Preparando canciones de la sala..." : "¡Iniciar Partida Ranked!"}
+                      {loadingSpotifyMode !== null ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin text-black" />
+                          <span>Sincronizando canciones de Spotify...</span>
+                        </>
+                      ) : isStartingGame || isLoading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin text-black" />
+                          <span>Preparando canciones de la sala...</span>
+                        </>
+                      ) : (
+                        "¡Iniciar Partida Ranked!"
+                      )}
                     </button>
                   ) : (
                     <div className="p-4 rounded-2xl bg-white/[0.03] border border-emerald-500/15 text-center text-xs text-zinc-400">
@@ -2633,12 +2664,18 @@ function PlayArenaContent() {
               </div>
             </div>
 
-            {/* Song Contributor Badge (if in Blend or Who Listens mode) */}
-            {currentRound.contributedByPlayerName && (
+            {/* Song Contributor / Source Mode Badge */}
+            {(currentRound.contributedByPlayerName || currentRound.sourceMode) && (
               <div className="text-center">
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-[#102218] border border-emerald-500/30 text-emerald-300">
+                <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold bg-[#102218] border border-emerald-500/40 text-emerald-300 shadow-md shadow-emerald-500/10">
                   <Headphones className="w-4 h-4 text-emerald-400" />
-                  <span>Aportada por: {currentRound.contributedByPlayerName}</span>
+                  <span>
+                    {currentRound.sourceMode && currentRound.contributedByPlayerName
+                      ? `🎧 De ${currentRound.sourceMode} de ${currentRound.contributedByPlayerName}`
+                      : currentRound.sourceMode
+                      ? `🎧 De ${currentRound.sourceMode}`
+                      : `🎧 Aportada por ${currentRound.contributedByPlayerName}`}
+                  </span>
                 </span>
               </div>
             )}
@@ -2661,8 +2698,17 @@ function PlayArenaContent() {
                     className="w-16 h-16 rounded-2xl object-cover shadow-lg border border-emerald-500/30"
                   />
                   <div>
-                    <div className="text-xs uppercase font-extrabold tracking-wider text-goblinLime">
-                      Canción Correcta
+                    <div className="text-xs uppercase font-extrabold tracking-wider text-goblinLime flex flex-wrap items-center gap-2">
+                      <span>Canción Correcta</span>
+                      {(currentRound.sourceMode || currentRound.contributedByPlayerName) && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 normal-case font-bold border border-emerald-500/30">
+                          {currentRound.sourceMode && currentRound.contributedByPlayerName
+                            ? `🎧 De ${currentRound.sourceMode} de ${currentRound.contributedByPlayerName}`
+                            : currentRound.sourceMode
+                            ? `🎧 De ${currentRound.sourceMode}`
+                            : `🎧 Aportada por ${currentRound.contributedByPlayerName}`}
+                        </span>
+                      )}
                     </div>
                     <div className="font-display font-extrabold text-xl text-white">
                       {currentRound.targetTrack.title}
