@@ -6,8 +6,8 @@ import { useSearchParams } from "next/navigation";
 import { playSynthNote } from "@/lib/audio";
 import { playCorrectSound, playWrongSound } from "@/lib/soundEffects";
 import { audioPlayer } from "@/lib/audioPlayer";
-import { calculateRoundPoints, ROUND_DURATION_SEC } from "@/lib/scoring";
-import { normalizeSongTitle } from "@/lib/songMatching";
+import { calculateRoundPoints, ROUND_DURATION_SEC, REVEAL_DURATION_MS } from "@/lib/scoring";
+import { normalizeSongTitle, matchSongTitleStrict, deepNormalize } from "@/lib/songMatching";
 import {
   FlaskConical,
   Globe,
@@ -250,6 +250,9 @@ function PlayArenaContent() {
   const prevStatusRef = useRef<string>("");
   const prevRoundRef = useRef<number>(0);
   const currentRoundRef = useRef<number>(1);
+  const activeTimerRoundRef = useRef<number>(1);
+  const hasSubmittedRef = useRef<boolean>(false);
+  const hasManuallyEditedNameRef = useRef<boolean>(false);
   const roomStatusRef = useRef<string>("lobby");
   const nextRoundTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [isStartingGame, setIsStartingGame] = useState<boolean>(false);
@@ -326,12 +329,18 @@ function PlayArenaContent() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // 1. Initialize Player Identity from SessionStorage / Spotify (isolated per tab)
+  // 1. Initialize Player Identity from SessionStorage / LocalStorage / Spotify (isolated per tab)
   useEffect(() => {
     if (typeof window === "undefined") return;
 
     let localId = sessionStorage.getItem("scuinklezam_player_id");
-    let localName = sessionStorage.getItem("scuinklezam_player_name") || "";
+    let localName =
+      sessionStorage.getItem("scuinklezam_player_name") ||
+      localStorage.getItem("scuinklezam_player_name") ||
+      localStorage.getItem("scuinklezam_nickname") ||
+      localStorage.getItem("squinkle_player_name") ||
+      localStorage.getItem("squinkle_nickname") ||
+      "";
 
     if (!localId) {
       localId =
@@ -342,13 +351,44 @@ function PlayArenaContent() {
     }
     setPlayerId(localId);
 
-    if (spotifyAuthUser?.displayName) {
+    if (spotifyAuthUser?.displayName && !hasManuallyEditedNameRef.current) {
       localName = spotifyAuthUser.displayName;
       sessionStorage.setItem("scuinklezam_player_name", localName);
+      localStorage.setItem("scuinklezam_player_name", localName);
     }
 
-    setPlayerName(localName);
+    if (localName) {
+      setPlayerName(localName);
+    }
   }, [spotifyAuthUser]);
+
+  // Protection against async Spotify session loading: sync profile to Redis if joined before session resolved
+  useEffect(() => {
+    if (!roomCode || !playerId || !room || hasManuallyEditedNameRef.current) return;
+    const resolvedName = spotifyAuthUser?.displayName || playerName;
+    if (!resolvedName) return;
+
+    const me = room.players.find((p) => p.id === playerId);
+    if (me && (me.name === "Invitado" || me.name === "Jugador" || !me.name) && me.name !== resolvedName) {
+      fetch(`/api/rooms/${roomCode}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_player_profile",
+          playerId,
+          name: resolvedName,
+          avatarColor: spotifyAuthUser?.avatarUrl || undefined,
+        }),
+      })
+        .then(async (r) => {
+          if (r.ok) {
+            const d = await r.json();
+            if (d.success && d.room) setRoom(d.room);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [spotifyAuthUser, roomCode, playerId, room, playerName]);
 
   // Handler for Injecting Spotify Tracks & Stats into current Room
   const handleInjectSpotifyTracks = async (
@@ -547,8 +587,8 @@ function PlayArenaContent() {
     }
 
     const now = Date.now();
-    const endsAt = room.revealEndsAt || (room.revealStartTime ? room.revealStartTime + 3500 : now + 3500);
-    const delay = Math.max(500, Math.min(3500, endsAt - now));
+    const endsAt = room.revealEndsAt || (room.revealStartTime ? room.revealStartTime + REVEAL_DURATION_MS : now + REVEAL_DURATION_MS);
+    const delay = Math.max(500, Math.min(REVEAL_DURATION_MS, endsAt - now));
     const roundToAdvance = room.currentRound;
 
     nextRoundTimerRef.current = setTimeout(async () => {
@@ -603,6 +643,8 @@ function PlayArenaContent() {
     // Status changed to Countdown
     if (room.status === "countdown" && prevStatusRef.current !== "countdown") {
       playSynthNote(440, 0.2);
+      activeTimerRoundRef.current = room.currentRound;
+      hasSubmittedRef.current = false;
       setSelectedOption(null);
       setSelectedFriend(null);
       setScorePopup(null);
@@ -613,6 +655,8 @@ function PlayArenaContent() {
       room.status === "playing" &&
       (prevStatusRef.current !== "playing" || prevRoundRef.current !== room.currentRound)
     ) {
+      activeTimerRoundRef.current = room.currentRound;
+      hasSubmittedRef.current = false;
       setSelectedOption(null);
       setSelectedFriend(null);
       setScorePopup(null);
@@ -809,7 +853,9 @@ function PlayArenaContent() {
 
   // Submit Answer
   const handleAnswer = async (optionIdx: number) => {
-    if (!room || room.status !== "playing" || selectedOption !== null) return;
+    if (!room || room.status !== "playing" || selectedOption !== null || hasSubmittedRef.current) return;
+    if (activeTimerRoundRef.current !== room.currentRound) return;
+    hasSubmittedRef.current = true;
     setSelectedOption(optionIdx);
 
     const now = Date.now();
@@ -821,7 +867,7 @@ function PlayArenaContent() {
     const correctTitle = currentRound?.correctTitle || currentRound?.targetTrack?.title || "";
 
     const isCorrect = selectedTitle && correctTitle
-      ? normalizeSongTitle(selectedTitle) === normalizeSongTitle(correctTitle)
+      ? matchSongTitleStrict(selectedTitle, correctTitle)
       : optionIdx === currentRound?.correctIndex;
 
     // Instant local exponential points calculation (max 100)
@@ -951,6 +997,7 @@ function PlayArenaContent() {
       setIsEditingName(false);
       return;
     }
+    hasManuallyEditedNameRef.current = true;
     setIsSavingName(true);
     try {
       const res = await fetch(`/api/rooms/${roomCode}`, {
@@ -967,6 +1014,7 @@ function PlayArenaContent() {
         setRoom(data.room);
         setPlayerName(clean);
         sessionStorage.setItem("scuinklezam_player_name", clean);
+        localStorage.setItem("squinkle_player_name", clean);
       }
     } catch (err) {
       console.error("Error renaming player:", err);
@@ -2391,85 +2439,87 @@ function PlayArenaContent() {
                   )}
                 </div>
 
-                {/* Theme Proposal & Voting Panel */}
-                <div className="glass-card rounded-3xl p-6 border border-emerald-500/20 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="font-display font-extrabold text-base text-white">
-                        Votación de Temas en Vivo
-                      </h3>
-                      <p className="text-xs text-zinc-400">
-                        Vota o propón qué estilo queréis jugar
-                      </p>
+                {/* Theme Proposal & Voting Panel (only shown when gameMode is 'vote') */}
+                {room.gameMode === "vote" && (
+                  <div className="glass-card rounded-3xl p-6 border border-emerald-500/20 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="font-display font-extrabold text-base text-white">
+                          Votación de Temas en Vivo
+                        </h3>
+                        <p className="text-xs text-zinc-400">
+                          Vota o propón qué estilo queréis jugar
+                        </p>
+                      </div>
+                      <Vote className="w-4 h-4 text-amber-400" />
                     </div>
-                    <Vote className="w-4 h-4 text-amber-400" />
-                  </div>
 
-                  {/* Proposals List */}
-                  <div className="space-y-2">
-                    {room.themeProposals.map((prop) => {
-                      const totalVotes = room.themeProposals.reduce(
-                        (sum, p) => sum + p.votes.length,
-                        0
-                      );
-                      const votePct =
-                        totalVotes > 0 ? Math.round((prop.votes.length / totalVotes) * 100) : 0;
-                      const hasVoted = prop.votes.includes(playerId);
+                    {/* Proposals List */}
+                    <div className="space-y-2">
+                      {room.themeProposals.map((prop) => {
+                        const totalVotes = room.themeProposals.reduce(
+                          (sum, p) => sum + p.votes.length,
+                          0
+                        );
+                        const votePct =
+                          totalVotes > 0 ? Math.round((prop.votes.length / totalVotes) * 100) : 0;
+                        const hasVoted = prop.votes.includes(playerId);
 
-                      return (
-                        <button
-                          key={prop.id}
-                          onClick={() => handleVoteTheme(prop.id)}
-                          className={`w-full p-3 rounded-xl border text-left transition relative overflow-hidden flex items-center justify-between ${
-                            hasVoted
-                              ? "border-goblinLime bg-emerald-950/70"
-                              : "border-emerald-500/15 bg-[#0B1710] hover:border-emerald-500/30"
-                          }`}
-                        >
-                          {/* Progress fill */}
-                          <div
-                            className="absolute left-0 top-0 bottom-0 bg-emerald-500/15 transition-all duration-300 pointer-events-none"
-                            style={{ width: `${votePct}%` }}
-                          />
+                        return (
+                          <button
+                            key={prop.id}
+                            onClick={() => handleVoteTheme(prop.id)}
+                            className={`w-full p-3 rounded-xl border text-left transition relative overflow-hidden flex items-center justify-between ${
+                              hasVoted
+                                ? "border-goblinLime bg-emerald-950/70"
+                                : "border-emerald-500/15 bg-[#0B1710] hover:border-emerald-500/30"
+                            }`}
+                          >
+                            {/* Progress fill */}
+                            <div
+                              className="absolute left-0 top-0 bottom-0 bg-emerald-500/15 transition-all duration-300 pointer-events-none"
+                              style={{ width: `${votePct}%` }}
+                            />
 
-                          <div className="relative z-10">
-                            <div className="font-bold text-xs text-white flex items-center gap-2">
-                              <span>{prop.label}</span>
-                              {hasVoted && (
-                                <span className="text-goblinLime text-xs">✓ Votado</span>
-                              )}
+                            <div className="relative z-10">
+                              <div className="font-bold text-xs text-white flex items-center gap-2">
+                                <span>{prop.label}</span>
+                                {hasVoted && (
+                                  <span className="text-goblinLime text-xs">✓ Votado</span>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-zinc-400">
+                                Por {prop.proposedBy}
+                              </div>
                             </div>
-                            <div className="text-[10px] text-zinc-400">
-                              Por {prop.proposedBy}
+
+                            <div className="relative z-10 font-mono font-bold text-xs text-goblinLime">
+                              {prop.votes.length} {prop.votes.length === 1 ? "voto" : "votos"}
                             </div>
-                          </div>
+                          </button>
+                        );
+                      })}
+                    </div>
 
-                          <div className="relative z-10 font-mono font-bold text-xs text-goblinLime">
-                            {prop.votes.length} {prop.votes.length === 1 ? "voto" : "votos"}
-                          </div>
-                        </button>
-                      );
-                    })}
+                    {/* Propose new theme form */}
+                    <div className="flex gap-2 pt-2 border-t border-emerald-500/15">
+                      <input
+                        type="text"
+                        value={newThemeProposal}
+                        onChange={(e) => setNewThemeProposal(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && handleProposeTheme()}
+                        placeholder="Proponer un tema (ej. Bandas Sonoras, K-Pop)..."
+                        className="flex-1 px-3 py-2 rounded-xl bg-black/60 border border-emerald-500/30 text-white text-xs focus:outline-none focus:border-goblinLime"
+                      />
+                      <button
+                        onClick={handleProposeTheme}
+                        className="px-3.5 py-2 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-white font-bold text-xs border border-emerald-500/30 transition"
+                      >
+                        Proponer
+                      </button>
+                    </div>
                   </div>
-
-                  {/* Propose new theme form */}
-                  <div className="flex gap-2 pt-2 border-t border-emerald-500/15">
-                    <input
-                      type="text"
-                      value={newThemeProposal}
-                      onChange={(e) => setNewThemeProposal(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && handleProposeTheme()}
-                      placeholder="Proponer un tema (ej. Bandas Sonoras, K-Pop)..."
-                      className="flex-1 px-3 py-2 rounded-xl bg-black/60 border border-emerald-500/30 text-white text-xs focus:outline-none focus:border-goblinLime"
-                    />
-                    <button
-                      onClick={handleProposeTheme}
-                      className="px-3.5 py-2 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-white font-bold text-xs border border-emerald-500/30 transition"
-                    >
-                      Proponer
-                    </button>
-                  </div>
-                </div>
+                )}
               </div>
             </div>
           </div>
@@ -2645,10 +2695,10 @@ function PlayArenaContent() {
                 {isAudioBlocked && (
                   <button
                     onClick={() => audioPlayer.resume()}
-                    className="px-2.5 py-1 rounded-xl bg-goblinLime text-black font-bold text-xs hover:bg-emerald-400 animate-bounce transition flex items-center gap-1"
+                    className="px-2.5 py-1 rounded-xl bg-goblinLime text-black font-bold text-xs hover:bg-emerald-400 animate-bounce transition flex items-center gap-1 shadow-lg cursor-pointer"
                   >
                     <Volume2 className="w-3.5 h-3.5" />
-                    <span>Activar Audio</span>
+                    <span>🔊 Tocar para activar sonido</span>
                   </button>
                 )}
 

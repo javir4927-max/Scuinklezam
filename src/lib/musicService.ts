@@ -1,6 +1,6 @@
 import { SpotifyTrackItem, FALLBACK_SPOTIFY_TRACKS, getFallbackArtwork } from "./spotifyTypes";
 import { getSpotifyAppToken, getSpotifyUserToken } from "./spotifyServer";
-import { matchArtistName, matchSongTitle, getTrackTopic } from "./songMatching";
+import { matchArtistNameStrict, matchSongTitleStrict, deepNormalize, getTrackTopic } from "./songMatching";
 
 // Bypass local Windows certificate verification issues for iTunes and Spotify APIs
 if (typeof process !== "undefined" && process.env) {
@@ -25,14 +25,16 @@ export async function resolveAudioStream(
   title: string,
   artist: string
 ): Promise<AudioStreamResolution | null> {
-  const cleanTitle = title.replace(/\(.*?\)|\[.*?\]/g, "").trim();
-  const query = `${cleanTitle} ${artist}`.trim();
+  const cleanTitle = deepNormalize(title);
+  const mainArtist = (artist || "").split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)|(\s+with\s+)|(\s+x\s+)/i)[0].trim();
+  const query = `${cleanTitle} ${mainArtist}`.trim();
 
-  // 1. iTunes Search API (country=ES, limit=8)
+  // 1. iTunes Search API (country=ES, limit=10) with 3500ms timeout
   try {
-    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&entity=song&country=ES&limit=8`;
+    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&entity=song&country=ES&limit=10`;
     const res = await fetch(url, {
       headers: { "User-Agent": "Scuinklezam/1.0" },
+      signal: AbortSignal.timeout(3500),
       next: { revalidate: 3600 },
     });
 
@@ -44,9 +46,9 @@ export async function resolveAudioStream(
             continue;
           }
 
-          // Strict match: must match both artist AND song title
-          const artistMatches = matchArtistName(item.artistName, artist);
-          const titleMatches = matchSongTitle(item.trackName, title);
+          // Strict match: must match both artist AND song title (or >=80% keyword overlap)
+          const artistMatches = matchArtistNameStrict(item.artistName, artist);
+          const titleMatches = matchSongTitleStrict(item.trackName, title);
 
           if (artistMatches && titleMatches) {
             const art = item.artworkUrl100
@@ -66,11 +68,12 @@ export async function resolveAudioStream(
     console.warn("[resolveAudioStream] iTunes search failed:", err);
   }
 
-  // 2. Deezer API Fallback (limit=5)
+  // 2. Deezer API Fallback (limit=6) with 3500ms timeout
   try {
-    const dUrl = `https://api.deezer.com/search/track?q=${encodeURIComponent(query)}&limit=5`;
+    const dUrl = `https://api.deezer.com/search/track?q=${encodeURIComponent(query)}&limit=6`;
     const dRes = await fetch(dUrl, {
       headers: { "User-Agent": "Scuinklezam/1.0" },
+      signal: AbortSignal.timeout(3500),
       next: { revalidate: 3600 },
     });
 
@@ -83,8 +86,8 @@ export async function resolveAudioStream(
           }
 
           // Strict match on Deezer as well
-          const artistMatches = matchArtistName(dItem.artist?.name, artist);
-          const titleMatches = matchSongTitle(dItem.title, title);
+          const artistMatches = matchArtistNameStrict(dItem.artist?.name, artist);
+          const titleMatches = matchSongTitleStrict(dItem.title, title);
 
           if (artistMatches && titleMatches) {
             const dArt = dItem.album?.cover_xl || dItem.album?.cover_big || getFallbackArtwork(title, artist);

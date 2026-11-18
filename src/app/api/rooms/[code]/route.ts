@@ -18,6 +18,7 @@ import {
   kickPlayer,
   transferHost,
   renamePlayer,
+  updatePlayerProfile,
   addPlaylistToRoom,
   removePlaylistFromRoom,
   checkRoomStateProgression,
@@ -322,6 +323,29 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         }
         return NextResponse.json(
           { success: true, room: renameResult.room },
+          { headers: NO_CACHE_HEADERS }
+        );
+      }
+
+      case "update_player_profile": {
+        if (!playerId) {
+          return NextResponse.json(
+            { success: false, error: "Player ID requerido" },
+            { status: 400, headers: NO_CACHE_HEADERS }
+          );
+        }
+        const updateResult = await updatePlayerProfile(code, playerId, {
+          name: typeof body.name === "string" ? body.name : undefined,
+          avatarColor: typeof body.avatarColor === "string" ? body.avatarColor : undefined,
+        });
+        if (!updateResult.success) {
+          return NextResponse.json(
+            { success: false, error: updateResult.error },
+            { status: 400, headers: NO_CACHE_HEADERS }
+          );
+        }
+        return NextResponse.json(
+          { success: true, room: updateResult.room },
           { headers: NO_CACHE_HEADERS }
         );
       }

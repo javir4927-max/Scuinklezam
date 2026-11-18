@@ -5,7 +5,15 @@ if (typeof process !== "undefined" && process.env) {
 import { Redis } from "@upstash/redis";
 import { SpotifyTrackItem, FALLBACK_SPOTIFY_TRACKS, getFallbackArtwork } from "./spotifyTypes";
 import { searchVerifiedTracks } from "./musicService";
-import { getTrackTopic, getCoherentDistractors, normalizeSongTitle } from "./songMatching";
+import {
+  getTrackTopic,
+  getCoherentDistractors,
+  getDifficultDistractors,
+  normalizeSongTitle,
+  deepNormalize,
+  matchSongTitleStrict,
+  matchArtistNameStrict,
+} from "./songMatching";
 import { ROUND_DURATION_SEC, REVEAL_DURATION_MS, calculateRoundPoints } from "./scoring";
 
 export type GameMode =
@@ -18,6 +26,16 @@ export type GameMode =
   | "tv_party";
 
 export type GuessType = "song" | "artist" | "both";
+
+export interface PlayerAnswerRecord {
+  roundIndex: number;
+  optionIndex: number;
+  timeMs: number;
+  pointsEarned: number;
+  isCorrect: boolean;
+  guessedFriendId?: string;
+  selectedTitle?: string;
+}
 
 export interface Player {
   id: string;
@@ -37,13 +55,8 @@ export interface Player {
   score: number;
   streak: number;
   lives: number;
-  currentAnswer: {
-    optionIndex: number;
-    timeMs: number;
-    pointsEarned: number;
-    isCorrect: boolean;
-    guessedFriendId?: string;
-  } | null;
+  currentAnswer: PlayerAnswerRecord | null;
+  answersByRound?: Record<number, PlayerAnswerRecord>;
   votedTheme: string | null;
 }
 
@@ -264,46 +277,46 @@ export function fisherYatesShuffle<T>(array: T[]): T[] {
   return arr;
 }
 
-export function buildRoundsFromTracks(tracks: SpotifyTrackItem[], totalRounds: number): RoundData[] {
+export async function buildRoundsFromTracks(tracks: SpotifyTrackItem[], totalRounds: number): Promise<RoundData[]> {
   const valid = tracks.filter((t) => t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl);
   const catalog = valid.length >= 4 ? valid : FALLBACK_SPOTIFY_TRACKS;
   const shuffled = fisherYatesShuffle(catalog);
   const count = Math.min(totalRounds, shuffled.length);
-  const rounds: RoundData[] = [];
 
-  for (let i = 0; i < count; i++) {
-    const target = shuffled[i];
-    const targetTopic = getTrackTopic(target);
+  const rounds: RoundData[] = await Promise.all(
+    shuffled.slice(0, count).map(async (target, i) => {
+      const targetTopic = getTrackTopic(target);
 
-    const correctOption: RoundOption = {
-      id: target.id,
-      title: target.title,
-      artist: target.artist,
-      artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
-      topic: targetTopic,
-    };
-
-    // Coherent distractors strictly belonging to the same topic/genre without duplicate titles
-    const distractors = getCoherentDistractors(target, catalog, 3);
-    const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractors]);
-    const correctIndex = options.findIndex(
-      (o) => normalizeSongTitle(o.title) === normalizeSongTitle(correctOption.title)
-    );
-
-    rounds.push({
-      roundNumber: i + 1,
-      targetTrack: {
-        ...target,
+      const correctOption: RoundOption = {
+        id: target.id,
+        title: target.title,
+        artist: target.artist,
         artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
         topic: targetTopic,
-      },
-      options,
-      correctIndex: correctIndex >= 0 ? correctIndex : 0,
-      correctTrackId: target.id,
-      correctTitle: target.title,
-      topic: targetTopic,
-    });
-  }
+      };
+
+      // Difficult distractors: same album > same artist > related/topic
+      const distractors = await getDifficultDistractors(target, catalog, 3);
+      const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractors]);
+      const correctIndex = options.findIndex(
+        (o) => deepNormalize(o.title) === deepNormalize(correctOption.title)
+      );
+
+      return {
+        roundNumber: i + 1,
+        targetTrack: {
+          ...target,
+          artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+          topic: targetTopic,
+        },
+        options,
+        correctIndex: correctIndex >= 0 ? correctIndex : 0,
+        correctTrackId: target.id,
+        correctTitle: target.title,
+        topic: targetTopic,
+      };
+    })
+  );
 
   return rounds;
 }
@@ -751,6 +764,36 @@ export async function renamePlayer(
 }
 
 /**
+ * Updates player profile details (name and/or avatar) in real time.
+ */
+export async function updatePlayerProfile(
+  code: string,
+  playerId: string,
+  profile: { name?: string; avatarColor?: string }
+): Promise<{ success: boolean; room?: RoomState; error?: string }> {
+  const room = await getRoom(code);
+  if (!room) return { success: false, error: "Sala no encontrada." };
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) return { success: false, error: "Jugador no encontrado en la sala." };
+
+  if (profile.name) {
+    const clean = profile.name.trim();
+    if (clean.length >= 2) {
+      player.name = clean.slice(0, 24);
+      if (player.isHost && (room.name.startsWith("Sala de ") || !room.name)) {
+        room.name = `Sala de ${player.name}`;
+      }
+    }
+  }
+  if (profile.avatarColor) {
+    player.avatarColor = profile.avatarColor;
+  }
+
+  await saveRoom(room);
+  return { success: true, room };
+}
+
+/**
  * Adds an imported playlist to the room's music collection.
  */
 export async function addPlaylistToRoom(
@@ -945,9 +988,9 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
       candidates.map(async (cand) => {
         try {
           const tracks = await searchVerifiedTracks(cand.query, room.totalRounds + 6);
-          candidateRounds[cand.id] = buildRoundsFromTracks(tracks, room.totalRounds);
+          candidateRounds[cand.id] = await buildRoundsFromTracks(tracks, room.totalRounds);
         } catch {
-          candidateRounds[cand.id] = buildRoundsFromTracks(FALLBACK_SPOTIFY_TRACKS, room.totalRounds);
+          candidateRounds[cand.id] = await buildRoundsFromTracks(FALLBACK_SPOTIFY_TRACKS, room.totalRounds);
         }
       })
     );
@@ -1165,55 +1208,52 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
   // True Fisher-Yates shuffle across target tracks so round progression is 100% unpredictable
   const randomizedTargets = fisherYatesShuffle(selectedTargets);
 
-  // Assemble rounds
+  // Assemble rounds in parallel with difficult distractors
   const roundsToGenerate = Math.min(room.totalRounds, randomizedTargets.length);
-  const rounds: RoundData[] = [];
+  const poolTracks = validUniquePool.map((u) => u.track);
 
-  for (let i = 0; i < roundsToGenerate; i++) {
-    const item = randomizedTargets[i];
-    const target = item.track;
-    const targetTopic = getTrackTopic(target);
+  const rounds: RoundData[] = await Promise.all(
+    randomizedTargets.slice(0, roundsToGenerate).map(async (item, i) => {
+      const target = item.track;
+      const targetTopic = getTrackTopic(target);
 
-    const correctOption: RoundOption = {
-      id: target.id,
-      title: target.title,
-      artist: target.artist,
-      artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
-      topic: targetTopic,
-    };
-
-    // Distractors STRICTLY sharing the exact same topic and distinct normalized titles
-    const distractors = getCoherentDistractors(
-      target,
-      validUniquePool.map((u) => u.track),
-      3
-    );
-
-    // Merge & shuffle options with Fisher-Yates
-    const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractors]);
-    const correctIndex = options.findIndex(
-      (opt) => normalizeSongTitle(opt.title) === normalizeSongTitle(correctOption.title)
-    );
-
-    const playerSource = item.playerId ? room.players.find((p) => p.id === item.playerId) : undefined;
-
-    rounds.push({
-      roundNumber: i + 1,
-      targetTrack: {
-        ...target,
+      const correctOption: RoundOption = {
+        id: target.id,
+        title: target.title,
+        artist: target.artist,
         artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
         topic: targetTopic,
-      },
-      options,
-      correctIndex: correctIndex >= 0 ? correctIndex : 0,
-      correctTrackId: target.id,
-      correctTitle: target.title,
-      topic: targetTopic,
-      contributedByPlayerId: item.playerId,
-      contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name,
-      sourceMode: target.sourceMode || playerSource?.injectedModeName,
-    });
-  }
+      };
+
+      // Challenging distractors: same album > same artist > related artists/topic
+      const distractors = await getDifficultDistractors(target, poolTracks, 3);
+
+      // Merge & shuffle options with Fisher-Yates
+      const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractors]);
+      const correctIndex = options.findIndex(
+        (opt) => deepNormalize(opt.title) === deepNormalize(correctOption.title)
+      );
+
+      const playerSource = item.playerId ? room.players.find((p) => p.id === item.playerId) : undefined;
+
+      return {
+        roundNumber: i + 1,
+        targetTrack: {
+          ...target,
+          artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+          topic: targetTopic,
+        },
+        options,
+        correctIndex: correctIndex >= 0 ? correctIndex : 0,
+        correctTrackId: target.id,
+        correctTitle: target.title,
+        topic: targetTopic,
+        contributedByPlayerId: item.playerId,
+        contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name,
+        sourceMode: target.sourceMode || playerSource?.injectedModeName,
+      };
+    })
+  );
 
   // Reset players for new match
   room.players.forEach((p) => {
@@ -1221,6 +1261,7 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
     p.streak = 0;
     p.lives = 3;
     p.currentAnswer = null;
+    p.answersByRound = {};
   });
 
   const now = Date.now();
@@ -1263,12 +1304,21 @@ export async function submitPlayerAnswer(
   }
 
   // Guard against late / mismatched submissions from previous or desynced rounds
-  if (typeof roundIndex === "number" && roundIndex !== room.currentRound) {
+  if (typeof roundIndex !== "number" || roundIndex !== room.currentRound) {
     return { success: false, pointsEarned: 0, isCorrect: false, room };
   }
 
   const player = room.players.find((p) => p.id === playerId);
-  if (!player || player.currentAnswer !== null) {
+  if (!player) {
+    return { success: false, pointsEarned: 0, isCorrect: false, room };
+  }
+
+  if (!player.answersByRound) {
+    player.answersByRound = {};
+  }
+
+  // Strict check: already answered this round
+  if (player.answersByRound[room.currentRound] || player.currentAnswer !== null) {
     return { success: false, pointsEarned: 0, isCorrect: false, room };
   }
 
@@ -1279,7 +1329,7 @@ export async function submitPlayerAnswer(
   let isCorrect = false;
   if (selectedTitle && typeof selectedTitle === "string") {
     const targetTitle = round.correctTitle || round.targetTrack?.title || "";
-    isCorrect = normalizeSongTitle(selectedTitle) === normalizeSongTitle(targetTitle);
+    isCorrect = matchSongTitleStrict(selectedTitle, targetTitle);
   } else {
     isCorrect = optionIndex === round.correctIndex;
   }
@@ -1312,13 +1362,18 @@ export async function submitPlayerAnswer(
     }
   }
 
-  player.currentAnswer = {
+  const answerRecord: PlayerAnswerRecord = {
+    roundIndex: room.currentRound,
     optionIndex,
     timeMs,
     pointsEarned: points,
     isCorrect,
     guessedFriendId,
+    selectedTitle,
   };
+
+  player.currentAnswer = answerRecord;
+  player.answersByRound[room.currentRound] = answerRecord;
 
   // Check if all active online players have answered:
   // If so, transition to round_reveal for 4.5s (REVEAL_DURATION_MS).
