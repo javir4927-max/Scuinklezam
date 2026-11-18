@@ -169,50 +169,52 @@ export default function SpotifyStatsDetailModal({
   if (!isOpen || !mounted) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md flex items-end sm:items-center justify-center sm:p-6 animate-in fade-in duration-200">
-      <div className="relative w-full max-w-2xl bg-zinc-950 border-t sm:border border-emerald-500/30 sm:border-emerald-500/25 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden h-[90dvh] sm:h-auto sm:max-h-[88vh] flex flex-col text-white">
+    <div className="fixed inset-0 z-[120] bg-black/85 backdrop-blur-md flex flex-col justify-end sm:justify-center sm:items-center sm:p-4 animate-in fade-in duration-200">
+      <div className="relative w-full max-h-[92dvh] sm:max-w-3xl sm:max-h-[86vh] bg-zinc-950 border-t sm:border border-emerald-500/25 rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden text-white font-sans">
         
         {/* Header */}
-        <div className="sticky top-0 z-10 p-4 sm:p-6 border-b border-white/10 shrink-0 bg-zinc-950/95 backdrop-blur-md space-y-2">
+        <div className="sticky top-0 z-10 p-3.5 sm:p-5 border-b border-white/10 shrink-0 bg-zinc-950/95 backdrop-blur-md space-y-2">
           {/* Drag indicator pill for mobile bottom sheet */}
-          <div className="w-12 h-1.5 bg-zinc-700 rounded-full mx-auto sm:hidden" />
-          <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-emerald-950/80 border border-emerald-500/30 flex items-center justify-center text-goblinLime">
-              <BarChart3 className="w-4 h-4" />
+          <div className="w-12 h-1 bg-zinc-700 rounded-full mx-auto sm:hidden mb-1" />
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-emerald-950/80 border border-emerald-500/30 flex items-center justify-center text-goblinLime shrink-0">
+                <BarChart3 className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-sm sm:text-base font-extrabold text-white flex items-center gap-1.5 truncate">
+                  <span className="truncate">Tus Estadísticas en Detalle</span>
+                  {userDisplayName && (
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-500/30 text-emerald-400 shrink-0">
+                      {userDisplayName}
+                    </span>
+                  )}
+                </h2>
+                <p className="text-[10px] sm:text-[11px] text-zinc-400 truncate">
+                  Historial y rankings sincronizados directamente con Spotify
+                </p>
+              </div>
             </div>
-            <div>
-              <h2 className="text-base font-extrabold text-white flex items-center gap-2">
-                <span>Tus Estadísticas en Detalle</span>
-                {userDisplayName && (
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-500/30 text-emerald-400">
-                    {userDisplayName}
-                  </span>
-                )}
-              </h2>
-              <p className="text-[11px] text-zinc-400">
-                Tu historial y rankings oficiales sincronizados directamente con Spotify
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={() => {
-              stopAudio();
-              onClose();
-            }}
-            className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white flex items-center justify-center transition cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
+            <button
+              onClick={() => {
+                stopAudio();
+                onClose();
+              }}
+              className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white flex items-center justify-center transition cursor-pointer shrink-0"
+              aria-label="Cerrar modal"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
         </div>
 
-        {/* Tab Navigation */}
-        <div className="px-4 sm:px-6 pt-3 pb-2 border-b border-white/5 bg-[#09130D] shrink-0 space-y-2.5">
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+        {/* Tab Navigation & Time Filters */}
+        <div className="px-3.5 sm:px-6 pt-2.5 pb-2 border-b border-white/5 bg-[#09130D] shrink-0 space-y-2">
+          {/* Tabs row with horizontal scroll and no scrollbar */}
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1">
             <button
               onClick={() => setActiveTab("top_tracks")}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shrink-0 ${
+              className={`shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 ${
                 activeTab === "top_tracks"
                   ? "bg-emerald-500 text-black shadow-lg shadow-emerald-500/20"
                   : "bg-white/5 hover:bg-white/10 text-zinc-300"
@@ -224,7 +226,7 @@ export default function SpotifyStatsDetailModal({
 
             <button
               onClick={() => setActiveTab("recently_played")}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shrink-0 ${
+              className={`shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 ${
                 activeTab === "recently_played"
                   ? "bg-emerald-500 text-black shadow-lg shadow-emerald-500/20"
                   : "bg-white/5 hover:bg-white/10 text-zinc-300"
@@ -236,7 +238,7 @@ export default function SpotifyStatsDetailModal({
 
             <button
               onClick={() => setActiveTab("top_artists")}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shrink-0 ${
+              className={`shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 ${
                 activeTab === "top_artists"
                   ? "bg-emerald-500 text-black shadow-lg shadow-emerald-500/20"
                   : "bg-white/5 hover:bg-white/10 text-zinc-300"
@@ -249,44 +251,44 @@ export default function SpotifyStatsDetailModal({
 
           {/* Time range selector (Only for Top Tracks and Top Artists) */}
           {activeTab !== "recently_played" && (
-            <div className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-400">
-              <span className="text-[10px] uppercase font-bold text-zinc-500 mr-1">Periodo:</span>
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 text-[11px] font-medium text-zinc-400">
+              <span className="text-[10px] uppercase font-bold text-zinc-500 mr-1 shrink-0">Periodo:</span>
               <button
                 onClick={() => setTimeRange("long_term")}
-                className={`px-2.5 py-1 rounded-lg transition ${
+                className={`shrink-0 whitespace-nowrap px-2.5 py-1 rounded-lg text-xs transition ${
                   timeRange === "long_term"
                     ? "bg-emerald-950 text-emerald-300 border border-emerald-500/40 font-bold"
                     : "bg-black/20 hover:bg-white/5 text-zinc-400 border border-white/5"
                 }`}
               >
-                De toda la historia
+                Historia
               </button>
               <button
                 onClick={() => setTimeRange("medium_term")}
-                className={`px-2.5 py-1 rounded-lg transition ${
+                className={`shrink-0 whitespace-nowrap px-2.5 py-1 rounded-lg text-xs transition ${
                   timeRange === "medium_term"
                     ? "bg-emerald-950 text-emerald-300 border border-emerald-500/40 font-bold"
                     : "bg-black/20 hover:bg-white/5 text-zinc-400 border border-white/5"
                 }`}
               >
-                Últimos 6 meses
+                6 meses
               </button>
               <button
                 onClick={() => setTimeRange("short_term")}
-                className={`px-2.5 py-1 rounded-lg transition ${
+                className={`shrink-0 whitespace-nowrap px-2.5 py-1 rounded-lg text-xs transition ${
                   timeRange === "short_term"
                     ? "bg-emerald-950 text-emerald-300 border border-emerald-500/40 font-bold"
                     : "bg-black/20 hover:bg-white/5 text-zinc-400 border border-white/5"
                 }`}
               >
-                Últimas 4 semanas
+                4 semanas
               </button>
             </div>
           )}
         </div>
 
-        {/* Content List Area */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-2">
+        {/* Content List Area: Real Flex-1 with min-h-0 and internal scroll */}
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3.5 py-4 pb-10 space-y-2.5">
           {isLoading ? (
             <div className="py-20 flex flex-col items-center justify-center gap-3 text-center">
               <Loader2 className="w-7 h-7 text-emerald-400 animate-spin" />
@@ -311,12 +313,12 @@ export default function SpotifyStatsDetailModal({
                 {artists.map((artist) => (
                   <div
                     key={artist.id || artist.rank}
-                    className="p-2.5 rounded-2xl bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 hover:border-emerald-500/30 transition flex items-center justify-between gap-3 group"
+                    className="p-2 rounded-xl bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 hover:border-emerald-500/30 transition flex items-center justify-between gap-2.5 w-full min-w-0 group"
                   >
-                    <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
                       {/* Rank badge */}
                       <span
-                        className={`w-6 text-center font-black text-xs shrink-0 ${
+                        className={`w-5 text-center font-black text-xs shrink-0 ${
                           artist.rank === 1
                             ? "text-amber-400 font-extrabold"
                             : artist.rank === 2
@@ -334,17 +336,17 @@ export default function SpotifyStatsDetailModal({
                         <img
                           src={artist.imageUrl}
                           alt={artist.name}
-                          className="w-11 h-11 rounded-full object-cover shrink-0 border border-emerald-500/30"
+                          className="w-10 h-10 rounded-full object-cover shrink-0 border border-emerald-500/30"
                         />
                       ) : (
-                        <div className="w-11 h-11 rounded-full bg-emerald-950/80 border border-emerald-500/30 flex items-center justify-center font-bold text-xs text-goblinLime shrink-0">
+                        <div className="w-10 h-10 rounded-full bg-emerald-950/80 border border-emerald-500/30 flex items-center justify-center font-bold text-xs text-goblinLime shrink-0">
                           {artist.name.substring(0, 2)}
                         </div>
                       )}
 
                       {/* Artist Name & Genres */}
-                      <div className="min-w-0">
-                        <div className="font-bold text-sm text-white group-hover:text-goblinLime transition truncate">
+                      <div className="flex-1 min-w-0">
+                        <div className="font-bold text-xs sm:text-sm text-white group-hover:text-goblinLime transition truncate">
                           {artist.name}
                         </div>
                         <div className="text-[10px] text-zinc-400 truncate">
@@ -359,7 +361,7 @@ export default function SpotifyStatsDetailModal({
                         href={artist.spotifyUrl}
                         target="_blank"
                         rel="noreferrer"
-                        className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white flex items-center justify-center shrink-0 transition"
+                        className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white flex items-center justify-center shrink-0 transition"
                         title="Ver en Spotify"
                       >
                         <ExternalLink className="w-3.5 h-3.5" />
@@ -386,58 +388,56 @@ export default function SpotifyStatsDetailModal({
                   return (
                     <div
                       key={track.id || idx}
-                      className={`p-2 rounded-2xl border transition flex items-center justify-between gap-3 group ${
+                      className={`flex items-center gap-2.5 w-full min-w-0 p-2 rounded-xl border transition group ${
                         isPlaying
                           ? "bg-emerald-950/70 border-emerald-500/50 shadow-md shadow-emerald-950/50"
                           : "bg-white/[0.02] hover:bg-white/[0.05] border-white/5 hover:border-emerald-500/25"
                       }`}
                     >
-                      <div className="flex items-center gap-3 min-w-0">
-                        {/* Position Rank */}
-                        <span
-                          className={`w-6 text-center font-mono font-black text-xs shrink-0 ${
-                            rank === 1
-                              ? "text-amber-400 font-extrabold text-sm"
-                              : rank === 2
-                              ? "text-slate-300 font-bold"
-                              : rank === 3
-                              ? "text-amber-600 font-bold"
-                              : "text-zinc-500"
+                      {/* Position Rank */}
+                      <span
+                        className={`w-5 text-center font-mono font-black text-xs shrink-0 ${
+                          rank === 1
+                            ? "text-amber-400 font-extrabold text-sm"
+                            : rank === 2
+                            ? "text-slate-300 font-bold"
+                            : rank === 3
+                            ? "text-amber-600 font-bold"
+                            : "text-zinc-500"
+                        }`}
+                      >
+                        #{rank}
+                      </span>
+
+                      {/* Original Artwork Thumbnail */}
+                      <div className="relative w-10 h-10 rounded-lg overflow-hidden shrink-0 border border-white/10 group-hover:border-emerald-500/40 transition">
+                        <img
+                          src={track.artworkUrl}
+                          alt={track.title}
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).src = `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(
+                              track.title
+                            )}&backgroundColor=0B1710`;
+                          }}
+                        />
+                        {isPlaying && (
+                          <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                            <Volume2 className="w-4 h-4 text-goblinLime animate-pulse" />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Title and Artist */}
+                      <div className="flex-1 min-w-0">
+                        <div
+                          className={`font-bold text-xs truncate transition ${
+                            isPlaying ? "text-goblinLime" : "text-white group-hover:text-emerald-300"
                           }`}
                         >
-                          #{rank}
-                        </span>
-
-                        {/* Original Artwork Thumbnail */}
-                        <div className="relative w-11 h-11 rounded-xl overflow-hidden shrink-0 border border-white/10 group-hover:border-emerald-500/40 transition">
-                          <img
-                            src={track.artworkUrl}
-                            alt={track.title}
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              (e.currentTarget as HTMLImageElement).src = `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(
-                                track.title
-                              )}&backgroundColor=0B1710`;
-                            }}
-                          />
-                          {isPlaying && (
-                            <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                              <Volume2 className="w-5 h-5 text-goblinLime animate-pulse" />
-                            </div>
-                          )}
+                          {track.title}
                         </div>
-
-                        {/* Title and Artist */}
-                        <div className="min-w-0">
-                          <div
-                            className={`font-bold text-xs truncate transition ${
-                              isPlaying ? "text-goblinLime" : "text-white group-hover:text-emerald-300"
-                            }`}
-                          >
-                            {track.title}
-                          </div>
-                          <div className="text-[11px] text-zinc-400 truncate">{track.artist}</div>
-                        </div>
+                        <div className="text-[11px] text-zinc-400 truncate">{track.artist}</div>
                       </div>
 
                       {/* Actions: Audio Preview Button & External Spotify Link */}
@@ -445,7 +445,7 @@ export default function SpotifyStatsDetailModal({
                         {track.previewUrl ? (
                           <button
                             onClick={() => handleTogglePlay(track)}
-                            className={`px-2.5 py-1 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
+                            className={`w-9 h-9 rounded-xl flex items-center justify-center transition cursor-pointer shrink-0 ${
                               isPlaying
                                 ? "bg-emerald-500 text-black font-bold shadow-lg shadow-emerald-500/30"
                                 : "bg-white/5 hover:bg-emerald-500/20 text-zinc-300 hover:text-emerald-300 border border-white/10"
@@ -453,19 +453,13 @@ export default function SpotifyStatsDetailModal({
                             title={isPlaying ? "Pausar previa" : "Escuchar 30s de previa"}
                           >
                             {isPlaying ? (
-                              <>
-                                <Pause className="w-3.5 h-3.5 fill-current" />
-                                <span className="text-[10px]">Pausar</span>
-                              </>
+                              <Pause className="w-4 h-4 fill-current" />
                             ) : (
-                              <>
-                                <Play className="w-3.5 h-3.5 fill-current" />
-                                <span className="text-[10px]">Previa</span>
-                              </>
+                              <Play className="w-4 h-4 fill-current ml-0.5" />
                             )}
                           </button>
                         ) : (
-                          <span className="text-[10px] text-zinc-600 px-2 py-0.5">Sin preview</span>
+                          <span className="text-[9px] text-zinc-600 px-1">Sin audio</span>
                         )}
 
                         {track.spotifyUrl && (
@@ -473,10 +467,10 @@ export default function SpotifyStatsDetailModal({
                             href={track.spotifyUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="w-7 h-7 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white flex items-center justify-center transition"
+                            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white flex items-center justify-center transition shrink-0"
                             title="Abrir en Spotify"
                           >
-                            <ExternalLink className="w-3 h-3" />
+                            <ExternalLink className="w-3.5 h-3.5" />
                           </a>
                         )}
                       </div>

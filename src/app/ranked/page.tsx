@@ -68,7 +68,7 @@ export default function RankedArenaPage() {
   const [leaderboardEntries, setLeaderboardEntries] = useState<LeaderboardEntry[]>([]);
   const [loadingLeaderboard, setLoadingLeaderboard] = useState<boolean>(false);
 
-  // Ficha de Artista Estilo Tapzz State
+  // Ficha de Artista Oficial State
   const [selectedArtistName, setSelectedArtistName] = useState<string | null>(null);
   const [artistSheetData, setArtistSheetData] = useState<{
     artistName: string;
@@ -111,7 +111,7 @@ export default function RankedArenaPage() {
   const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
   const searchContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // Handler to open Ficha de Artista estilo Tapzz
+  // Handler to open Ficha de Artista Oficial
   const handleOpenArtistSheet = async (artistName: string) => {
     const clean = artistName.trim();
     if (!clean) return;
@@ -445,7 +445,7 @@ export default function RankedArenaPage() {
         playWrongSound();
       }
 
-      // Record in answers history for the Tappz summary screen
+      // Record in answers history for the summary screen
       const chosenTitle = idx >= 0 && currentQ.options[idx] ? currentQ.options[idx].title : "Tiempo agotado";
       setAnswersHistory((prev) => [
         ...prev,
@@ -629,50 +629,61 @@ export default function RankedArenaPage() {
             {/* PLAYING & REVEAL STATE */}
             {(gameState === "playing" || gameState === "reveal") && questions[currentIdx] && (
               <div className="w-full max-w-xl mx-auto space-y-4 animate-fade-in">
-                {/* Status Bar: Round (X/10), Streak & Score */}
-                <div className="flex items-center justify-between px-2">
-                  <div className="space-y-0.5">
-                    <span className="text-xs text-zinc-400 font-semibold">
-                      Pregunta {currentIdx + 1} de {questions.length}
+                {/* Status Bar: Clean 2-Row / Flex-Wrap Header on Mobile */}
+                <div className="flex flex-wrap items-center justify-between gap-2 px-2">
+                  {/* Fila 1 Izquierda: Canción X/10 + Nombre categoría */}
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-xs font-bold text-white shrink-0">
+                      Canción {currentIdx + 1}/10
                     </span>
+                    {activeCategory?.name && (
+                      <span className="text-xs text-zinc-400 truncate max-w-[42vw] sm:max-w-[200px]" title={activeCategory.name}>
+                        · {activeCategory.name}
+                      </span>
+                    )}
                     {streak > 1 && (
-                      <div className="text-xs font-extrabold text-amber-400 flex items-center gap-1 animate-pulse">
-                        <Flame className="w-3.5 h-3.5 fill-current" />
-                        <span>Racha x{streak}</span>
+                      <div className="text-[11px] font-extrabold text-amber-400 flex items-center gap-0.5 animate-pulse shrink-0">
+                        <Flame className="w-3 h-3 fill-current" />
+                        <span>x{streak}</span>
                       </div>
                     )}
                   </div>
 
-                  <div className="flex items-center gap-3">
+                  {/* Fila 1 Derecha: Puntos totales + Reloj circular */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <div className="relative">
+                      <span className="px-2.5 py-1 rounded-full bg-emerald-950 border border-emerald-500/40 text-goblinLime font-mono font-black text-xs sm:text-sm shrink-0">
+                        {score} pts
+                      </span>
+                    </div>
+
                     <div
-                      className={`px-3 py-1 rounded-full text-xs font-mono font-bold border flex items-center gap-1.5 ${
+                      className={`px-2.5 py-1 rounded-full text-xs font-mono font-bold border flex items-center gap-1 shrink-0 ${
                         timeLeft <= 5
                           ? "bg-red-500/20 text-red-400 border-red-500/40 animate-pulse"
                           : "bg-black/50 text-emerald-300 border-emerald-500/30"
                       }`}
                     >
-                      <Timer className="w-3.5 h-3.5" />
+                      <Timer className="w-3 h-3" />
                       <span>{timeLeft}s</span>
                     </div>
-
-                    <div className="relative">
-                      <span className="px-3.5 py-1 rounded-full bg-emerald-950 border border-emerald-500/40 text-goblinLime font-mono font-black text-xs sm:text-sm">
-                        {score} / 1000
-                      </span>
-                      {scorePopup && (
-                        <div
-                          key={`score_pop_${scorePopup.key}`}
-                          className={`absolute -top-4 right-0 pointer-events-none z-30 px-2 py-0.5 rounded-full font-mono font-black text-xs tracking-wider whitespace-nowrap animate-score-float ${
-                            scorePopup.isCorrect
-                              ? "text-emerald-300 bg-emerald-500/20 border border-emerald-400/80 shadow-[0_0_20px_rgba(16,185,129,0.65)]"
-                              : "text-rose-300 bg-rose-500/20 border border-rose-500/80 shadow-[0_0_20px_rgba(244,63,94,0.65)] animate-wrong-shake"
-                          }`}
-                        >
-                          {scorePopup.isCorrect ? `+${scorePopup.points} pts` : "0 pts"}
-                        </div>
-                      )}
-                    </div>
                   </div>
+
+                  {/* Fila 2: Feedback flotante cuando se responde */}
+                  {scorePopup && (
+                    <div className="w-full flex justify-center py-0.5 animate-fade-in">
+                      <div
+                        key={`score_pop_${scorePopup.key}`}
+                        className={`px-3 py-1 rounded-full font-mono font-black text-xs tracking-wider flex items-center gap-1.5 shadow-lg select-none ${
+                          scorePopup.isCorrect
+                            ? "text-emerald-300 bg-emerald-950/90 border border-emerald-400/80 shadow-[0_0_20px_rgba(16,185,129,0.5)]"
+                            : "text-rose-300 bg-rose-950/90 border border-rose-500/80 shadow-[0_0_20px_rgba(244,63,94,0.5)] animate-wrong-shake"
+                        }`}
+                      >
+                        <span>{scorePopup.isCorrect ? `+${scorePopup.points} pts · ¡Correcto!` : "0 pts · Incorrecto"}</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Audio Playing Capsule */}
@@ -770,7 +781,7 @@ export default function RankedArenaPage() {
             )}
 
             {/* ========================================================
-                PANTALLA DE RESULTADOS ESTILO TAPPZ (2 COLUMNAS)
+                PANTALLA DE RESULTADOS OFICIAL (2 COLUMNAS)
                ======================================================== */}
             {gameState === "summary" && summaryData && (
               <div className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-12 gap-6 animate-fade-in">
@@ -793,11 +804,11 @@ export default function RankedArenaPage() {
                         <span className="text-zinc-300">#{summaryData.rank} ranking</span>
                       </div>
 
-                      <div className="space-y-0.5">
-                        <div className="font-display font-black text-4xl sm:text-5xl text-white tracking-tight">
+                      <div className="space-y-1">
+                        <div className="font-display font-black text-4xl sm:text-6xl text-white tracking-tight leading-none px-1 py-1">
                           {summaryData.finalScore} <span className="text-xl sm:text-2xl text-zinc-400 font-normal">/ 1000</span>
                         </div>
-                        <h2 className="font-display font-extrabold text-lg sm:text-xl text-zinc-100 truncate">
+                        <h2 className="font-display font-extrabold text-base sm:text-xl text-zinc-100 truncate">
                           {activeCategory?.name}
                         </h2>
                       </div>
@@ -943,7 +954,7 @@ export default function RankedArenaPage() {
           </div>
         ) : selectedArtistName ? (
           /* ========================================================
-              FICHA DE ARTISTA ESTILO TAPZZ (CON RANKING & 12 ARTISTAS)
+              FICHA DE ARTISTA OFICIAL (CON RANKING & 12 ARTISTAS)
              ======================================================== */
           loadingArtistSheet && !artistSheetData ? (
             <div className="py-24 text-center space-y-4 max-w-xl mx-auto animate-fade-in">
@@ -957,7 +968,7 @@ export default function RankedArenaPage() {
             </div>
           ) : artistSheetData ? (
             <div className="space-y-8 animate-fade-in">
-              {/* A. CABECERA FICHA ARTISTA ESTILO TAPZZ (ESMERALDA Y OSCURO SCUINKLEZAM) */}
+              {/* A. CABECERA FICHA ARTISTA OFICIAL (ESMERALDA Y OSCURO SCUINKLEZAM) */}
               <div className="relative overflow-hidden rounded-3xl bg-gradient-to-b from-emerald-950/40 via-[#0B1710] to-[#060D09] border border-emerald-500/25 p-4 sm:p-10 backdrop-blur-xl shadow-2xl w-full max-w-full">
                 {/* Subtle background glow */}
                 <div className="absolute top-0 right-1/4 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
@@ -1273,7 +1284,7 @@ export default function RankedArenaPage() {
           ) : null
         ) : (
           /* ========================================================
-              CATÁLOGO RANKED ESTILO TAPPZ (ARTISTAS & TEMAS)
+              CATÁLOGO RANKED OFICIAL (ARTISTAS & TEMAS)
              ======================================================== */
           <div className="space-y-8 animate-fade-in">
             {/* Hero Banner */}
@@ -1281,7 +1292,7 @@ export default function RankedArenaPage() {
               <div className="space-y-3 text-center md:text-left">
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-xs font-bold text-amber-300">
                   <Trophy className="w-3.5 h-3.5" />
-                  <span>Temporada 1 · Sistema Ranked estilo Tappz</span>
+                  <span>Temporada 1 · Modo Ranked Oficial</span>
                 </div>
                 <h1 className="font-display font-black text-3xl sm:text-5xl text-white tracking-tight">
                   Demuestra tu nivel musical
@@ -1696,7 +1707,7 @@ export default function RankedArenaPage() {
         </div>
       )}
 
-      {/* Modal Top 50 del Artista (Ficha Tapzz) */}
+      {/* Modal Top 50 del Artista (Ficha Oficial) */}
       {fullArtistLeaderboardOpen && artistSheetData && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="glass-card rounded-3xl max-w-lg w-full p-6 border border-white/15 space-y-5 animate-scaleUp bg-[#0C120E] max-h-[85vh] flex flex-col">

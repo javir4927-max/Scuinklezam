@@ -23,7 +23,7 @@ const memoryScores = new Map<string, Map<string, { score: number; nickname: stri
 const memoryStats = new Map<string, { totalPlays: number; totalPoints: number }>();
 const memoryHistory = new Map<string, Array<any>>();
 
-// In-memory fallback for artist-specific Tapzz stats
+// In-memory fallback for artist-specific ranked stats
 const memoryArtistStats = new Map<string, Map<string, {
   totalPoints: number;
   bestScore: number;
@@ -540,7 +540,7 @@ export async function submitArtistRankedScore(
 }
 
 /**
- * Returns complete Tapzz-style Ficha de Artista data:
+ * Returns complete Ficha de Artista data:
  * user stats, visual podium, top 50 leaderboard, and 12 related artists.
  */
 export async function getArtistProfileAndLeaderboard(

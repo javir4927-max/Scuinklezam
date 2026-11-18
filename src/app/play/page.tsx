@@ -2621,19 +2621,19 @@ function PlayArenaContent() {
         {/* 4. VIEW: ACTIVE GAMEPLAY (15s Round) & ROUND REVEAL */}
         {room && (room.status === "playing" || room.status === "round_reveal") && currentRound && (
           <div className="space-y-6 max-w-4xl mx-auto w-full">
-            {/* Top Game Bar */}
-            <div className="glass-card rounded-2xl p-4 sm:p-5 border border-emerald-500/20 flex items-center justify-between">
-              <div>
-                <span className="font-bold text-sm text-white">
-                  Ronda {room.currentRound} de {room.rounds.length}
+            {/* Top Game Bar: Responsive Flex-Wrap on Mobile */}
+            <div className="glass-card rounded-2xl p-3.5 sm:p-5 border border-emerald-500/20 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="font-bold text-xs sm:text-sm text-white shrink-0">
+                  Ronda {room.currentRound}/{room.rounds.length}
                 </span>
-                <span className="ml-2.5 px-2.5 py-0.5 rounded-full text-xs font-extrabold bg-emerald-950 border border-emerald-500/30 text-goblinLime">
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-950 border border-emerald-500/30 text-goblinLime shrink-0">
                   {room.gameMode.toUpperCase()}
                 </span>
               </div>
 
-              {/* Synchronized 15s Timer */}
-              <div className="flex items-center gap-3">
+              {/* Synchronized 15s Timer & Audio */}
+              <div className="flex items-center gap-2 sm:gap-3 shrink-0">
                 {isAudioBlocked && (
                   <button
                     onClick={() => audioPlayer.resume()}
@@ -2803,7 +2803,7 @@ function PlayArenaContent() {
                     {hasScorePopup && (
                       <div
                         key={`popup_${scorePopup.key}`}
-                        className={`absolute -top-4 sm:-top-5 left-1/2 pointer-events-none z-30 px-3.5 py-1.5 rounded-full font-mono font-black text-sm sm:text-base tracking-wider flex items-center gap-1.5 whitespace-nowrap animate-score-float select-none ${
+                        className={`absolute -top-4 sm:-top-5 left-1/2 -translate-x-1/2 pointer-events-none z-30 px-3.5 py-1.5 rounded-full font-mono font-black text-sm sm:text-base tracking-wider flex items-center gap-1.5 whitespace-nowrap animate-score-float select-none ${
                           scorePopup.isCorrect
                             ? "text-emerald-300 bg-emerald-500/20 border-2 border-emerald-400/80 shadow-[0_0_30px_rgba(16,185,129,0.65)] backdrop-blur-md"
                             : "text-rose-300 bg-rose-500/20 border-2 border-rose-500/80 shadow-[0_0_30px_rgba(244,63,94,0.65)] backdrop-blur-md"

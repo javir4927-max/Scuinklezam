@@ -32,7 +32,7 @@ export async function POST(request: Request) {
       correctCount
     );
 
-    // 2. If this run is for a specific artist, also update the Tapzz artist ranking (cumulative points, quizzes, best score)
+    // 2. If this run is for a specific artist, also update the artist ranking (cumulative points, quizzes, best score)
     const targetArtist = artistName || (categoryId.startsWith("artist_") || categoryId.startsWith("custom_") ? categoryName : undefined);
     let artistResult: any = null;
     if (targetArtist) {

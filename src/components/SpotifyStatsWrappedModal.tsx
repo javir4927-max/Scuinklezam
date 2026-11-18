@@ -228,8 +228,8 @@ export default function SpotifyStatsWrappedModal({
   return (
     <>
       {createPortal(
-        <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md flex items-end sm:items-center justify-center sm:p-6 animate-in fade-in duration-200">
-          <div className="relative w-full max-w-4xl bg-zinc-950 border-t sm:border border-emerald-500/30 sm:border-emerald-500/25 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden h-[90dvh] sm:h-auto sm:max-h-[88vh] flex flex-col text-white font-sans">
+        <div className="fixed inset-0 z-[120] bg-black/85 backdrop-blur-md flex flex-col justify-end sm:justify-center sm:items-center sm:p-4 animate-in fade-in duration-200">
+          <div className="relative w-full max-h-[92dvh] sm:max-w-4xl sm:max-h-[86vh] bg-zinc-950 border-t sm:border border-emerald-500/30 sm:border-emerald-500/25 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col text-white font-sans">
             {/* Cabecera fija interna */}
             <div className="sticky top-0 z-10 bg-zinc-950/95 backdrop-blur-md border-b border-white/10 p-4 sm:p-6 space-y-3 shrink-0">
               {/* Drag indicator pill for mobile bottom sheet */}
@@ -334,7 +334,7 @@ export default function SpotifyStatsWrappedModal({
             </div>
 
             {/* Cuerpo desplazable */}
-            <div className="overflow-y-auto p-4 sm:p-6 space-y-6 flex-1">
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 sm:p-6 pb-12 space-y-6">
             {!isConnected ? (
               /* State: Not connected to Spotify */
               <div className="py-12 text-center space-y-5 max-w-md mx-auto">
