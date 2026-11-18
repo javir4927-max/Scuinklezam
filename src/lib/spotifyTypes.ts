@@ -10,6 +10,8 @@ export interface SpotifyTrackItem {
   durationMs?: number;
   sourcePlayerName?: string;
   sourceMode?: string;
+  topic?: string;
+  genre?: string;
 }
 
 export interface SpotifyUserProfile {

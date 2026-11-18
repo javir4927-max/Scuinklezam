@@ -6,6 +6,8 @@ import { playSynthNote } from "@/lib/audio";
 import { playCorrectSound, playWrongSound } from "@/lib/soundEffects";
 import { audioPlayer, AudioPlayerState } from "@/lib/audioPlayer";
 import { SpotifyTrackItem, FALLBACK_SPOTIFY_TRACKS, getFallbackArtwork } from "@/lib/spotifyTypes";
+import { calculateRoundPoints, ROUND_DURATION_SEC, REVEAL_DURATION_MS } from "@/lib/scoring";
+import { normalizeSongTitle, getCoherentDistractors } from "@/lib/songMatching";
 
 interface MiniQuizModalProps {
   isOpen: boolean;
@@ -49,7 +51,7 @@ export default function MiniQuizModal({
   const [score, setScore] = useState<number>(0);
   const [answeredIdx, setAnsweredIdx] = useState<number | null>(null);
   const [isRevealing, setIsRevealing] = useState<boolean>(false);
-  const [timeLeft, setTimeLeft] = useState<number>(15);
+  const [timeLeft, setTimeLeft] = useState<number>(ROUND_DURATION_SEC);
   const [isFinished, setIsFinished] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [savedFeedback, setSavedFeedback] = useState<string | null>(null);
@@ -102,15 +104,6 @@ export default function MiniQuizModal({
 
     for (let i = 0; i < count; i++) {
       const correct = shuffled[i];
-      const others = shuffled.filter((t) => t.id !== correct.id);
-      const distractors: QuizRoundOption[] = others
-        .sort(() => 0.5 - Math.random())
-        .slice(0, 3)
-        .map((t) => ({
-          title: t.title,
-          artist: t.artist,
-          artworkUrl: t.artworkUrl || getFallbackArtwork(t.title, t.artist),
-        }));
 
       const correctOption: QuizRoundOption = {
         title: correct.title,
@@ -118,9 +111,11 @@ export default function MiniQuizModal({
         artworkUrl: correct.artworkUrl || getFallbackArtwork(correct.title, correct.artist),
       };
 
+      // Distractors strictly from the same topic without duplicate titles
+      const distractors = getCoherentDistractors(correct, catalog, 3);
       const options: QuizRoundOption[] = [correctOption, ...distractors].sort(() => 0.5 - Math.random());
       const correctIndex = options.findIndex(
-        (o) => o.title === correctOption.title && o.artist === correctOption.artist
+        (o) => normalizeSongTitle(o.title) === normalizeSongTitle(correctOption.title)
       );
 
       generated.push({
@@ -137,7 +132,7 @@ export default function MiniQuizModal({
     setCurrentRoundIdx(0);
     setAnsweredIdx(null);
     setIsRevealing(false);
-    setTimeLeft(15);
+    setTimeLeft(ROUND_DURATION_SEC);
     setIsFinished(false);
     setScore(0);
     setAnswersHistory([]);
@@ -232,8 +227,15 @@ export default function MiniQuizModal({
       setIsRevealing(true);
       setAnsweredIdx(idx);
 
-      const isCorrect = idx === currentRound.correctIndex;
-      const pointsEarned = isCorrect ? Math.max(25, Math.round(100 * (timeLeft / 15))) : 0;
+      const rawOpt = idx >= 0 ? currentRound.options[idx] : null;
+      const chosenTitle = rawOpt ? (typeof rawOpt === "string" ? rawOpt : rawOpt.title) : null;
+      const isCorrect = chosenTitle
+        ? normalizeSongTitle(chosenTitle) === normalizeSongTitle(currentRound.correctTrack.title)
+        : idx === currentRound.correctIndex;
+
+      // Exponential formula points (max 100 per question, max 1000 in 10 questions)
+      const elapsedSec = Math.max(0, ROUND_DURATION_SEC - timeLeft);
+      const pointsEarned = calculateRoundPoints(isCorrect, elapsedSec);
 
       if (isCorrect) {
         setScore((prev) => prev + pointsEarned);
@@ -268,7 +270,7 @@ export default function MiniQuizModal({
         audioPlayer.preloadNext(rounds[currentRoundIdx + 1]?.correctTrack?.previewUrl);
       }
 
-      // Display reveal card for 1.8 seconds (1800ms) before advancing
+      // Display reveal card for 4.5 seconds (REVEAL_DURATION_MS) before advancing
       advanceTimerRef.current = setTimeout(() => {
         setScorePopup(null);
         if (currentRoundIdx + 1 < rounds.length) {
@@ -276,7 +278,7 @@ export default function MiniQuizModal({
           setCurrentRoundIdx(nextIdx);
           setAnsweredIdx(null);
           setIsRevealing(false);
-          setTimeLeft(15);
+          setTimeLeft(ROUND_DURATION_SEC);
           setSavedFeedback(null);
 
           const nextTrack = rounds[nextIdx].correctTrack;
@@ -291,7 +293,7 @@ export default function MiniQuizModal({
           setIsFinished(true);
           audioPlayer.stop();
         }
-      }, 1800);
+      }, REVEAL_DURATION_MS);
     },
     [isRevealing, isFinished, rounds, currentRoundIdx, timeLeft]
   );

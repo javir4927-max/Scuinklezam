@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { searchVerifiedTracks, searchItunesCatalog } from "@/lib/musicService";
 import { RANKED_CATEGORIES } from "@/lib/rankedTypes";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
+import { normalizeSongTitle, getTrackTopic } from "@/lib/songMatching";
 
 export const dynamic = "force-dynamic";
 
@@ -42,15 +43,6 @@ const THEME_ARTIST_POOLS: Record<string, string[]> = {
     "Ariana Grande", "Sabrina Carpenter", "Post Malone", "Travis Scott", "Drake"
   ],
 };
-
-function normalizeSongTitle(title: string): string {
-  return title
-    .replace(/\s*[\(\[](feat|ft|with|remix|en vivo|live|acústico|acoustic).*?[\)\]]/gi, "")
-    .replace(/\s*-\s*(remix|en vivo|live|single|edit|acústico|acoustic).*/gi, "")
-    .replace(/[^\w\s\u00C0-\u017F]/g, "")
-    .trim()
-    .toLowerCase();
-}
 
 /**
  * Queries a deep pool of 60 to 100 songs for a specific artist combining

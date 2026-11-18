@@ -1,5 +1,6 @@
 import { SpotifyTrackItem, FALLBACK_SPOTIFY_TRACKS, getFallbackArtwork } from "./spotifyTypes";
 import { getSpotifyAppToken, getSpotifyUserToken } from "./spotifyServer";
+import { matchArtistName, matchSongTitle, getTrackTopic } from "./songMatching";
 
 // Bypass local Windows certificate verification issues for iTunes and Spotify APIs
 if (typeof process !== "undefined" && process.env) {
@@ -8,21 +9,28 @@ if (typeof process !== "undefined" && process.env) {
 
 export { getFallbackArtwork };
 
+export interface AudioStreamResolution {
+  previewUrl: string;
+  artworkUrl: string;
+  genre?: string;
+}
+
 /**
  * Searches iTunes API (country=ES) and falls back to Deezer API to guarantee
  * a verified 30s playable audio stream and HD 600x600 artwork.
+ * STRICT: Guarantees that the audio belongs EXACTLY to the requested artist and title.
+ * Unmatched audio is discarded (returns null) so no mismatched audio ever plays.
  */
 export async function resolveAudioStream(
   title: string,
   artist: string
-): Promise<{ previewUrl: string; artworkUrl: string } | null> {
+): Promise<AudioStreamResolution | null> {
   const cleanTitle = title.replace(/\(.*?\)|\[.*?\]/g, "").trim();
   const query = `${cleanTitle} ${artist}`.trim();
-  const lowerArtist = artist.toLowerCase().trim();
 
-  // 1. iTunes Search API (country=ES, limit=5)
+  // 1. iTunes Search API (country=ES, limit=8)
   try {
-    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&entity=song&country=ES&limit=5`;
+    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&entity=song&country=ES&limit=8`;
     const res = await fetch(url, {
       headers: { "User-Agent": "Scuinklezam/1.0" },
       next: { revalidate: 3600 },
@@ -32,7 +40,15 @@ export async function resolveAudioStream(
       const data = await res.json();
       if (data.results && Array.isArray(data.results)) {
         for (const item of data.results) {
-          if (item.previewUrl && typeof item.previewUrl === "string" && item.previewUrl.startsWith("http")) {
+          if (!item.previewUrl || typeof item.previewUrl !== "string" || !item.previewUrl.startsWith("http")) {
+            continue;
+          }
+
+          // Strict match: must match both artist AND song title
+          const artistMatches = matchArtistName(item.artistName, artist);
+          const titleMatches = matchSongTitle(item.trackName, title);
+
+          if (artistMatches && titleMatches) {
             const art = item.artworkUrl100
               ? item.artworkUrl100.replace("100x100bb", "600x600bb")
               : getFallbackArtwork(title, artist);
@@ -40,6 +56,7 @@ export async function resolveAudioStream(
             return {
               previewUrl: item.previewUrl,
               artworkUrl: art,
+              genre: item.primaryGenreName,
             };
           }
         }
@@ -49,9 +66,9 @@ export async function resolveAudioStream(
     console.warn("[resolveAudioStream] iTunes search failed:", err);
   }
 
-  // 2. Deezer API Fallback (limit=3)
+  // 2. Deezer API Fallback (limit=5)
   try {
-    const dUrl = `https://api.deezer.com/search/track?q=${encodeURIComponent(query)}&limit=3`;
+    const dUrl = `https://api.deezer.com/search/track?q=${encodeURIComponent(query)}&limit=5`;
     const dRes = await fetch(dUrl, {
       headers: { "User-Agent": "Scuinklezam/1.0" },
       next: { revalidate: 3600 },
@@ -61,7 +78,15 @@ export async function resolveAudioStream(
       const dData = await dRes.json();
       if (dData.data && Array.isArray(dData.data)) {
         for (const dItem of dData.data) {
-          if (dItem.preview && typeof dItem.preview === "string" && dItem.preview.startsWith("http")) {
+          if (!dItem.preview || typeof dItem.preview !== "string" || !dItem.preview.startsWith("http")) {
+            continue;
+          }
+
+          // Strict match on Deezer as well
+          const artistMatches = matchArtistName(dItem.artist?.name, artist);
+          const titleMatches = matchSongTitle(dItem.title, title);
+
+          if (artistMatches && titleMatches) {
             const dArt = dItem.album?.cover_xl || dItem.album?.cover_big || getFallbackArtwork(title, artist);
             return {
               previewUrl: dItem.preview,
@@ -75,6 +100,7 @@ export async function resolveAudioStream(
     console.warn("[resolveAudioStream] Deezer search failed:", dErr);
   }
 
+  // If no exact match found, reject audio to prevent playing the wrong song
   return null;
 }
 
@@ -89,9 +115,12 @@ function normalizeItunesItem(item: any, fallbackIndex = 0): SpotifyTrackItem | n
 
   const title = item.trackName || "Canción";
   const artist = item.artistName || "Artista";
+  const genre = item.primaryGenreName || undefined;
   const artwork = item.artworkUrl100
     ? item.artworkUrl100.replace("100x100bb", "600x600bb")
     : getFallbackArtwork(title, artist);
+
+  const topic = getTrackTopic({ title, artist, genre });
 
   return {
     id: `it_${item.trackId || fallbackIndex}`,
@@ -103,6 +132,8 @@ function normalizeItunesItem(item: any, fallbackIndex = 0): SpotifyTrackItem | n
     spotifyUrl: `https://open.spotify.com/search/${encodeURIComponent(`${title} ${artist}`)}`,
     previewUrl: item.previewUrl,
     durationMs: item.trackTimeMillis || 30000,
+    genre,
+    topic,
   };
 }
 
@@ -171,6 +202,7 @@ export async function searchSpotifyCatalog(query: string, limit = 20): Promise<S
             t.album?.images?.[1]?.url;
 
           let previewUrl = t.preview_url;
+          let detectedGenre: string | undefined = undefined;
 
           // If Spotify did not provide preview_url or high-res art, resolve via iTunes
           if (!previewUrl || !artworkUrl) {
@@ -178,6 +210,7 @@ export async function searchSpotifyCatalog(query: string, limit = 20): Promise<S
             if (resolved) {
               previewUrl = resolved.previewUrl;
               if (!artworkUrl) artworkUrl = resolved.artworkUrl;
+              detectedGenre = resolved.genre;
             }
           }
 
@@ -195,6 +228,8 @@ export async function searchSpotifyCatalog(query: string, limit = 20): Promise<S
             spotifyUrl: t.external_urls?.spotify || `https://open.spotify.com/track/${t.id}`,
             previewUrl,
             durationMs: t.duration_ms || 30000,
+            genre: detectedGenre,
+            topic: getTrackTopic({ title: t.name, artist: artists, genre: detectedGenre }),
           } as SpotifyTrackItem;
         })
       );

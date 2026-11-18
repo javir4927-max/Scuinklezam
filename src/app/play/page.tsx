@@ -6,6 +6,8 @@ import { useSearchParams } from "next/navigation";
 import { playSynthNote } from "@/lib/audio";
 import { playCorrectSound, playWrongSound } from "@/lib/soundEffects";
 import { audioPlayer } from "@/lib/audioPlayer";
+import { calculateRoundPoints, ROUND_DURATION_SEC } from "@/lib/scoring";
+import { normalizeSongTitle } from "@/lib/songMatching";
 import {
   FlaskConical,
   Globe,
@@ -813,16 +815,20 @@ function PlayArenaContent() {
     const now = Date.now();
     const timeMs = room.roundStartTime ? now - room.roundStartTime : 5000;
     const currentRound = room.rounds[room.currentRound - 1];
-    const isCorrect = optionIdx === currentRound?.correctIndex;
 
-    // Instant local points calculation
+    const rawOpt = currentRound?.options?.[optionIdx];
+    const selectedTitle = typeof rawOpt === "string" ? rawOpt : rawOpt?.title;
+    const correctTitle = currentRound?.correctTitle || currentRound?.targetTrack?.title || "";
+
+    const isCorrect = selectedTitle && correctTitle
+      ? normalizeSongTitle(selectedTitle) === normalizeSongTitle(correctTitle)
+      : optionIdx === currentRound?.correctIndex;
+
+    // Instant local exponential points calculation (max 100)
     let calculatedPoints = 0;
     if (isCorrect) {
-      const timeSec = Math.min(15, Math.max(0, timeMs / 1000));
-      const speedRatio = Math.max(0, (15 - timeSec) / 15);
-      const speedPoints = Math.round(50 + speedRatio * 50);
-      const currentMe = room.players.find((p) => p.id === playerId);
-      const streakBonus = Math.min(30, (currentMe?.streak || 0) * 5);
+      const elapsedSec = Math.max(0, timeMs / 1000);
+      const basePoints = calculateRoundPoints(true, elapsedSec);
       let friendBonus = 0;
       if (
         room.gameMode === "who_listens" &&
@@ -832,7 +838,7 @@ function PlayArenaContent() {
       ) {
         friendBonus = 50;
       }
-      calculatedPoints = speedPoints + streakBonus + friendBonus;
+      calculatedPoints = basePoints + friendBonus;
     }
 
     // Set floating score popup immediately for instant 60fps arcade feel
@@ -865,6 +871,8 @@ function PlayArenaContent() {
           action: "submit_answer",
           playerId,
           optionIndex: optionIdx,
+          roundIndex: room.currentRound,
+          selectedTitle: selectedTitle || undefined,
           timeMs,
           guessedFriendId: selectedFriend || undefined,
         }),
@@ -1274,16 +1282,16 @@ function PlayArenaContent() {
 
   // Synchronized Timer Remaining calculation based authoritatively on server timestamps
   const getSecondsRemaining = () => {
-    if (!room) return 15;
+    if (!room) return ROUND_DURATION_SEC;
     const now = Date.now();
     if (room.roundEndsAt) {
       return Math.max(0, Math.ceil((room.roundEndsAt - now) / 1000));
     }
     if (room.roundStartTime) {
       const elapsed = Math.floor((now - room.roundStartTime) / 1000);
-      return Math.max(0, (room.roundDuration || 15) - elapsed);
+      return Math.max(0, (room.roundDuration || ROUND_DURATION_SEC) - elapsed);
     }
-    return 15;
+    return room.roundDuration || ROUND_DURATION_SEC;
   };
   const secondsLeft = getSecondsRemaining();
 

@@ -6,6 +6,7 @@ import {
   getFallbackArtwork,
 } from "./spotifyTypes";
 import { resolveAudioStream } from "./musicService";
+import { getTrackTopic } from "./songMatching";
 
 export type { SpotifyTrackItem, SpotifyUserProfile };
 export { FALLBACK_SPOTIFY_TRACKS };
@@ -174,11 +175,13 @@ export async function enrichSpotifyTracks(
           : null;
 
         // Background fallback audio stream resolution if preview_url is missing
+        let detectedGenre: string | undefined = undefined;
         if (!previewUrl || !artworkUrl) {
           const resolved = await resolveAudioStream(t.name, artists);
           if (resolved) {
             if (!previewUrl) previewUrl = resolved.previewUrl;
             if (!artworkUrl) artworkUrl = resolved.artworkUrl;
+            detectedGenre = resolved.genre;
           }
         }
 
@@ -194,6 +197,8 @@ export async function enrichSpotifyTracks(
           durationMs: t.duration_ms || 30000,
           sourcePlayerName: sourcePlayerName || t.sourcePlayerName,
           sourceMode: sourceMode || t.sourceMode,
+          genre: detectedGenre,
+          topic: getTrackTopic({ title: t.name, artist: artists, genre: detectedGenre }),
         } as SpotifyTrackItem;
       })
     );

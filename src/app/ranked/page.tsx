@@ -32,6 +32,8 @@ import UserAuthModal from "@/components/UserAuthModal";
 import { playCorrectSound, playWrongSound } from "@/lib/soundEffects";
 import { audioPlayer } from "@/lib/audioPlayer";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
+import { ROUND_DURATION_SEC, REVEAL_DURATION_MS, calculateRoundPoints } from "@/lib/scoring";
+import { normalizeSongTitle, normalizeText, getCoherentDistractors } from "@/lib/songMatching";
 import {
   RANKED_CATEGORIES,
   RANKED_TIERS,
@@ -143,7 +145,7 @@ export default function RankedArenaPage() {
   const [currentIdx, setCurrentIdx] = useState<number>(0);
   const [score, setScore] = useState<number>(0);
   const [streak, setStreak] = useState<number>(0);
-  const [timeLeft, setTimeLeft] = useState<number>(15);
+  const [timeLeft, setTimeLeft] = useState<number>(ROUND_DURATION_SEC);
   const [answeredIdx, setAnsweredIdx] = useState<number | null>(null);
   const [answersHistory, setAnswersHistory] = useState<AnswerHistoryItem[]>([]);
   const [playingPreviewUrl, setPlayingPreviewUrl] = useState<string | null>(null);
@@ -379,15 +381,38 @@ export default function RankedArenaPage() {
       const generated: RankedQuestion[] = [];
       for (let i = 0; i < roundsCount; i++) {
         const correct = selectedTracks[i];
-        const others = tracks.filter(
-          (t) => normalizeTrackTitle(t.title) !== normalizeTrackTitle(correct.title)
-        );
-        const shuffledOthers = fisherYatesShuffle(others);
-        const distractors = shuffledOthers.slice(0, 3).map((t) => ({
-          title: t.title,
-          artist: t.artist,
-          artworkUrl: t.artworkUrl || getFallbackArtwork(t.title, t.artist),
-        }));
+
+        let distractors: { title: string; artist: string; artworkUrl: string }[] = [];
+
+        if (activeCategory?.kind === "artist") {
+          // If artist quiz, prefer other songs by this artist with different titles
+          const sameArtistTracks = tracks.filter(
+            (t) =>
+              normalizeText(t.artist) === normalizeText(correct.artist) &&
+              normalizeSongTitle(t.title) !== normalizeSongTitle(correct.title)
+          );
+          if (sameArtistTracks.length >= 3) {
+            const seen = new Set<string>([normalizeSongTitle(correct.title)]);
+            const picked = fisherYatesShuffle(sameArtistTracks);
+            for (const t of picked) {
+              if (distractors.length >= 3) break;
+              const norm = normalizeSongTitle(t.title);
+              if (!seen.has(norm)) {
+                seen.add(norm);
+                distractors.push({
+                  title: t.title,
+                  artist: t.artist,
+                  artworkUrl: t.artworkUrl || getFallbackArtwork(t.title, t.artist),
+                });
+              }
+            }
+          }
+        }
+
+        // Fallback or Topic Category: strictly coherent distractors of the same topic
+        if (distractors.length < 3) {
+          distractors = getCoherentDistractors(correct, tracks, 3);
+        }
 
         const correctOpt = {
           title: correct.title,
@@ -397,7 +422,7 @@ export default function RankedArenaPage() {
 
         const options = fisherYatesShuffle([correctOpt, ...distractors]);
         const correctIndex = options.findIndex(
-          (o) => o.title === correctOpt.title && o.artist === correctOpt.artist
+          (o) => normalizeSongTitle(o.title) === normalizeSongTitle(correctOpt.title)
         );
 
         generated.push({
@@ -409,7 +434,7 @@ export default function RankedArenaPage() {
 
       setQuestions(generated);
       setGameState("playing");
-      setTimeLeft(15);
+      setTimeLeft(ROUND_DURATION_SEC);
 
       if (generated[0]?.correctTrack?.previewUrl) {
         audioPlayer.playTrack(generated[0].correctTrack.previewUrl);
@@ -432,9 +457,14 @@ export default function RankedArenaPage() {
       setGameState("reveal");
       setAnsweredIdx(idx);
 
-      const isCorrect = idx === currentQ.correctIndex;
-      // Formula: maximum 100 points, scaling with speed down to 30 points minimum on correct
-      const roundPoints = isCorrect ? Math.max(30, Math.round(100 * (timeLeft / 15))) : 0;
+      const chosenOption = idx >= 0 ? currentQ.options[idx] : null;
+      const isCorrect = chosenOption
+        ? normalizeSongTitle(chosenOption.title) === normalizeSongTitle(currentQ.correctTrack.title)
+        : idx === currentQ.correctIndex;
+
+      // Exponential formula points (max 100 per question, max 1000 in 10 questions)
+      const elapsedSec = Math.max(0, ROUND_DURATION_SEC - timeLeft);
+      const roundPoints = calculateRoundPoints(isCorrect, elapsedSec);
 
       if (isCorrect) {
         setStreak((prev) => prev + 1);
@@ -474,7 +504,7 @@ export default function RankedArenaPage() {
         audioPlayer.preloadNext(questions[currentIdx + 1]?.correctTrack?.previewUrl);
       }
 
-      // Advance after 1.8 seconds
+      // Advance after 4.5 seconds (REVEAL_DURATION_MS) for relaxed game pace
       advanceTimerRef.current = setTimeout(async () => {
         setScorePopup(null);
         if (currentIdx + 1 < questions.length) {
@@ -482,7 +512,7 @@ export default function RankedArenaPage() {
           setCurrentIdx(nextIdx);
           setAnsweredIdx(null);
           setGameState("playing");
-          setTimeLeft(15);
+          setTimeLeft(ROUND_DURATION_SEC);
 
           const nextTrack = questions[nextIdx].correctTrack;
           if (nextTrack?.previewUrl) {

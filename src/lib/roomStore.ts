@@ -5,6 +5,8 @@ if (typeof process !== "undefined" && process.env) {
 import { Redis } from "@upstash/redis";
 import { SpotifyTrackItem, FALLBACK_SPOTIFY_TRACKS, getFallbackArtwork } from "./spotifyTypes";
 import { searchVerifiedTracks } from "./musicService";
+import { getTrackTopic, getCoherentDistractors, normalizeSongTitle } from "./songMatching";
+import { ROUND_DURATION_SEC, REVEAL_DURATION_MS, calculateRoundPoints } from "./scoring";
 
 export type GameMode =
   | "blend"
@@ -62,9 +64,11 @@ export interface ThemeProposal {
 }
 
 export interface RoundOption {
+  id?: string;
   title: string;
   artist: string;
   artworkUrl: string;
+  topic?: string;
 }
 
 export interface RoundData {
@@ -72,6 +76,9 @@ export interface RoundData {
   targetTrack: SpotifyTrackItem;
   options: (RoundOption | string)[];
   correctIndex: number;
+  correctTrackId: string;
+  correctTitle: string;
+  topic?: string;
   contributedByPlayerId?: string;
   contributedByPlayerName?: string;
   sourceMode?: string;
@@ -266,32 +273,35 @@ export function buildRoundsFromTracks(tracks: SpotifyTrackItem[], totalRounds: n
 
   for (let i = 0; i < count; i++) {
     const target = shuffled[i];
-    const others = shuffled.filter((t) => t.id !== target.id);
-    const distractors: RoundOption[] = fisherYatesShuffle(others)
-      .slice(0, 3)
-      .map((t) => ({
-        title: t.title,
-        artist: t.artist,
-        artworkUrl: t.artworkUrl || getFallbackArtwork(t.title, t.artist),
-      }));
+    const targetTopic = getTrackTopic(target);
 
     const correctOption: RoundOption = {
+      id: target.id,
       title: target.title,
       artist: target.artist,
       artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+      topic: targetTopic,
     };
 
+    // Coherent distractors strictly belonging to the same topic/genre without duplicate titles
+    const distractors = getCoherentDistractors(target, catalog, 3);
     const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractors]);
-    const correctIndex = options.findIndex((o) => o.title === correctOption.title && o.artist === correctOption.artist);
+    const correctIndex = options.findIndex(
+      (o) => normalizeSongTitle(o.title) === normalizeSongTitle(correctOption.title)
+    );
 
     rounds.push({
       roundNumber: i + 1,
       targetTrack: {
         ...target,
         artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+        topic: targetTopic,
       },
       options,
       correctIndex: correctIndex >= 0 ? correctIndex : 0,
+      correctTrackId: target.id,
+      correctTitle: target.title,
+      topic: targetTopic,
     });
   }
 
@@ -393,7 +403,7 @@ export async function createRoom(
     guessType: "song",
     totalRounds: 10,
     currentRound: 1,
-    roundDuration: 15,
+    roundDuration: ROUND_DURATION_SEC,
     roundStartTime: 0,
     players: [hostPlayer],
     themeProposals: [...DEFAULT_THEME_PROPOSALS],
@@ -511,7 +521,7 @@ export function checkRoomStateProgression(room: RoomState): boolean {
     if (now >= endsAt) {
       room.status = "playing";
       room.roundStartTime = now;
-      room.roundEndsAt = now + (room.roundDuration || 15) * 1000;
+      room.roundEndsAt = now + (room.roundDuration || ROUND_DURATION_SEC) * 1000;
       room.countdownStartTime = undefined;
       room.countdownEndsAt = undefined;
       // Reset players currentAnswer for round
@@ -524,7 +534,7 @@ export function checkRoomStateProgression(room: RoomState): boolean {
 
   // 2. PLAYING -> ROUND_REVEAL (when now >= roundEndsAt OR all active players answered)
   if (room.status === "playing") {
-    const endsAt = room.roundEndsAt || (room.roundStartTime ? room.roundStartTime + 15500 : now);
+    const endsAt = room.roundEndsAt || (room.roundStartTime ? room.roundStartTime + (ROUND_DURATION_SEC * 1000 + 500) : now);
     const activePlayers = room.players.filter((p) => p.isOnline);
     const allAnswered =
       activePlayers.length > 0 &&
@@ -533,7 +543,7 @@ export function checkRoomStateProgression(room: RoomState): boolean {
     if (now >= endsAt || allAnswered) {
       room.status = "round_reveal";
       room.revealStartTime = now;
-      room.revealEndsAt = now + 3500;
+      room.revealEndsAt = now + REVEAL_DURATION_MS;
       room.roundStartTime = 0;
       room.roundEndsAt = undefined;
 
@@ -553,9 +563,9 @@ export function checkRoomStateProgression(room: RoomState): boolean {
     }
   }
 
-  // 3. ROUND_REVEAL -> NEXT ROUND or FINISHED (when now >= revealEndsAt, at least 3.5s)
+  // 3. ROUND_REVEAL -> NEXT ROUND or FINISHED (when now >= revealEndsAt, at least REVEAL_DURATION_MS)
   if (room.status === "round_reveal") {
-    const endsAt = room.revealEndsAt || (room.revealStartTime ? room.revealStartTime + 3500 : undefined);
+    const endsAt = room.revealEndsAt || (room.revealStartTime ? room.revealStartTime + REVEAL_DURATION_MS : undefined);
     if (endsAt && now >= endsAt) {
       room.revealStartTime = undefined;
       room.revealEndsAt = undefined;
@@ -564,7 +574,7 @@ export function checkRoomStateProgression(room: RoomState): boolean {
         room.currentRound += 1;
         room.status = "playing";
         room.roundStartTime = now;
-        room.roundEndsAt = now + (room.roundDuration || 15) * 1000;
+        room.roundEndsAt = now + (room.roundDuration || ROUND_DURATION_SEC) * 1000;
         room.players.forEach((p) => {
           p.currentAnswer = null;
         });
@@ -950,7 +960,7 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
     room.candidateRounds = candidateRounds;
     room.winningTheme = undefined;
     room.currentRound = 1;
-    room.roundDuration = 15;
+    room.roundDuration = ROUND_DURATION_SEC;
     room.players.forEach((p) => {
       p.score = 0;
       p.streak = 0;
@@ -1162,31 +1172,27 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
   for (let i = 0; i < roundsToGenerate; i++) {
     const item = randomizedTargets[i];
     const target = item.track;
-
-    // Distractors STRICTLY from other tracks in validUniquePool
-    const otherTracks = validUniquePool.filter(
-      (u) =>
-        u.track.id !== target.id &&
-        u.track.title.toLowerCase().trim() !== target.title.toLowerCase().trim()
-    );
-    const shuffledOthers = fisherYatesShuffle(otherTracks).slice(0, 3);
+    const targetTopic = getTrackTopic(target);
 
     const correctOption: RoundOption = {
+      id: target.id,
       title: target.title,
       artist: target.artist,
       artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+      topic: targetTopic,
     };
 
-    const distractorOptions: RoundOption[] = shuffledOthers.map((o) => ({
-      title: o.track.title,
-      artist: o.track.artist,
-      artworkUrl: o.track.artworkUrl || getFallbackArtwork(o.track.title, o.track.artist),
-    }));
+    // Distractors STRICTLY sharing the exact same topic and distinct normalized titles
+    const distractors = getCoherentDistractors(
+      target,
+      validUniquePool.map((u) => u.track),
+      3
+    );
 
     // Merge & shuffle options with Fisher-Yates
-    const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractorOptions]);
+    const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractors]);
     const correctIndex = options.findIndex(
-      (opt) => opt.title === correctOption.title && opt.artist === correctOption.artist
+      (opt) => normalizeSongTitle(opt.title) === normalizeSongTitle(correctOption.title)
     );
 
     const playerSource = item.playerId ? room.players.find((p) => p.id === item.playerId) : undefined;
@@ -1196,9 +1202,13 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
       targetTrack: {
         ...target,
         artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+        topic: targetTopic,
       },
       options,
       correctIndex: correctIndex >= 0 ? correctIndex : 0,
+      correctTrackId: target.id,
+      correctTitle: target.title,
+      topic: targetTopic,
       contributedByPlayerId: item.playerId,
       contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name,
       sourceMode: target.sourceMode || playerSource?.injectedModeName,
@@ -1216,7 +1226,7 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
   const now = Date.now();
   room.rounds = rounds;
   room.currentRound = 1;
-  room.roundDuration = 15;
+  room.roundDuration = ROUND_DURATION_SEC;
   room.status = "countdown";
   room.countdownStartTime = now;
   room.countdownEndsAt = now + 3500;
@@ -1232,14 +1242,16 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
 /**
  * Submits an answer for a player.
  * Immediately saves answer to Redis. When all online players answer, transitions
- * to round_reveal for 3.5s without jumping to the next question.
+ * to round_reveal for 4.5s (REVEAL_DURATION_MS) without jumping to the next question.
  */
 export async function submitPlayerAnswer(
   roomOrCode: RoomState | string,
   playerId: string,
   optionIndex: number,
   timeMs: number,
-  guessedFriendId?: string
+  guessedFriendId?: string,
+  roundIndex?: number,
+  selectedTitle?: string
 ): Promise<{ success: boolean; pointsEarned: number; isCorrect: boolean; room?: RoomState }> {
   const room = typeof roomOrCode === "string" ? await getRoom(roomOrCode) : roomOrCode;
   if (!room) {
@@ -1247,6 +1259,11 @@ export async function submitPlayerAnswer(
   }
 
   if (room.status !== "playing") {
+    return { success: false, pointsEarned: 0, isCorrect: false, room };
+  }
+
+  // Guard against late / mismatched submissions from previous or desynced rounds
+  if (typeof roundIndex === "number" && roundIndex !== room.currentRound) {
     return { success: false, pointsEarned: 0, isCorrect: false, room };
   }
 
@@ -1258,17 +1275,21 @@ export async function submitPlayerAnswer(
   const round = room.rounds[room.currentRound - 1];
   if (!round) return { success: false, pointsEarned: 0, isCorrect: false, room };
 
-  const isCorrect = optionIndex === round.correctIndex;
+  // Match answer by normalized title if provided, otherwise by option index
+  let isCorrect = false;
+  if (selectedTitle && typeof selectedTitle === "string") {
+    const targetTitle = round.correctTitle || round.targetTrack?.title || "";
+    isCorrect = normalizeSongTitle(selectedTitle) === normalizeSongTitle(targetTitle);
+  } else {
+    isCorrect = optionIndex === round.correctIndex;
+  }
+
   let points = 0;
 
   if (isCorrect) {
-    // Speed bonus: max 100 points, decreasing by response time
-    const timeSec = Math.min(15, Math.max(0, timeMs / 1000));
-    const speedRatio = Math.max(0, (15 - timeSec) / 15);
-    const speedPoints = Math.round(50 + speedRatio * 50); // 50 to 100
-
-    // Streak bonus
-    const streakBonus = Math.min(30, player.streak * 5);
+    // Speed points calculated via official exponential curve (up to 20s, max 100 points)
+    const elapsedSec = Math.max(0, timeMs / 1000);
+    const basePoints = calculateRoundPoints(true, elapsedSec);
 
     // Who Listens mode bonus for correctly guessing friend
     let friendBonus = 0;
@@ -1281,7 +1302,7 @@ export async function submitPlayerAnswer(
       friendBonus = 50;
     }
 
-    points = speedPoints + streakBonus + friendBonus;
+    points = basePoints + friendBonus;
     player.score += points;
     player.streak += 1;
   } else {
@@ -1300,7 +1321,7 @@ export async function submitPlayerAnswer(
   };
 
   // Check if all active online players have answered:
-  // If so, transition to round_reveal for 3.5s.
+  // If so, transition to round_reveal for 4.5s (REVEAL_DURATION_MS).
   // DO NOT jump to next round immediately!
   const activePlayers = room.players.filter((p) => p.isOnline);
   const allAnswered =
@@ -1311,7 +1332,7 @@ export async function submitPlayerAnswer(
     const now = Date.now();
     room.status = "round_reveal";
     room.revealStartTime = now;
-    room.revealEndsAt = now + 3500;
+    room.revealEndsAt = now + REVEAL_DURATION_MS;
     room.roundStartTime = 0;
     room.roundEndsAt = undefined;
   }
@@ -1349,7 +1370,7 @@ export async function advanceRoomRound(
     room.currentRound += 1;
     room.status = "playing";
     room.roundStartTime = now;
-    room.roundEndsAt = now + (room.roundDuration || 15) * 1000;
+    room.roundEndsAt = now + (room.roundDuration || ROUND_DURATION_SEC) * 1000;
     room.players.forEach((p) => {
       p.currentAnswer = null;
     });

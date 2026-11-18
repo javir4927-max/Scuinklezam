@@ -239,7 +239,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
           playerId,
           body.optionIndex,
           body.timeMs || 5000,
-          body.guessedFriendId
+          body.guessedFriendId,
+          typeof body.roundIndex === "number" ? body.roundIndex : undefined,
+          typeof body.selectedTitle === "string" ? body.selectedTitle : undefined
         );
         const updated = ansResult.room || (await getRoom(code));
         return NextResponse.json(
