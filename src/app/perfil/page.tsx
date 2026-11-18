@@ -88,7 +88,7 @@ export default function ProfilePage() {
         onOpenAuthModal={() => setAuthModalOpen(true)}
       />
 
-      <main className="flex-1 max-w-[1200px] w-full mx-auto px-4 sm:px-6 py-8 space-y-8">
+      <main className="flex-1 max-w-[1200px] w-full mx-auto px-4 sm:px-6 py-8 pb-24 md:pb-8 space-y-8">
         {loading ? (
           <div className="py-24 text-center space-y-3">
             <Loader2 className="w-8 h-8 text-goblinLime animate-spin mx-auto" />

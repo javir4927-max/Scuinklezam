@@ -169,11 +169,14 @@ export default function SpotifyStatsDetailModal({
   if (!isOpen || !mounted) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md overflow-y-auto flex items-center justify-center p-4 sm:p-6 animate-in fade-in duration-200">
-      <div className="relative w-full max-w-2xl bg-zinc-950 border border-emerald-500/25 rounded-3xl shadow-2xl overflow-hidden max-h-[88vh] flex flex-col my-auto text-white">
+    <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md flex items-end sm:items-center justify-center sm:p-6 animate-in fade-in duration-200">
+      <div className="relative w-full max-w-2xl bg-zinc-950 border-t sm:border border-emerald-500/30 sm:border-emerald-500/25 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden h-[90dvh] sm:h-auto sm:max-h-[88vh] flex flex-col text-white">
         
         {/* Header */}
-        <div className="sticky top-0 z-10 p-4 sm:p-6 border-b border-white/10 flex items-center justify-between shrink-0 bg-zinc-950/95 backdrop-blur-md">
+        <div className="sticky top-0 z-10 p-4 sm:p-6 border-b border-white/10 shrink-0 bg-zinc-950/95 backdrop-blur-md space-y-2">
+          {/* Drag indicator pill for mobile bottom sheet */}
+          <div className="w-12 h-1.5 bg-zinc-700 rounded-full mx-auto sm:hidden" />
+          <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-emerald-950/80 border border-emerald-500/30 flex items-center justify-center text-goblinLime">
               <BarChart3 className="w-4 h-4" />
@@ -201,6 +204,7 @@ export default function SpotifyStatsDetailModal({
           >
             <X className="w-4 h-4" />
           </button>
+          </div>
         </div>
 
         {/* Tab Navigation */}

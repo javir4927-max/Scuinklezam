@@ -528,18 +528,18 @@ export default function MiniQuizModal({
                 const imgKey = `mini_${currentRoundIdx}_${idx}`;
 
                 let btnStyle =
-                  "w-full flex items-center justify-between gap-3.5 p-2.5 sm:p-3 rounded-xl bg-white/[0.04] hover:bg-emerald-950/50 border border-emerald-500/15 hover:border-goblinLime text-white transition-all cursor-pointer";
+                  "w-full flex items-center justify-between gap-3.5 min-h-[56px] px-4 py-3 rounded-2xl bg-white/[0.04] hover:bg-emerald-950/50 border border-emerald-500/15 hover:border-goblinLime text-white transition-all cursor-pointer text-base font-semibold";
 
                 if (isRevealing) {
                   if (isCorrect) {
                     btnStyle =
-                      "w-full flex items-center justify-between gap-3.5 p-2.5 sm:p-3 rounded-xl bg-[#22C55E]/20 border-2 border-[#22C55E] text-white shadow-lg shadow-emerald-500/20";
+                      "w-full flex items-center justify-between gap-3.5 min-h-[56px] px-4 py-3 rounded-2xl bg-[#22C55E]/20 border-2 border-[#22C55E] text-white shadow-lg shadow-emerald-500/20 text-base font-semibold";
                   } else if (isSelected) {
                     btnStyle =
-                      "w-full flex items-center justify-between gap-3.5 p-2.5 sm:p-3 rounded-xl bg-[#EF4444]/20 border-2 border-[#EF4444] text-white";
+                      "w-full flex items-center justify-between gap-3.5 min-h-[56px] px-4 py-3 rounded-2xl bg-[#EF4444]/20 border-2 border-[#EF4444] text-white text-base font-semibold";
                   } else {
                     btnStyle =
-                      "w-full flex items-center justify-between gap-3.5 p-2.5 sm:p-3 rounded-xl bg-white/[0.02] border border-white/5 opacity-60";
+                      "w-full flex items-center justify-between gap-3.5 min-h-[56px] px-4 py-3 rounded-2xl bg-white/[0.02] border border-white/5 opacity-60 text-base font-semibold";
                   }
                 }
 

@@ -34,15 +34,25 @@ export default function ScuinklezamLandingPage() {
     setCustomQuizTracks(undefined);
   };
 
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("miniquiz") === "1") {
+        handleOpenQuiz("Éxitos Pop");
+      }
+    }
+  }, []);
+
   return (
     <div className="min-h-screen bg-[#060D09] text-white selection:bg-goblinPrimary selection:text-black">
       {/* 1. BARRA DE NAVEGACIÓN */}
       <Navbar
+        activeRoute="home"
         onOpenMiniQuiz={handleOpenQuiz}
         onOpenSpotifyModal={() => setIsSpotifyModalOpen(true)}
       />
 
-      <main>
+      <main className="pb-24 md:pb-8">
         {/* 2. PORTADA HERO */}
         <Hero onOpenMiniQuiz={handleOpenQuiz} />
 

@@ -1392,7 +1392,7 @@ function PlayArenaContent() {
       </div>
 
       {/* Main Container */}
-      <main className="flex-1 max-w-[1240px] w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 flex flex-col justify-center">
+      <main className="flex-1 max-w-[1240px] w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-24 md:pb-8 flex flex-col justify-center">
         {errorMessage && (
           <div className="mb-6 p-4 rounded-2xl bg-red-950/80 border border-red-500/40 text-red-200 text-sm flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -2749,7 +2749,7 @@ function PlayArenaContent() {
                     key={`${room.currentRound}_${optData.title}_${optIdx}`}
                     onClick={() => handleAnswer(optIdx)}
                     disabled={selectedOption !== null || isReveal}
-                    className={`flex items-center justify-between gap-3.5 p-2.5 sm:p-3 rounded-xl border text-left transition-all relative overflow-visible min-h-[52px] sm:min-h-[60px] text-sm sm:text-base ${cardStyle} ${
+                    className={`w-full flex items-center justify-between gap-3.5 p-3 sm:p-3.5 rounded-2xl border text-left transition-all relative overflow-visible min-h-[56px] text-base font-semibold ${cardStyle} ${
                       selectedOption !== null || isReveal ? "cursor-default" : "cursor-pointer"
                     }`}
                   >

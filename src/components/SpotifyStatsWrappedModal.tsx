@@ -228,10 +228,12 @@ export default function SpotifyStatsWrappedModal({
   return (
     <>
       {createPortal(
-        <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md overflow-y-auto flex items-center justify-center p-4 sm:p-6 animate-in fade-in duration-200">
-          <div className="relative w-full max-w-4xl bg-zinc-950 border border-emerald-500/25 rounded-3xl shadow-2xl overflow-hidden max-h-[88vh] flex flex-col my-auto text-white font-sans">
+        <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md flex items-end sm:items-center justify-center sm:p-6 animate-in fade-in duration-200">
+          <div className="relative w-full max-w-4xl bg-zinc-950 border-t sm:border border-emerald-500/30 sm:border-emerald-500/25 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden h-[90dvh] sm:h-auto sm:max-h-[88vh] flex flex-col text-white font-sans">
             {/* Cabecera fija interna */}
             <div className="sticky top-0 z-10 bg-zinc-950/95 backdrop-blur-md border-b border-white/10 p-4 sm:p-6 space-y-3 shrink-0">
+              {/* Drag indicator pill for mobile bottom sheet */}
+              <div className="w-12 h-1.5 bg-zinc-700 rounded-full mx-auto sm:hidden mb-1" />
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0">
                   <div className="w-10 h-10 rounded-2xl bg-emerald-950/80 border border-emerald-500/30 flex items-center justify-center text-goblinLime shadow-md shrink-0">

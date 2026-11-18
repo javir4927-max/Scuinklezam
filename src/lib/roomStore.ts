@@ -419,15 +419,12 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
       const remote = await redis.get<RoomState>(`${ROOM_KEY_PREFIX}${upperCode}`);
       if (remote) {
         room = remote;
-        rooms.set(upperCode, remote);
       }
     } catch (err) {
       console.error(`[Upstash Redis] Error retrieving room ${upperCode}:`, err);
     }
-  }
-
-  // Fallback to local memory ONLY if Redis is not configured or failed to connect
-  if (!room) {
+  } else {
+    // Fallback to local memory ONLY if Redis is not configured
     room = rooms.get(upperCode) || null;
   }
 
