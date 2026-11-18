@@ -204,6 +204,17 @@ export default function RankedArenaPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // Auto-open artist sheet if ?artist=... URL parameter is present
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const artistParam = params.get("artist");
+      if (artistParam) {
+        handleOpenArtistSheet(artistParam);
+      }
+    }
+  }, []);
+
   // 300ms Debounced live artist search connecting to /api/spotify/artists
   useEffect(() => {
     if (activeTab !== "artist") {

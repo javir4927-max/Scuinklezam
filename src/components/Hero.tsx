@@ -1,8 +1,9 @@
 "use client";
 
 import React, { useState } from "react";
-import { Users, Crown, Play } from "lucide-react";
+import { Users, Crown, Play, CheckCircle2 } from "lucide-react";
 import { playSynthNote } from "@/lib/audio";
+import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
 
 interface HeroProps {
   onOpenMiniQuiz: (topic?: string) => void;
@@ -11,6 +12,7 @@ interface HeroProps {
 const HERO_SONGS = ["Blinding Lights", "APT.", "good 4 u", "7 rings"];
 
 export default function Hero({ onOpenMiniQuiz }: HeroProps) {
+  const { isConnected, user } = useSpotifyAuth();
   const [selectedSong, setSelectedSong] = useState<number>(1);
 
   const handleSelectSong = (idx: number) => {
@@ -66,18 +68,39 @@ export default function Hero({ onOpenMiniQuiz }: HeroProps) {
             <span>Jugar Ranked Gratis</span>
           </a>
 
-          <a
-            href="/api/auth/spotify/login"
-            className="w-full sm:w-auto glass-elevated hover:border-[#1DB954] px-5 py-3 rounded-2xl flex items-center justify-center gap-3 transition hover:scale-[1.02]"
-          >
-            <svg className="w-5 h-5 text-[#1DB954] fill-current" viewBox="0 0 24 24">
-              <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z" />
-            </svg>
-            <div className="text-left leading-tight">
-              <div className="text-[10px] uppercase tracking-wider text-zinc-400">Sincronizar Listas</div>
-              <div className="text-sm font-bold text-white">Conectar Spotify</div>
-            </div>
-          </a>
+          {isConnected && user ? (
+            <a
+              href="/perfil"
+              className="w-full sm:w-auto glass-elevated hover:border-[#1DB954] px-5 py-3 rounded-2xl flex items-center justify-center gap-3 transition hover:scale-[1.02]"
+            >
+              {user.avatarUrl ? (
+                <img
+                  src={user.avatarUrl}
+                  alt={user.displayName}
+                  className="w-6 h-6 rounded-full object-cover border border-[#1DB954]"
+                />
+              ) : (
+                <CheckCircle2 className="w-5 h-5 text-[#1DB954]" />
+              )}
+              <div className="text-left leading-tight">
+                <div className="text-[10px] uppercase tracking-wider text-emerald-400 font-bold">Conectado ✓</div>
+                <div className="text-sm font-bold text-white truncate max-w-[140px]">{user.displayName}</div>
+              </div>
+            </a>
+          ) : (
+            <a
+              href="/api/auth/spotify/login"
+              className="w-full sm:w-auto glass-elevated hover:border-[#1DB954] px-5 py-3 rounded-2xl flex items-center justify-center gap-3 transition hover:scale-[1.02]"
+            >
+              <svg className="w-5 h-5 text-[#1DB954] fill-current" viewBox="0 0 24 24">
+                <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z" />
+              </svg>
+              <div className="text-left leading-tight">
+                <div className="text-[10px] uppercase tracking-wider text-zinc-400">Sincronizar Listas</div>
+                <div className="text-sm font-bold text-white">Conectar Spotify</div>
+              </div>
+            </a>
+          )}
 
           <button
             onClick={() => onOpenMiniQuiz("Éxitos Pop")}
@@ -219,18 +242,31 @@ export default function Hero({ onOpenMiniQuiz }: HeroProps) {
             </div>
 
             <div className="mt-3 space-y-2 text-xs font-semibold">
-              <div className="px-3.5 py-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/60 text-emerald-300">
-                Blinding Lights
-              </div>
-              <div className="px-3.5 py-2.5 rounded-xl bg-white/[0.04] border border-emerald-500/15 text-zinc-200">
-                APT.
-              </div>
-              <div className="px-3.5 py-2.5 rounded-xl bg-white/[0.04] border border-emerald-500/15 text-zinc-200">
-                good 4 u
-              </div>
-              <div className="px-3.5 py-2.5 rounded-xl bg-white/[0.04] border border-emerald-500/15 text-zinc-200">
-                7 rings
-              </div>
+              {HERO_SONGS.map((song, i) => {
+                const isSelected = i === selectedSong;
+                const isWinner = i === 0;
+                let sStyle = "w-full text-left px-3.5 py-2.5 rounded-xl bg-white/[0.04] border border-emerald-500/15 text-zinc-200 hover:bg-emerald-950/40 transition cursor-pointer flex items-center justify-between";
+                if (i === 0) {
+                  sStyle = "w-full text-left px-3.5 py-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/60 text-emerald-300 transition cursor-pointer flex items-center justify-between";
+                } else if (isSelected) {
+                  sStyle = "w-full text-left px-3.5 py-2.5 rounded-xl bg-red-500/20 border border-red-500/60 text-red-300 transition cursor-pointer flex items-center justify-between";
+                }
+
+                return (
+                  <button
+                    key={`mobile_${song}`}
+                    onClick={() => handleSelectSong(i)}
+                    className={sStyle}
+                  >
+                    <span>{song}</span>
+                    {i === 0 ? (
+                      <span className="text-[10px] text-emerald-400 font-bold">✓ +94</span>
+                    ) : isSelected ? (
+                      <span className="text-[10px] text-red-400 font-bold">✕</span>
+                    ) : null}
+                  </button>
+                );
+              })}
             </div>
 
             <div className="mt-4 pt-3 border-t border-emerald-500/15">

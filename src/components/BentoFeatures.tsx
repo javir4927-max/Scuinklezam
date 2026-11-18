@@ -4,7 +4,7 @@ import React, { useState, useEffect } from "react";
 import { Crown, Play, Pause, Heart } from "lucide-react";
 import { playSynthNote } from "@/lib/audio";
 import { spotifyPlayer } from "@/lib/spotifyPlayer";
-import { SpotifyTrackItem } from "@/lib/spotifyTypes";
+import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
 import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
 
 interface BentoFeaturesProps {
@@ -13,14 +13,14 @@ interface BentoFeaturesProps {
 
 const FEATURE_TRACKS: SpotifyTrackItem[] = [
   {
-    id: "6wf7Yu7cx00NeEY8WWvVJu",
-    uri: "spotify:track:6wf7Yu7cx00NeEY8WWvVJu",
-    title: "BAILE INoLVIDABLE",
-    artist: "Bad Bunny",
-    album: "nadie sabe lo que va a pasar mañana",
-    artworkUrl: "https://i.scdn.co/image/ab67616d0000b2730bf7e23891ab901eb9436417",
-    spotifyUrl: "https://open.spotify.com/track/6wf7Yu7cx00NeEY8WWvVJu",
-    previewUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview126/v4/b4/07/77/b4077759-4f7f-d51a-e8d7-550be0a5a67c/mzaf_9956667958564175317.plus.aac.p.m4a",
+    id: "3k3NWokhb02FFFFnLmdx4L",
+    uri: "spotify:track:3k3NWokhb02FFFFnLmdx4L",
+    title: "Ojitos Lindos",
+    artist: "Bad Bunny & Bomba Estéreo",
+    album: "Un Verano Sin Ti",
+    artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music112/v4/3e/04/eb/3e04ebf6-370f-f59d-ec84-2c2643db92f1/196626945068.jpg/600x600bb.jpg",
+    spotifyUrl: "https://open.spotify.com/track/3k3NWokhb02FFFFnLmdx4L",
+    previewUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/72/ae/81/72ae81c2-4ef3-b998-40b6-563c0609509f/mzaf_12868850384306577273.plus.aac.p.m4a",
   },
   {
     id: "0VjIjW4GlUZAMYd2vXMi3b",
@@ -28,9 +28,9 @@ const FEATURE_TRACKS: SpotifyTrackItem[] = [
     title: "Blinding Lights",
     artist: "The Weeknd",
     album: "After Hours",
-    artworkUrl: "https://i.scdn.co/image/ab67616d0000b2738863bc11d2aa12b54f5aeb36",
+    artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/61/e7/3f/61e73f94-018d-5f50-50ec-8521952bc72e/20UM1IM11629.rgb.jpg/600x600bb.jpg",
     spotifyUrl: "https://open.spotify.com/track/0VjIjW4GlUZAMYd2vXMi3b",
-    previewUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/44/1a/0b/441a0b38-9584-7a0e-bc21-ce1ebf3ec9e5/mzaf_13506450654407883907.plus.aac.p.m4a",
+    previewUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/12/73/ca/1273ca46-233a-5331-189b-25ac1d656533/mzaf_976341070785891411.plus.aac.p.m4a",
   },
   {
     id: "1BxfuPKGuaTgP7aM0fbdwr",
@@ -38,9 +38,9 @@ const FEATURE_TRACKS: SpotifyTrackItem[] = [
     title: "Cruel Summer",
     artist: "Taylor Swift",
     album: "Lover",
-    artworkUrl: "https://i.scdn.co/image/ab67616d0000b273e787cffec20aa2a396a61647",
+    artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/49/3d/ab/493dab54-f920-9043-6181-80993b8116c9/19UMGIM53909.rgb.jpg/600x600bb.jpg",
     spotifyUrl: "https://open.spotify.com/track/1BxfuPKGuaTgP7aM0fbdwr",
-    previewUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/7e/61/89/7e6189ef-ef31-b851-bc29-4d6d634354c4/mzaf_16377770857393437533.plus.aac.p.m4a",
+    previewUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/44/af/81/44af8168-9609-1b85-5048-ada08dceacf3/mzaf_1341699644335558812.plus.aac.p.m4a",
   },
   {
     id: "2G7V7zsVDxg1yRsu7Ew9RJ",
@@ -48,19 +48,19 @@ const FEATURE_TRACKS: SpotifyTrackItem[] = [
     title: "BIRDS OF A FEATHER",
     artist: "Billie Eilish",
     album: "HIT ME HARD AND SOFT",
-    artworkUrl: "https://i.scdn.co/image/ab67616d0000b27371d62ea7ea8a5be92d3c1f62",
+    artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/92/9f/69/929f69f1-9977-3a44-d674-11f70c852d1b/24UMGIM36186.rgb.jpg/600x600bb.jpg",
     spotifyUrl: "https://open.spotify.com/track/2G7V7zsVDxg1yRsu7Ew9RJ",
-    previewUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview122/v4/ce/d3/c7/ced3c76c-3721-a393-2771-a083f2e1cfeb/mzaf_13550212882582875151.plus.aac.p.m4a",
+    previewUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/34/31/d3/3431d34e-847f-5d66-df83-0bce688d997e/mzaf_18106743962423782018.plus.aac.p.m4a",
   },
   {
     id: "0ofHAoxe9vBkTCp2UQIavz",
     uri: "spotify:track:0ofHAoxe9vBkTCp2UQIavz",
     title: "Die With A Smile",
-    artist: "Lady Gaga, Bruno Mars",
-    album: "Die With A Smile",
-    artworkUrl: "https://i.scdn.co/image/ab67616d0000b27382ea2e9e1f5829b2324a73e6",
+    artist: "Lady Gaga & Bruno Mars",
+    album: "Die With A Smile - Single",
+    artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music221/v4/11/ae/f2/11aef294-f57c-bab9-c9fc-529162984e62/24UMGIM85348.rgb.jpg/600x600bb.jpg",
     spotifyUrl: "https://open.spotify.com/track/0ofHAoxe9vBkTCp2UQIavz",
-    previewUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview112/v4/4e/c5/4d/4ec54d31-4122-c283-7c2a-fa1f9747963d/mzaf_1130638361093153545.plus.aac.p.m4a",
+    previewUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/07/6a/99/076a99ed-b946-431b-6f1f-54fa187ca5bd/mzaf_8102882277995122875.plus.aac.p.m4a",
   },
 ];
 
@@ -295,6 +295,10 @@ export default function BentoFeatures({ onOpenMiniQuiz }: BentoFeaturesProps) {
                       <img
                         src={t.artworkUrl}
                         alt={t.title}
+                        onError={(e) => {
+                          e.currentTarget.onerror = null;
+                          e.currentTarget.src = getFallbackArtwork(t.title, t.artist);
+                        }}
                         className="w-10 h-10 rounded-lg object-cover border border-emerald-500/20 shadow-md"
                       />
                       <button
@@ -308,8 +312,12 @@ export default function BentoFeatures({ onOpenMiniQuiz }: BentoFeaturesProps) {
                       >
                         {isPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
                       </button>
-                      <div className="truncate max-w-[160px] sm:max-w-[240px]">
-                        <div className="text-sm font-bold text-white truncate">{t.title}</div>
+                      <div
+                        onClick={() => handlePlaySample(t)}
+                        className="truncate max-w-[160px] sm:max-w-[240px] cursor-pointer"
+                        title="Haz clic para escuchar fragmento"
+                      >
+                        <div className="text-sm font-bold text-white truncate hover:text-goblinLime transition">{t.title}</div>
                         <div className="text-xs text-zinc-400 truncate">{t.artist}</div>
                       </div>
                     </div>

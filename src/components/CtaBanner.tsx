@@ -18,7 +18,7 @@ export default function CtaBanner({ onOpenMiniQuiz }: CtaBannerProps) {
         </p>
         <div className="mt-8 flex flex-wrap justify-center gap-4">
           <a
-            href="/play"
+            href="/ranked"
             className="px-8 py-4 rounded-full bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime text-black font-extrabold text-sm hover:scale-105 transition shadow-xl"
           >
             Entrar a la Arena Ranked (Gratis)

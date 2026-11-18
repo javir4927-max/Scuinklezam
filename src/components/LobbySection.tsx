@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { Plus, Link2, Gamepad2, Headphones } from "lucide-react";
+import { Plus, Link2, Gamepad2, Headphones, Check, X } from "lucide-react";
+import { playCorrectSound, playWrongSound } from "@/lib/soundEffects";
 
 interface LobbySectionProps {
   onOpenMiniQuiz: (topic?: string) => void;
@@ -12,6 +13,7 @@ export default function LobbySection({ onOpenMiniQuiz }: LobbySectionProps) {
   const [lobbyState, setLobbyState] = useState<number>(0);
   const [copied, setCopied] = useState<boolean>(false);
   const [homeJoinCode, setHomeJoinCode] = useState<string>("K7QP");
+  const [demoAnswer, setDemoAnswer] = useState<number | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -238,18 +240,48 @@ export default function LobbySection({ onOpenMiniQuiz }: LobbySectionProps) {
               </div>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm font-semibold">
-              <div className="p-3.5 rounded-xl bg-emerald-950/80 border border-emerald-500 text-white">
-                BAILE INoLVIDABLE
-              </div>
-              <div className="p-3.5 rounded-xl bg-white/[0.04] border border-emerald-500/15 text-zinc-200">
-                24K Magic
-              </div>
-              <div className="p-3.5 rounded-xl bg-white/[0.04] border border-emerald-500/15 text-zinc-200">
-                Die With A Smile
-              </div>
-              <div className="p-3.5 rounded-xl bg-white/[0.04] border border-emerald-500/15 text-zinc-200">
-                Anti-Hero
-              </div>
+              {[
+                { title: "BAILE INoLVIDABLE", isCorrect: true },
+                { title: "24K Magic", isCorrect: false },
+                { title: "Die With A Smile", isCorrect: false },
+                { title: "Anti-Hero", isCorrect: false },
+              ].map((song, sIdx) => {
+                const isSelected = demoAnswer === sIdx;
+                let cardStyle = "p-3.5 rounded-xl bg-white/[0.04] border border-emerald-500/15 text-zinc-200 hover:bg-emerald-950/40 hover:border-emerald-500/40 transition cursor-pointer flex items-center justify-between";
+                if (demoAnswer !== null) {
+                  if (song.isCorrect) {
+                    cardStyle = "p-3.5 rounded-xl bg-emerald-950/90 border-2 border-emerald-400 text-white shadow-lg shadow-emerald-500/20 flex items-center justify-between";
+                  } else if (isSelected) {
+                    cardStyle = "p-3.5 rounded-xl bg-rose-950/80 border-2 border-rose-500 text-white flex items-center justify-between";
+                  }
+                }
+
+                return (
+                  <button
+                    key={song.title}
+                    onClick={() => {
+                      setDemoAnswer(sIdx);
+                      if (song.isCorrect) {
+                        playCorrectSound();
+                      } else {
+                        playWrongSound();
+                      }
+                    }}
+                    className={cardStyle}
+                  >
+                    <span>{song.title}</span>
+                    {demoAnswer !== null && song.isCorrect ? (
+                      <span className="flex items-center gap-1 text-xs text-emerald-400 font-bold">
+                        <Check className="w-4 h-4" /> +97 pts
+                      </span>
+                    ) : isSelected && !song.isCorrect ? (
+                      <span className="flex items-center gap-1 text-xs text-rose-400 font-bold">
+                        <X className="w-4 h-4" /> 0 pts
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
             </div>
             <div className="bg-[#0B1710] rounded-2xl p-4 border border-emerald-500/15">
               <div className="text-xs font-bold uppercase text-emerald-400 mb-2">Clasificación en Vivo</div>

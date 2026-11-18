@@ -72,7 +72,7 @@ export default function ScuinklezamLandingPage() {
         />
 
         {/* 7. NOCHE DE JUEGOS / TRANSMISIÓN A TV */}
-        <GameNightSection />
+        <GameNightSection onOpenMiniQuiz={handleOpenQuiz} />
 
         {/* 8. PREGUNTAS FRECUENTES (FAQ) */}
         <FaqSection />
@@ -123,11 +123,18 @@ export default function ScuinklezamLandingPage() {
                 <span>Jugar Solo Ahora (Mini-Quiz)</span>
               </button>
               <a
+                href={`/ranked?artist=${encodeURIComponent(topicModal)}`}
+                className="w-full py-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-extrabold text-xs border border-amber-500/40 transition text-center flex items-center justify-center gap-2"
+              >
+                <Music2 className="w-4 h-4 text-amber-400" />
+                <span>Competir en Modo Ranked</span>
+              </a>
+              <a
                 href={`/play?artist=${encodeURIComponent(topicModal)}&create=true`}
                 className="w-full py-3 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-white font-extrabold text-xs border border-emerald-500/30 transition text-center flex items-center justify-center gap-2"
               >
                 <Users className="w-4 h-4 text-emerald-400" />
-                <span>Crear Sala Multijugador con este Artista</span>
+                <span>Crear Sala Multijugador</span>
               </a>
             </div>
             <button

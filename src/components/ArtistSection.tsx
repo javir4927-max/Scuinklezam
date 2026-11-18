@@ -93,6 +93,10 @@ export default function ArtistSection({ onOpenMiniQuiz, onSelectArtist }: Artist
               <img
                 src={photoUrl}
                 alt={name}
+                onError={(e) => {
+                  e.currentTarget.onerror = null;
+                  e.currentTarget.src = `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(name)}&backgroundColor=0B1710`;
+                }}
                 className="w-9 h-9 rounded-full object-cover border border-emerald-500/40 shadow-md shrink-0 bg-emerald-950"
                 loading="lazy"
               />
