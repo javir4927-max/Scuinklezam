@@ -14,7 +14,13 @@ import {
   matchSongTitleStrict,
   matchArtistNameStrict,
 } from "./songMatching";
-import { ROUND_DURATION_SEC, REVEAL_DURATION_MS, calculateRoundPoints } from "./scoring";
+import {
+  ROUND_DURATION_SEC,
+  REVEAL_DURATION_MS,
+  calculateRoundPoints,
+  getSurvivalRoundDuration,
+  getSurvivalPhaseInfo,
+} from "./scoring";
 
 export type GameMode =
   | "blend"
@@ -22,8 +28,7 @@ export type GameMode =
   | "vote"
   | "random"
   | "who_listens"
-  | "survival"
-  | "tv_party";
+  | "survival";
 
 export type GuessType = "song" | "artist" | "both";
 
@@ -54,7 +59,13 @@ export interface Player {
   injectedTracksSample?: string[];
   score: number;
   streak: number;
+  maxStreak: number;
   lives: number;
+  maxLives: number;
+  isEliminated: boolean;
+  eliminatedAtRound: number | null;
+  healedThisRound?: boolean;
+  lostLifeThisRound?: boolean;
   currentAnswer: PlayerAnswerRecord | null;
   answersByRound?: Record<number, PlayerAnswerRecord>;
   votedTheme: string | null;
@@ -133,6 +144,8 @@ export interface RoomState {
   rounds: RoundData[];
   playlists?: RoomPlaylist[];
   kickedPlayerIds: string[];
+  usedTrackKeys?: string[];
+  initialPlayerCount?: number;
   createdAt: number;
   lastActive: number;
 }
@@ -277,6 +290,176 @@ export function fisherYatesShuffle<T>(array: T[]): T[] {
   return arr;
 }
 
+/**
+ * Fast HEAD validation for audio URLs (2s timeout).
+ * Returns true if status is 200 or 206 (partial content streaming).
+ */
+export async function validateAudioUrl(url: string | null | undefined): Promise<boolean> {
+  if (!url || typeof url !== "string" || !url.startsWith("https://")) return false;
+  try {
+    const res = await fetch(url, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(2000),
+    });
+    return res.status === 200 || res.status === 206 || res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ensures a track has a valid, working audio preview URL.
+ * Prioritizes Apple iTunes permanent URLs, validates with HEAD,
+ * and falls back to resolveAudioStream if stalled or broken.
+ */
+export async function ensureVerifiedTrackAudio(track: SpotifyTrackItem): Promise<SpotifyTrackItem> {
+  const result = { ...track };
+
+  // 1. If not iTunes permanent link, resolve fresh Apple stream
+  if (!result.previewUrl || !result.previewUrl.includes("apple.com")) {
+    try {
+      const fresh = await resolveAudioStream(result.title, result.artist);
+      if (fresh?.previewUrl && fresh.previewUrl.includes("apple.com")) {
+        result.previewUrl = fresh.previewUrl;
+        if (fresh.artworkUrl) result.artworkUrl = fresh.artworkUrl;
+      }
+    } catch {}
+  }
+
+  // 2. Validate URL via fast HEAD check
+  const isValid = await validateAudioUrl(result.previewUrl);
+  if (!isValid) {
+    try {
+      const fresh = await resolveAudioStream(result.title, result.artist);
+      if (fresh?.previewUrl) {
+        result.previewUrl = fresh.previewUrl;
+        if (fresh.artworkUrl) result.artworkUrl = fresh.artworkUrl;
+      }
+    } catch {}
+  }
+
+  return result;
+}
+
+/**
+ * Generates an infinite batch of coherent, audio-verified rounds for Survival mode.
+ * Excludes already played tracks (using room.usedTrackKeys).
+ * If catalog is exhausted, expands dynamically by searching for tracks of the same artists or related genres.
+ */
+export async function generateSurvivalBatch(room: RoomState, count: number = 10): Promise<RoundData[]> {
+  const usedKeys = new Set<string>(room.usedTrackKeys || []);
+  const startRoundNumber = room.rounds.length + 1;
+
+  // 1. Gather candidates from player injected tracks and favorites
+  const candidatePool: SpotifyTrackItem[] = [];
+
+  room.players.forEach((p) => {
+    if (p.injectedTracks && p.injectedTracks.length > 0) {
+      candidatePool.push(...p.injectedTracks);
+    }
+  });
+
+  const playerArtists = Array.from(
+    new Set(room.players.flatMap((p) => p.favoriteArtists).filter((a) => a && a.trim().length > 0))
+  );
+
+  // If candidatePool has few unused tracks, search iTunes for player artists
+  const unusedFromPool = candidatePool.filter((t) => {
+    const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+    return !usedKeys.has(key);
+  });
+
+  if (unusedFromPool.length < count * 2 && playerArtists.length > 0) {
+    for (const artist of playerArtists.slice(0, 6)) {
+      try {
+        const found = await searchVerifiedTracks(artist, 6);
+        candidatePool.push(...found);
+      } catch {}
+    }
+  }
+
+  // General expansion if still needed
+  if (candidatePool.length < count * 2) {
+    const genreKeywords = ["Top Hits 2026", "Rock Classics", "Pop Latino Hits", "Hip Hop Classics", "Indie Pop", "Electronic Hits"];
+    for (const g of genreKeywords) {
+      try {
+        const found = await searchVerifiedTracks(g, 5);
+        candidatePool.push(...found);
+      } catch {}
+    }
+  }
+
+  // Filter out already used tracks (unless > 50 rounds played and exhausted, then permit recycling)
+  const availableTracks: SpotifyTrackItem[] = [];
+  const seenBatchKeys = new Set<string>();
+
+  for (const t of candidatePool) {
+    if (!t || !t.title || !t.artist) continue;
+    const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+    if (usedKeys.has(key) && room.rounds.length < 50) {
+      continue;
+    }
+    if (!seenBatchKeys.has(key)) {
+      seenBatchKeys.add(key);
+      availableTracks.push(t);
+    }
+  }
+
+  // Emergency fallback
+  if (availableTracks.length < count) {
+    for (const fb of FALLBACK_SPOTIFY_TRACKS) {
+      const key = `${fb.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${fb.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+      if (!seenBatchKeys.has(key)) {
+        seenBatchKeys.add(key);
+        availableTracks.push(fb);
+      }
+    }
+  }
+
+  const shuffledTargets = fisherYatesShuffle(availableTracks).slice(0, count);
+
+  const newRounds: RoundData[] = await Promise.all(
+    shuffledTargets.map(async (rawTarget, i) => {
+      const target = await ensureVerifiedTrackAudio(rawTarget);
+      const targetTopic = getTrackTopic(target);
+
+      const correctOption: RoundOption = {
+        id: target.id,
+        title: target.title,
+        artist: target.artist,
+        artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+        topic: targetTopic,
+      };
+
+      const distractors = await getDifficultDistractors(target, candidatePool, 3);
+      const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractors]);
+      const correctIndex = options.findIndex(
+        (opt) => deepNormalize(opt.title) === deepNormalize(correctOption.title)
+      );
+
+      const key = `${target.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${target.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+      usedKeys.add(key);
+
+      return {
+        roundNumber: startRoundNumber + i,
+        targetTrack: {
+          ...target,
+          artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+          topic: targetTopic,
+        },
+        options,
+        correctIndex: correctIndex >= 0 ? correctIndex : 0,
+        correctTrackId: target.id,
+        correctTitle: target.title,
+        topic: targetTopic,
+      };
+    })
+  );
+
+  room.usedTrackKeys = Array.from(usedKeys);
+  return newRounds;
+}
+
 export async function buildRoundsFromTracks(tracks: SpotifyTrackItem[], totalRounds: number): Promise<RoundData[]> {
   const valid = tracks.filter((t) => t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl);
   const catalog = valid.length >= 4 ? valid : FALLBACK_SPOTIFY_TRACKS;
@@ -416,7 +599,13 @@ export async function createRoom(
     spotifyConnected: false,
     score: 0,
     streak: 0,
+    maxStreak: 0,
     lives: 3,
+    maxLives: 3,
+    isEliminated: false,
+    eliminatedAtRound: null,
+    healedThisRound: false,
+    lostLifeThisRound: false,
     currentAnswer: null,
     votedTheme: null,
   };
@@ -437,6 +626,8 @@ export async function createRoom(
     rounds: [],
     playlists: [],
     kickedPlayerIds: [],
+    usedTrackKeys: [],
+    initialPlayerCount: 1,
     createdAt: Date.now(),
     lastActive: Date.now(),
   };
@@ -562,10 +753,13 @@ export function checkRoomStateProgression(room: RoomState): boolean {
   // 2. PLAYING -> ROUND_REVEAL (when now >= roundEndsAt OR all active players answered)
   if (room.status === "playing") {
     const endsAt = room.roundEndsAt || (room.roundStartTime ? room.roundStartTime + (ROUND_DURATION_SEC * 1000 + 500) : now);
-    const activePlayers = room.players.filter((p) => p.isOnline);
+    const activeEligiblePlayers =
+      room.gameMode === "survival"
+        ? room.players.filter((p) => p.isOnline && !p.isEliminated)
+        : room.players.filter((p) => p.isOnline);
     const allAnswered =
-      activePlayers.length > 0 &&
-      activePlayers.every((p) => p.currentAnswer !== null);
+      activeEligiblePlayers.length > 0 &&
+      activeEligiblePlayers.every((p) => p.currentAnswer !== null);
 
     if (now >= endsAt || allAnswered) {
       room.status = "round_reveal";
@@ -580,8 +774,14 @@ export function checkRoomStateProgression(room: RoomState): boolean {
         room.players.forEach((p) => {
           if (!p.currentAnswer) {
             p.streak = 0;
-            if (room.gameMode === "survival") {
+            if (room.gameMode === "survival" && !p.isEliminated) {
               p.lives = Math.max(0, p.lives - 1);
+              p.lostLifeThisRound = true;
+              p.healedThisRound = false;
+              if (p.lives === 0) {
+                p.isEliminated = true;
+                p.eliminatedAtRound = room.currentRound;
+              }
             }
           }
         });
@@ -597,16 +797,37 @@ export function checkRoomStateProgression(room: RoomState): boolean {
       room.revealStartTime = undefined;
       room.revealEndsAt = undefined;
 
-      if (room.currentRound < room.rounds.length) {
-        room.currentRound += 1;
-        room.status = "playing";
-        room.roundStartTime = now;
-        room.roundEndsAt = now + (room.roundDuration || ROUND_DURATION_SEC) * 1000;
-        room.players.forEach((p) => {
-          p.currentAnswer = null;
-        });
+      if (room.gameMode === "survival") {
+        const initialCount = room.initialPlayerCount || room.players.length;
+        const alivePlayers = room.players.filter((p) => !p.isEliminated);
+        const shouldFinish = initialCount >= 2 ? alivePlayers.length <= 1 : alivePlayers.length === 0;
+
+        if (shouldFinish) {
+          room.status = "finished";
+        } else {
+          room.currentRound += 1;
+          room.status = "playing";
+          room.roundStartTime = now;
+          room.roundDuration = getSurvivalRoundDuration(room.currentRound - 1);
+          room.roundEndsAt = now + room.roundDuration * 1000;
+          room.players.forEach((p) => {
+            p.currentAnswer = null;
+            p.healedThisRound = false;
+            p.lostLifeThisRound = false;
+          });
+        }
       } else {
-        room.status = "finished";
+        if (room.currentRound < room.rounds.length) {
+          room.currentRound += 1;
+          room.status = "playing";
+          room.roundStartTime = now;
+          room.roundEndsAt = now + (room.roundDuration || ROUND_DURATION_SEC) * 1000;
+          room.players.forEach((p) => {
+            p.currentAnswer = null;
+          });
+        } else {
+          room.status = "finished";
+        }
       }
       changed = true;
     }
@@ -674,7 +895,13 @@ export async function joinRoom(
       spotifyConnected: !!playerData.spotifyConnected,
       score: 0,
       streak: 0,
+      maxStreak: 0,
       lives: 3,
+      maxLives: 3,
+      isEliminated: false,
+      eliminatedAtRound: null,
+      healedThisRound: false,
+      lostLifeThisRound: false,
       currentAnswer: null,
       votedTheme: null,
     };
@@ -1126,7 +1353,7 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
       found.forEach((track) => pool.push({ track }));
     }
   } else {
-    // Random / Survival / TV Party: Only populate if pool is empty
+    // Random / Survival: Only populate if pool is empty
     if (pool.length === 0) {
       const genres = ["Pop Hits", "Rock Classics", "Latin Hits", "Hip Hop Hits", "80s Hits", "Electronic Hits"];
       for (const g of genres) {
@@ -1222,71 +1449,75 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
   // True Fisher-Yates shuffle across target tracks so round progression is 100% unpredictable
   const randomizedTargets = fisherYatesShuffle(selectedTargets);
 
-  // Assemble rounds in parallel with difficult distractors
-  const roundsToGenerate = Math.min(room.totalRounds, randomizedTargets.length);
-  const poolTracks = validUniquePool.map((u) => u.track);
+  let rounds: RoundData[] = [];
 
-  const rounds: RoundData[] = await Promise.all(
-    randomizedTargets.slice(0, roundsToGenerate).map(async (item, i) => {
-      const target = { ...item.track };
-      // Prioritize permanent iTunes preview URLs over Deezer/ephemeral URLs
-      if (!target.previewUrl || !target.previewUrl.includes("apple.com")) {
-        try {
-          const fresh = await resolveAudioStream(target.title, target.artist);
-          if (fresh?.previewUrl && fresh.previewUrl.includes("apple.com")) {
-            target.previewUrl = fresh.previewUrl;
-            if (fresh.artworkUrl) target.artworkUrl = fresh.artworkUrl;
-          }
-        } catch {
-          // keep original
-        }
-      }
+  if (room.gameMode === "survival") {
+    room.usedTrackKeys = [];
+    room.initialPlayerCount = room.players.length;
+    rounds = await generateSurvivalBatch(room, 12);
+    room.totalRounds = rounds.length;
+    room.roundDuration = getSurvivalRoundDuration(0);
+  } else {
+    // Assemble rounds in parallel with difficult distractors
+    const roundsToGenerate = Math.min(room.totalRounds, randomizedTargets.length);
+    const poolTracks = validUniquePool.map((u) => u.track);
 
-      const targetTopic = getTrackTopic(target);
+    rounds = await Promise.all(
+      randomizedTargets.slice(0, roundsToGenerate).map(async (item, i) => {
+        const target = await ensureVerifiedTrackAudio(item.track);
+        const targetTopic = getTrackTopic(target);
 
-      const correctOption: RoundOption = {
-        id: target.id,
-        title: target.title,
-        artist: target.artist,
-        artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
-        topic: targetTopic,
-      };
-
-      // Challenging distractors: same album > same artist > related artists/topic
-      const distractors = await getDifficultDistractors(target, poolTracks, 3);
-
-      // Merge & shuffle options with Fisher-Yates
-      const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractors]);
-      const correctIndex = options.findIndex(
-        (opt) => deepNormalize(opt.title) === deepNormalize(correctOption.title)
-      );
-
-      const playerSource = item.playerId ? room.players.find((p) => p.id === item.playerId) : undefined;
-
-      return {
-        roundNumber: i + 1,
-        targetTrack: {
-          ...target,
+        const correctOption: RoundOption = {
+          id: target.id,
+          title: target.title,
+          artist: target.artist,
           artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
           topic: targetTopic,
-        },
-        options,
-        correctIndex: correctIndex >= 0 ? correctIndex : 0,
-        correctTrackId: target.id,
-        correctTitle: target.title,
-        topic: targetTopic,
-        contributedByPlayerId: item.playerId,
-        contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name,
-        sourceMode: target.sourceMode || playerSource?.injectedModeName,
-      };
-    })
-  );
+        };
+
+        // Challenging distractors: same album > same artist > related artists/topic
+        const distractors = await getDifficultDistractors(target, poolTracks, 3);
+
+        // Merge & shuffle options with Fisher-Yates
+        const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractors]);
+        const correctIndex = options.findIndex(
+          (opt) => deepNormalize(opt.title) === deepNormalize(correctOption.title)
+        );
+
+        const playerSource = item.playerId ? room.players.find((p) => p.id === item.playerId) : undefined;
+
+        return {
+          roundNumber: i + 1,
+          targetTrack: {
+            ...target,
+            artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+            topic: targetTopic,
+          },
+          options,
+          correctIndex: correctIndex >= 0 ? correctIndex : 0,
+          correctTrackId: target.id,
+          correctTitle: target.title,
+          topic: targetTopic,
+          contributedByPlayerId: item.playerId,
+          contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name,
+          sourceMode: target.sourceMode || playerSource?.injectedModeName,
+        };
+      })
+    );
+    room.roundDuration = ROUND_DURATION_SEC;
+  }
 
   // Reset players for new match
   room.players.forEach((p) => {
     p.score = 0;
     p.streak = 0;
+    p.maxStreak = 0;
     p.lives = 3;
+    p.maxLives = 3;
+    p.isEliminated = false;
+    p.eliminatedAtRound = null;
+    p.healedThisRound = false;
+    p.lostLifeThisRound = false;
     p.currentAnswer = null;
     p.answersByRound = {};
   });
@@ -1294,7 +1525,6 @@ export async function startRoomGame(code: string, hostId: string): Promise<{ suc
   const now = Date.now();
   room.rounds = rounds;
   room.currentRound = 1;
-  room.roundDuration = ROUND_DURATION_SEC;
   room.status = "countdown";
   room.countdownStartTime = now;
   room.countdownEndsAt = now + 3500;
@@ -1340,6 +1570,11 @@ export async function submitPlayerAnswer(
     return { success: false, pointsEarned: 0, isCorrect: false, room };
   }
 
+  // Eliminated players cannot answer
+  if (player.isEliminated) {
+    return { success: false, pointsEarned: 0, isCorrect: false, room };
+  }
+
   if (!player.answersByRound) {
     player.answersByRound = {};
   }
@@ -1362,11 +1597,19 @@ export async function submitPlayerAnswer(
   }
 
   let points = 0;
+  const duration =
+    room.roundDuration ||
+    (room.gameMode === "survival" ? getSurvivalRoundDuration(room.currentRound - 1) : ROUND_DURATION_SEC);
 
   if (isCorrect) {
-    // Speed points calculated via official exponential curve (up to 20s, max 100 points)
+    // Speed points calculated via official exponential curve
     const elapsedSec = Math.max(0, timeMs / 1000);
-    const basePoints = calculateRoundPoints(true, elapsedSec);
+    let basePoints = calculateRoundPoints(true, elapsedSec, duration);
+
+    // In survival zone red (round >= 10, index >= 9): 1.5x points multiplier
+    if (room.gameMode === "survival" && room.currentRound - 1 >= 9) {
+      basePoints = Math.round(basePoints * 1.5);
+    }
 
     // Who Listens mode bonus for correctly guessing friend
     let friendBonus = 0;
@@ -1382,10 +1625,28 @@ export async function submitPlayerAnswer(
     points = basePoints + friendBonus;
     player.score += points;
     player.streak += 1;
+    player.maxStreak = Math.max(player.maxStreak || 0, player.streak);
+
+    if (room.gameMode === "survival") {
+      player.lostLifeThisRound = false;
+      // Streak healing: Every 3 streak, recover +1 life up to max 3
+      if (player.streak > 0 && player.streak % 3 === 0 && player.lives < 3) {
+        player.lives = Math.min(3, player.lives + 1);
+        player.healedThisRound = true;
+      } else {
+        player.healedThisRound = false;
+      }
+    }
   } else {
     player.streak = 0;
     if (room.gameMode === "survival") {
       player.lives = Math.max(0, player.lives - 1);
+      player.lostLifeThisRound = true;
+      player.healedThisRound = false;
+      if (player.lives === 0) {
+        player.isEliminated = true;
+        player.eliminatedAtRound = room.currentRound;
+      }
     }
   }
 
@@ -1402,13 +1663,16 @@ export async function submitPlayerAnswer(
   player.currentAnswer = answerRecord;
   player.answersByRound[room.currentRound] = answerRecord;
 
-  // Check if all active online players have answered:
+  // Check if all active eligible players have answered:
   // If so, transition to round_reveal for 4.5s (REVEAL_DURATION_MS).
-  // DO NOT jump to next round immediately!
-  const activePlayers = room.players.filter((p) => p.isOnline);
+  const activeEligiblePlayers =
+    room.gameMode === "survival"
+      ? room.players.filter((p) => p.isOnline && !p.isEliminated)
+      : room.players.filter((p) => p.isOnline);
+
   const allAnswered =
-    activePlayers.length > 0 &&
-    activePlayers.every((p) => p.currentAnswer !== null);
+    activeEligiblePlayers.length > 0 &&
+    activeEligiblePlayers.every((p) => p.currentAnswer !== null);
 
   if (allAnswered) {
     const now = Date.now();
@@ -1448,16 +1712,48 @@ export async function advanceRoomRound(
   room.revealStartTime = undefined;
   room.revealEndsAt = undefined;
 
-  if (room.currentRound < room.rounds.length) {
-    room.currentRound += 1;
-    room.status = "playing";
-    room.roundStartTime = now;
-    room.roundEndsAt = now + (room.roundDuration || ROUND_DURATION_SEC) * 1000;
-    room.players.forEach((p) => {
-      p.currentAnswer = null;
-    });
+  if (room.gameMode === "survival") {
+    const initialCount = room.initialPlayerCount || room.players.length;
+    const alivePlayers = room.players.filter((p) => !p.isEliminated);
+    const shouldFinish = initialCount >= 2 ? alivePlayers.length <= 1 : alivePlayers.length === 0;
+
+    if (shouldFinish) {
+      room.status = "finished";
+    } else {
+      // Dynamic infinite batch expansion: if <= 4 questions left, append 10 more
+      if (room.rounds.length - room.currentRound <= 4) {
+        try {
+          const nextBatch = await generateSurvivalBatch(room, 10);
+          room.rounds.push(...nextBatch);
+          room.totalRounds = room.rounds.length;
+        } catch (err) {
+          console.error("[Survival] Error generating next batch:", err);
+        }
+      }
+
+      room.currentRound += 1;
+      room.status = "playing";
+      room.roundStartTime = now;
+      room.roundDuration = getSurvivalRoundDuration(room.currentRound - 1);
+      room.roundEndsAt = now + room.roundDuration * 1000;
+      room.players.forEach((p) => {
+        p.currentAnswer = null;
+        p.healedThisRound = false;
+        p.lostLifeThisRound = false;
+      });
+    }
   } else {
-    room.status = "finished";
+    if (room.currentRound < room.rounds.length) {
+      room.currentRound += 1;
+      room.status = "playing";
+      room.roundStartTime = now;
+      room.roundEndsAt = now + (room.roundDuration || ROUND_DURATION_SEC) * 1000;
+      room.players.forEach((p) => {
+        p.currentAnswer = null;
+      });
+    } else {
+      room.status = "finished";
+    }
   }
 
   await saveRoom(room);
@@ -1484,7 +1780,13 @@ export async function resetRoomToLobby(code: string, hostId: string): Promise<bo
   room.players.forEach((p) => {
     p.score = 0;
     p.streak = 0;
+    p.maxStreak = 0;
     p.lives = 3;
+    p.maxLives = 3;
+    p.isEliminated = false;
+    p.eliminatedAtRound = null;
+    p.healedThisRound = false;
+    p.lostLifeThisRound = false;
     p.currentAnswer = null;
     p.votedTheme = null;
   });

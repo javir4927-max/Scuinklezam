@@ -2,7 +2,7 @@
 
 import React from "react";
 import Link from "next/link";
-import { Tv, Sparkles } from "lucide-react";
+import { Gamepad2, Sparkles } from "lucide-react";
 
 interface GameNightSectionProps {
   onOpenMiniQuiz?: (topic?: string) => void;
@@ -26,7 +26,7 @@ export default function GameNightSection({ onOpenMiniQuiz }: GameNightSectionPro
         </p>
 
         <div className="mt-12 relative max-w-3xl mx-auto py-6">
-          {/* Floating Sofa Shout Bubbles - Now Interactive! */}
+          {/* Floating Shout Bubbles - Now Interactive! */}
           <div className="flex flex-wrap items-center justify-center gap-3">
             <button
               onClick={() => handleShoutClick("The Weeknd")}
@@ -70,14 +70,14 @@ export default function GameNightSection({ onOpenMiniQuiz }: GameNightSectionPro
           >
             <div className="flex items-center gap-3">
               <span className="px-2.5 py-1 rounded-lg bg-goblinPrimary text-black text-xs font-extrabold uppercase flex items-center gap-1">
-                <Tv className="w-3.5 h-3.5 text-black" />
+                <Gamepad2 className="w-3.5 h-3.5 text-black" />
                 <span>Anfitrión</span>
               </span>
               <span className="text-sm font-semibold text-zinc-200 group-hover:text-white">Controlador de Sala</span>
             </div>
             <span className="text-xs text-goblinLime font-semibold flex items-center gap-1">
               <span className="w-2 h-2 rounded-full bg-goblinLime animate-pulse"></span>
-              Crear Sala TV →
+              Crear Sala →
             </span>
           </Link>
         </div>

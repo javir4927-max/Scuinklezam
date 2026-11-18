@@ -7,7 +7,13 @@ import { playSynthNote } from "@/lib/audio";
 import { playCorrectSound, playWrongSound } from "@/lib/soundEffects";
 import { audioPlayer, SILENT_WAV } from "@/lib/audioPlayer";
 import { useGlobalVolume, getEffectiveVolume } from "@/lib/globalVolume";
-import { calculateRoundPoints, ROUND_DURATION_SEC, REVEAL_DURATION_MS } from "@/lib/scoring";
+import {
+  calculateRoundPoints,
+  ROUND_DURATION_SEC,
+  REVEAL_DURATION_MS,
+  getSurvivalRoundDuration,
+  getSurvivalPhaseInfo,
+} from "@/lib/scoring";
 import { normalizeSongTitle, matchSongTitleStrict, deepNormalize } from "@/lib/songMatching";
 import {
   FlaskConical,
@@ -16,7 +22,6 @@ import {
   Dices,
   UserCheck,
   Skull,
-  Tv,
   Flame,
   Trophy,
   Clock,
@@ -114,8 +119,7 @@ function renderModeIcon(modeId: GameMode, className: string = "w-5 h-5") {
       return <UserCheck className={`${className} text-purple-400`} />;
     case "survival":
       return <Skull className={`${className} text-rose-400`} />;
-    case "tv_party":
-      return <Tv className={`${className} text-cyan-400`} />;
+
     default:
       return <FlaskConical className={`${className} text-emerald-400`} />;
   }
@@ -161,13 +165,7 @@ const GAME_MODES: Array<{
     id: "survival",
     name: "Supervivencia",
     badge: "Hardcore",
-    desc: "Cada jugador empieza con 3 vidas. Si fallas una pregunta, pierdes una vida.",
-  },
-  {
-    id: "tv_party",
-    name: "Modo Fiesta / TV Sofá",
-    badge: "Salón",
-    desc: "Interfaz gigante de alto contraste perfecta para conectar tu portátil a la TV del salón.",
+    desc: "Rondas infinitas con 3 vidas. Falla y pierdes una vida, acierta 3 seguidas y recuperas una. ¡Aguanta hasta el final!",
   },
 ];
 
@@ -261,6 +259,8 @@ function PlayArenaContent() {
   const hasManuallyEditedNameRef = useRef<boolean>(false);
   const roomStatusRef = useRef<string>("lobby");
   const nextRoundTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastLoadedTrackRef = useRef<string>("");
+  const stallTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [isStartingGame, setIsStartingGame] = useState<boolean>(false);
   const [, startTransition] = useTransition();
 
@@ -765,34 +765,66 @@ function PlayArenaContent() {
       setAudioUnavailable(false);
 
       const previewUrl = currentRoundData?.targetTrack?.previewUrl;
+      const trackKey = `${room.currentRound}-${previewUrl || ""}`;
       const audio = audioRef.current;
-      if (audio) {
-        if (previewUrl) {
-          audio.pause();
-          audio.currentTime = 0;
-          audio.src = previewUrl;
-          audio.muted = isGlobalMutedState;
-          audio.volume = isGlobalMutedState ? 0 : Math.max(0.05, globalVolume);
-          audio.play().then(() => {
-            setShowAudioUnlockButton(false);
-          }).catch((err: any) => {
-            if (err?.name === "AbortError") return;
-            if (err?.name === "NotAllowedError") {
-              setShowAudioUnlockButton(true);
-            } else {
+
+      // Guard: don't re-load the same track (prevents polling or reveal→playing from restarting audio)
+      if (audio && previewUrl && lastLoadedTrackRef.current !== trackKey) {
+        lastLoadedTrackRef.current = trackKey;
+
+        // Clear any stall detection timer
+        if (stallTimerRef.current) {
+          clearTimeout(stallTimerRef.current);
+          stallTimerRef.current = null;
+        }
+
+        audio.pause();
+        audio.currentTime = 0;
+        audio.src = previewUrl;
+        audio.muted = isGlobalMutedState;
+        audio.volume = isGlobalMutedState ? 0 : Math.max(0.05, globalVolume);
+        audio.play().then(() => {
+          setShowAudioUnlockButton(false);
+          // Preload next track silently while current track plays
+          const nextTrackPreview = room.rounds[room.currentRound]?.targetTrack?.previewUrl;
+          if (nextTrackPreview) {
+            audioPlayer.preloadNext(nextTrackPreview);
+          }
+          // Arm stall detection: if readyState still 0 after 2500ms, attempt fallback
+          stallTimerRef.current = setTimeout(() => {
+            if (audioRef.current && audioRef.current.readyState === 0 && audioRef.current.paused) {
               handleAudioFallback(currentRoundData);
             }
-          });
-        } else {
-          handleAudioFallback(currentRoundData);
-        }
+          }, 2500);
+        }).catch((err: any) => {
+          if (err?.name === "AbortError") {
+            const onCanPlay = () => {
+              if (audioRef.current) {
+                audioRef.current.play().catch(() => {});
+              }
+              audio.removeEventListener("canplay", onCanPlay);
+            };
+            audio.addEventListener("canplay", onCanPlay, { once: true });
+            return;
+          }
+          if (err?.name === "NotAllowedError") {
+            setShowAudioUnlockButton(true);
+          } else {
+            handleAudioFallback(currentRoundData);
+          }
+        });
+      } else if (audio && !previewUrl && lastLoadedTrackRef.current !== trackKey) {
+        lastLoadedTrackRef.current = trackKey;
+        handleAudioFallback(currentRoundData);
       }
     }
 
-    // Status changed to Round Reveal
+    // Status changed to Round Reveal — audio continues playing during reveal (no pause)
     if (room.status === "round_reveal" && prevStatusRef.current !== "round_reveal") {
-      if (audioRef.current) {
-        audioRef.current.pause();
+      // Preload next track during reveal as well
+      const nextTrackPreview = room.rounds[room.currentRound]?.targetTrack?.previewUrl;
+      if (nextTrackPreview) {
+        audioPlayer.preloadNext(nextTrackPreview);
       }
 
       // Reveal sound (only if answer sound was not already played in this round)
@@ -825,6 +857,10 @@ function PlayArenaContent() {
   // 5. Cleanup Audio on unmount
   useEffect(() => {
     return () => {
+      if (stallTimerRef.current) {
+        clearTimeout(stallTimerRef.current);
+        stallTimerRef.current = null;
+      }
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current.src = "";
@@ -1454,6 +1490,9 @@ function PlayArenaContent() {
   const currentMe = room?.players.find((p) => p.id === playerId);
   const isHost = currentMe?.isHost ?? false;
   const currentRound = room?.rounds[room.currentRound - 1];
+  const isSurvival = room?.gameMode === "survival";
+  const survivalPhase = isSurvival && room ? getSurvivalPhaseInfo(room.currentRound - 1) : null;
+  const isMeEliminated = Boolean(currentMe?.isEliminated);
 
   // Synchronized Timer Remaining calculation based authoritatively on server timestamps
   const getSecondsRemaining = () => {
@@ -2823,15 +2862,70 @@ function PlayArenaContent() {
         {room && (room.status === "playing" || room.status === "round_reveal") && currentRound && (
           <div className="space-y-6 max-w-4xl mx-auto w-full">
             {/* Top Game Bar: Responsive Flex-Wrap on Mobile */}
-            <div className="glass-card rounded-2xl p-3.5 sm:p-5 border border-emerald-500/20 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="font-bold text-xs sm:text-sm text-white shrink-0">
-                  Ronda {room.currentRound}/{room.rounds.length}
-                </span>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-950 border border-emerald-500/30 text-goblinLime shrink-0">
-                  {room.gameMode.toUpperCase()}
-                </span>
+            <div
+              className={`glass-card rounded-2xl p-3.5 sm:p-5 border flex flex-wrap items-center justify-between gap-2.5 transition-all ${
+                isSurvival && survivalPhase?.isRedZone
+                  ? "border-red-500/80 shadow-[0_0_25px_rgba(239,68,68,0.25)] animate-pulse"
+                  : "border-emerald-500/20"
+              }`}
+            >
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                {isSurvival ? (
+                  <>
+                    <span className="font-bold text-xs sm:text-sm text-white shrink-0">
+                      Ronda {room.currentRound}
+                    </span>
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-950 border border-rose-500/50 text-rose-300 shrink-0 tracking-wider">
+                      ∞ SUPERVIVENCIA
+                    </span>
+                    {survivalPhase && (
+                      <span
+                        className={`px-2 py-0.5 rounded-lg text-[10px] font-extrabold flex items-center gap-1 border ${
+                          survivalPhase.isRedZone
+                            ? "bg-red-950/90 text-red-300 border-red-500 animate-pulse"
+                            : "bg-emerald-950/80 text-emerald-300 border-emerald-500/30"
+                        }`}
+                      >
+                        <span>{survivalPhase.phaseName} · {survivalPhase.duration}s</span>
+                        {survivalPhase.isRedZone && <span className="text-amber-300">· x1.5</span>}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <span className="font-bold text-xs sm:text-sm text-white shrink-0">
+                      Ronda {room.currentRound}/{room.rounds.length}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-950 border border-emerald-500/30 text-goblinLime shrink-0">
+                      {room.gameMode.toUpperCase()}
+                    </span>
+                  </>
+                )}
               </div>
+
+              {/* In Survival Mode: Show local player lives & healing progress */}
+              {isSurvival && currentMe && (
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-1 bg-black/50 px-2.5 py-1 rounded-xl border border-rose-500/30">
+                    {Array.from({ length: 3 }).map((_, i) => (
+                      <Heart
+                        key={i}
+                        className={`w-3.5 h-3.5 transition-all ${
+                          i < (currentMe.lives ?? 3)
+                            ? "text-rose-500 fill-current scale-100 drop-shadow-[0_0_6px_rgba(244,63,94,0.7)]"
+                            : "text-zinc-600 fill-zinc-800 scale-90"
+                        }`}
+                      />
+                    ))}
+                  </div>
+
+                  <span className="text-[11px] font-bold text-amber-300 bg-amber-950/50 border border-amber-500/30 px-2 py-0.5 rounded-lg hidden sm:flex items-center gap-1">
+                    <span>🔥</span>
+                    <span>{(currentMe.streak || 0) % 3}/3</span>
+                    <span className="text-zinc-400 text-[10px]">para +1 ❤️</span>
+                  </span>
+                </div>
+              )}
 
               {/* Synchronized 15s Timer & Audio */}
               <div className="flex items-center gap-2 sm:gap-3 shrink-0">
@@ -2879,6 +2973,19 @@ function PlayArenaContent() {
               </div>
             </div>
 
+            {/* Spectator Mode Banner for Eliminated Players */}
+            {isSurvival && isMeEliminated && (
+              <div className="p-3.5 rounded-2xl bg-rose-950/80 border border-rose-500/50 text-center flex flex-wrap items-center justify-center gap-2 shadow-xl animate-fadeIn">
+                <Skull className="w-4 h-4 text-rose-400 animate-pulse shrink-0" />
+                <span className="font-extrabold text-xs sm:text-sm text-white">
+                  Eliminado en la Ronda {currentMe?.eliminatedAtRound || room.currentRound} · Modo Espectador
+                </span>
+                <span className="text-[11px] text-rose-200/70">
+                  (Sigues escuchando la música mientras los demás luchan por sobrevivir)
+                </span>
+              </div>
+            )}
+
             {/* Song Contributor / Source Mode Badge */}
             {(currentRound.contributedByPlayerName || currentRound.sourceMode) && (
               <div className="text-center">
@@ -2886,10 +2993,10 @@ function PlayArenaContent() {
                   <Headphones className="w-4 h-4 text-emerald-400" />
                   <span>
                     {currentRound.sourceMode && currentRound.contributedByPlayerName
-                      ? `🎧 De ${currentRound.sourceMode} de ${currentRound.contributedByPlayerName}`
+                      ? `De ${currentRound.sourceMode} de ${currentRound.contributedByPlayerName}`
                       : currentRound.sourceMode
-                      ? `🎧 De ${currentRound.sourceMode}`
-                      : `🎧 Aportada por ${currentRound.contributedByPlayerName}`}
+                      ? `De ${currentRound.sourceMode}`
+                      : `Aportada por ${currentRound.contributedByPlayerName}`}
                   </span>
                 </span>
               </div>
@@ -2918,10 +3025,10 @@ function PlayArenaContent() {
                       {(currentRound.sourceMode || currentRound.contributedByPlayerName) && (
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 normal-case font-bold border border-emerald-500/30">
                           {currentRound.sourceMode && currentRound.contributedByPlayerName
-                            ? `🎧 De ${currentRound.sourceMode} de ${currentRound.contributedByPlayerName}`
+                            ? `De ${currentRound.sourceMode} de ${currentRound.contributedByPlayerName}`
                             : currentRound.sourceMode
-                            ? `🎧 De ${currentRound.sourceMode}`
-                            : `🎧 Aportada por ${currentRound.contributedByPlayerName}`}
+                            ? `De ${currentRound.sourceMode}`
+                            : `Aportada por ${currentRound.contributedByPlayerName}`}
                         </span>
                       )}
                     </div>
@@ -2934,7 +3041,24 @@ function PlayArenaContent() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  {isSurvival && currentMe && (
+                    <div className="flex items-center gap-2">
+                      {currentMe.lostLifeThisRound && (
+                        <div className="px-3 py-1.5 rounded-xl bg-red-950/90 border border-red-500/50 text-red-300 font-extrabold text-xs flex items-center gap-1.5 animate-bounce shadow-lg">
+                          <span>💔 -1 Vida</span>
+                          <span className="text-zinc-400 text-[10px]">({currentMe.lives} restantes)</span>
+                        </div>
+                      )}
+                      {currentMe.healedThisRound && (
+                        <div className="px-3 py-1.5 rounded-xl bg-emerald-950/90 border border-emerald-500/50 text-goblinLime font-extrabold text-xs flex items-center gap-1.5 animate-bounce shadow-lg">
+                          <span>💖 ¡Racha x3! +1 Vida recuperada</span>
+                          <span className="text-zinc-400 text-[10px]">({currentMe.lives}/3)</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <button
                     onClick={() => handleSaveTrack(currentRound.targetTrack)}
                     className="px-4 py-2 rounded-xl bg-white/[0.08] hover:bg-white/[0.15] border border-emerald-500/40 text-xs font-bold text-emerald-300 flex items-center gap-1.5 transition"
@@ -3009,9 +3133,11 @@ function PlayArenaContent() {
                   <button
                     key={`${room.currentRound}_${optData.title}_${optIdx}`}
                     onClick={() => handleAnswer(optIdx)}
-                    disabled={selectedOption !== null || isReveal}
+                    disabled={selectedOption !== null || isReveal || isMeEliminated}
                     className={`w-full flex items-center justify-between gap-3.5 p-3 sm:p-3.5 rounded-2xl border text-left transition-all relative overflow-visible min-h-[56px] text-base font-semibold ${cardStyle} ${
-                      selectedOption !== null || isReveal ? "cursor-default" : "cursor-pointer"
+                      selectedOption !== null || isReveal || isMeEliminated
+                        ? "cursor-default opacity-80"
+                        : "cursor-pointer"
                     }`}
                   >
                     {/* Floating Arcade Score Popup */}
@@ -3123,16 +3249,19 @@ function PlayArenaContent() {
                     const hasAnswered = p.currentAnswer !== null;
                     const isCurrentMe = p.id === playerId;
                     const showMeScorePopup = isCurrentMe && scorePopup !== null;
+                    const isPlayerEliminated = room.gameMode === "survival" && p.isEliminated;
 
                     return (
                       <div
                         key={p.id}
-                        className={`p-3 rounded-xl bg-black/40 border flex flex-col justify-between relative transition-all overflow-visible ${
-                          showMeScorePopup
+                        className={`p-3 rounded-xl border flex flex-col justify-between relative transition-all overflow-visible ${
+                          isPlayerEliminated
+                            ? "bg-black/60 border-rose-950/80 opacity-40 grayscale-[40%]"
+                            : showMeScorePopup
                             ? scorePopup.isCorrect
-                              ? "border-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.35)]"
-                              : "border-rose-500 shadow-[0_0_20px_rgba(244,63,94,0.35)] animate-wrong-shake"
-                            : "border-emerald-500/15"
+                              ? "bg-black/40 border-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.35)]"
+                              : "bg-black/40 border-rose-500 shadow-[0_0_20px_rgba(244,63,94,0.35)] animate-wrong-shake"
+                            : "bg-black/40 border-emerald-500/15"
                         }`}
                       >
                         {/* Floating Popup on Leaderboard Player Card */}
@@ -3181,15 +3310,30 @@ function PlayArenaContent() {
                           </span>
                           {room.gameMode === "survival" && (
                             <span className="flex items-center gap-0.5">
-                              {Array.from({ length: Math.max(0, p.lives) }).map((_, i) => (
-                                <Heart key={i} className="w-2.5 h-2.5 text-rose-500 fill-current" />
-                              ))}
+                              {isPlayerEliminated ? (
+                                <span className="text-[9px] font-extrabold text-rose-400 bg-rose-950/80 px-1 py-0.5 rounded">
+                                  ELIMINADO (R{p.eliminatedAtRound || room.currentRound})
+                                </span>
+                              ) : (
+                                Array.from({ length: 3 }).map((_, i) => (
+                                  <Heart
+                                    key={i}
+                                    className={`w-2.5 h-2.5 ${
+                                      i < (p.lives ?? 3)
+                                        ? "text-rose-500 fill-current"
+                                        : "text-zinc-700 fill-zinc-800"
+                                    }`}
+                                  />
+                                ))
+                              )}
                             </span>
                           )}
                         </div>
 
                         <div className="mt-1 text-[10px] text-zinc-400">
-                          {hasAnswered ? (
+                          {isPlayerEliminated ? (
+                            <span className="text-zinc-500 italic">Espectador</span>
+                          ) : hasAnswered ? (
                             <span className="text-emerald-400 font-bold flex items-center gap-1">
                               <span>¡Respondió!</span>
                               <Zap className="w-3 h-3 text-emerald-400 fill-current" />
@@ -3212,10 +3356,14 @@ function PlayArenaContent() {
             {/* Podium Box */}
             <div className="glass-card rounded-3xl p-6 sm:p-10 border border-emerald-500/30 text-center space-y-6">
               <div className="text-xs font-bold uppercase tracking-widest text-emerald-400">
-                Partida Completada
+                {room.gameMode === "survival"
+                  ? `Fin de Supervivencia · ${room.currentRound} Rondas Disputadas`
+                  : "Partida Completada"}
               </div>
               <h1 className="font-display font-black text-3xl sm:text-5xl text-white">
-                Podio Final de Campeones
+                {room.gameMode === "survival"
+                  ? "🏆 Podio de Supervivientes"
+                  : "Podio Final de Campeones"}
               </h1>
 
               {/* 1st, 2nd, 3rd Podium */}
@@ -3237,6 +3385,11 @@ function PlayArenaContent() {
                         <div className="font-mono font-black text-xs text-goblinLime">
                           {second.score} pts
                         </div>
+                        {room.gameMode === "survival" && (
+                          <div className="text-[10px] text-amber-300 font-bold mt-0.5">
+                            🔥 {second.maxStreak || second.streak || 0} racha
+                          </div>
+                        )}
                         <div className="w-full h-24 bg-emerald-950/80 rounded-t-2xl mt-2 border-t-2 border-zinc-400 flex items-center justify-center font-black text-xl text-zinc-400">
                           2
                         </div>
@@ -3253,6 +3406,12 @@ function PlayArenaContent() {
                         <div className="font-mono font-black text-sm text-goblinLime">
                           {first.score} pts
                         </div>
+                        {room.gameMode === "survival" && (
+                          <div className="text-[11px] text-amber-300 font-extrabold mt-0.5 flex items-center gap-1">
+                            <span>🔥 {first.maxStreak || first.streak || 0} racha</span>
+                            {first.lives > 0 && <span className="text-rose-400">· {first.lives} ❤️</span>}
+                          </div>
+                        )}
                         <div className="w-full h-32 bg-gradient-to-t from-goblinClover to-goblinPrimary rounded-t-2xl mt-2 border-t-2 border-goblinLime flex items-center justify-center font-black text-3xl text-black shadow-lg shadow-emerald-500/30">
                           1
                         </div>
@@ -3269,6 +3428,11 @@ function PlayArenaContent() {
                         <div className="font-mono font-black text-xs text-goblinLime">
                           {third.score} pts
                         </div>
+                        {room.gameMode === "survival" && (
+                          <div className="text-[10px] text-amber-300 font-bold mt-0.5">
+                            🔥 {third.maxStreak || third.streak || 0} racha
+                          </div>
+                        )}
                         <div className="w-full h-18 bg-emerald-950/60 rounded-t-2xl mt-2 border-t-2 border-amber-600 flex items-center justify-center font-black text-lg text-amber-500">
                           3
                         </div>
