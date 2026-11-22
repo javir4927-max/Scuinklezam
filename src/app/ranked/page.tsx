@@ -1763,8 +1763,8 @@ export default function RankedArenaPage() {
               ))}
             </div>
 
-            {/* Categories Grid - Desktop View (md:grid) - Compact Editorial Cards */}
-            <div className="hidden md:grid md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3.5">
+            {/* Categories Grid - Desktop View (md:grid) - 1:1 Square Cards */}
+            <div className="hidden md:grid md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
               {filteredCategories.map((cat) => (
                 <div
                   key={cat.id}
@@ -1775,21 +1775,23 @@ export default function RankedArenaPage() {
                       handleStartRankedRun(cat);
                     }
                   }}
-                  className="group relative rounded-2xl overflow-hidden border border-emerald-500/20 hover:border-goblinLime/70 transition-all duration-300 shadow-md hover:shadow-xl hover:shadow-emerald-500/10 cursor-pointer h-48 flex flex-col justify-between p-3 bg-[#08120B]"
+                  className="group relative rounded-2xl overflow-hidden border border-emerald-500/20 hover:border-goblinLime/70 transition-all duration-300 shadow-md hover:shadow-xl hover:shadow-emerald-500/10 cursor-pointer aspect-square w-full flex flex-col justify-between p-3.5 sm:p-4 bg-[#08120B]"
                 >
-                  {/* Poster Image Background with Smooth Zoom on Hover */}
-                  <div
-                    className="absolute inset-0 bg-cover bg-top transition-transform duration-500 ease-out group-hover:scale-105"
-                    style={{ backgroundImage: `url(${cat.imageUrl})` }}
+                  {/* Square Image Covering Full Card with Smooth Zoom on Hover */}
+                  <img
+                    src={cat.imageUrl}
+                    alt={cat.name}
+                    className="absolute inset-0 w-full h-full object-cover object-top transition-transform duration-500 ease-out group-hover:scale-105"
+                    loading="lazy"
                   />
 
-                  {/* Gradient Overlay for Editorial Depth */}
-                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-transparent" />
+                  {/* Gradient Overlay for Editorial Depth & Face Visibility */}
+                  <div className="absolute inset-0 bg-gradient-to-t from-[#050B07]/95 via-[#050B07]/45 to-transparent pointer-events-none" />
 
                   {/* Top Badges */}
                   <div className="relative z-10 flex items-center justify-between gap-1.5">
                     <span
-                      className="px-2 py-0.5 rounded-full text-[10px] font-semibold backdrop-blur-md bg-black/60 border border-white/10 text-emerald-300 flex items-center gap-1 shadow"
+                      className="px-2.5 py-1 rounded-full text-[10px] font-semibold backdrop-blur-md bg-black/60 border border-white/10 text-emerald-300 flex items-center gap-1 shadow"
                       title={`${cat.playerCount} ${cat.playerCount === 1 ? "partida jugada" : "partidas jugadas"}`}
                     >
                       <Users className="w-3 h-3 text-goblinLime shrink-0" />
@@ -1814,11 +1816,11 @@ export default function RankedArenaPage() {
                   </div>
 
                   {/* Bottom Information Content */}
-                  <div className="relative z-10 space-y-0.5">
-                    <h3 className="font-display font-extrabold text-sm sm:text-base leading-tight text-white group-hover:text-goblinLime transition drop-shadow-md truncate">
+                  <div className="relative z-10 space-y-1">
+                    <h3 className="font-display font-extrabold text-base sm:text-lg leading-tight text-white group-hover:text-goblinLime transition drop-shadow-md truncate">
                       {cat.name}
                     </h3>
-                    <p className="text-[11px] line-clamp-1 text-zinc-300/90 leading-tight drop-shadow">
+                    <p className="text-[11px] text-zinc-300/90 line-clamp-1 leading-tight drop-shadow">
                       {cat.description}
                     </p>
 
@@ -1832,7 +1834,7 @@ export default function RankedArenaPage() {
                           handleStartRankedRun(cat);
                         }
                       }}
-                      className="w-full mt-2 py-1.5 rounded-xl bg-gradient-to-r from-goblinPrimary to-goblinLime hover:brightness-110 text-black font-black text-xs shadow-md transition hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-1.5 cursor-pointer"
+                      className="w-full mt-2 py-2 rounded-xl bg-gradient-to-r from-goblinPrimary to-goblinLime hover:brightness-110 text-black font-extrabold text-xs shadow-md transition hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <Play className="w-3 h-3 fill-current" />
                       <span>{cat.kind === "artist" ? "Ver Ficha" : "Jugar"}</span>
