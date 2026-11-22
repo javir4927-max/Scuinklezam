@@ -165,6 +165,13 @@ export function hasNonLatinCharacters(text: string): boolean {
  *   to match credited tokens with >= 85% overlap and overall word overlap >= 60%.
  * - Prevents false positives like "Aurora" matching another singer with "De La Rose".
  */
+const ARTIST_ALIASES: Record<string, string[]> = {
+  cruzzi: ["cruz cafune", "cruzzi"],
+  "cruz cafune": ["cruzzi", "cruz cafune"],
+  feid: ["ferxxo", "feid"],
+  ferxxo: ["feid", "ferxxo"],
+};
+
 export function isStrictArtistMatch(foundArtist: string, expectedArtist: string): boolean {
   if (!foundArtist || !expectedArtist) return false;
   const nFound = deepNormalize(foundArtist);
@@ -172,6 +179,10 @@ export function isStrictArtistMatch(foundArtist: string, expectedArtist: string)
   if (!nFound || !nExpected) return false;
   if (nFound === nExpected) return true;
   if (nFound.replace(/\s+/g, "") === nExpected.replace(/\s+/g, "")) return true;
+
+  if (ARTIST_ALIASES[nFound]?.includes(nExpected) || ARTIST_ALIASES[nExpected]?.includes(nFound)) {
+    return true;
+  }
 
   // Split both by collaboration separators
   const foundList = foundArtist

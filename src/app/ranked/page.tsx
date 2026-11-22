@@ -113,6 +113,9 @@ export default function RankedArenaPage() {
   const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
   const searchContainerRef = useRef<HTMLDivElement | null>(null);
 
+  const [artistSheetError, setArtistSheetError] = useState<string | null>(null);
+  const [rankedError, setRankedError] = useState<string | null>(null);
+
   // Handler to open Ficha de Artista Oficial
   const handleOpenArtistSheet = async (artistName: string) => {
     const clean = artistName.trim();
@@ -120,6 +123,7 @@ export default function RankedArenaPage() {
     setSelectedArtistName(clean);
     setLoadingArtistSheet(true);
     setArtistSheetData(null);
+    setArtistSheetError(null);
     setShowLiveDropdown(false);
 
     try {
@@ -129,10 +133,15 @@ export default function RankedArenaPage() {
         const data = await res.json();
         if (data.success) {
           setArtistSheetData(data);
+        } else {
+          setArtistSheetError(data.error || "No se pudo cargar la información de este artista.");
         }
+      } else {
+        setArtistSheetError("Error al consultar el perfil del artista.");
       }
     } catch (err) {
       console.error("Error loading artist sheet:", err);
+      setArtistSheetError("Error de conexión al cargar la ficha del artista.");
     } finally {
       setLoadingArtistSheet(false);
     }
@@ -168,6 +177,26 @@ export default function RankedArenaPage() {
   const advanceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const scorePopupTimerRef = useRef<NodeJS.Timeout | null>(null);
   const answersHistoryRef = useRef<AnswerHistoryItem[]>([]);
+
+  // Listen for navbar "scuinklezam_reset_ranked" event to reset all game and sheet states
+  useEffect(() => {
+    const handleReset = () => {
+      audioPlayer.stop();
+      setGameState("idle");
+      setSelectedArtistName(null);
+      setArtistSheetData(null);
+      setArtistSheetError(null);
+      setActiveCategory(null);
+      setRankedError(null);
+      setSearchFilter("");
+      if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current);
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (scorePopupTimerRef.current) clearTimeout(scorePopupTimerRef.current);
+    };
+
+    window.addEventListener("scuinklezam_reset_ranked", handleReset);
+    return () => window.removeEventListener("scuinklezam_reset_ranked", handleReset);
+  }, []);
 
   // Fetch real categories and current user session
   const loadInitialData = async () => {
@@ -213,13 +242,17 @@ export default function RankedArenaPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Auto-open artist sheet if ?artist=... URL parameter is present
+  // Auto-open artist sheet if ?artist=... or select tab/search if ?theme=...
   useEffect(() => {
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
       const artistParam = params.get("artist");
+      const themeParam = params.get("theme");
       if (artistParam) {
         handleOpenArtistSheet(artistParam);
+      } else if (themeParam) {
+        setActiveTab("theme");
+        setSearchFilter(themeParam);
       }
     }
   }, []);
@@ -346,7 +379,7 @@ export default function RankedArenaPage() {
       const tracks: SpotifyTrackItem[] = data.tracks || [];
 
       if (tracks.length < 4) {
-        alert("No se pudieron cargar suficientes canciones para este modo.");
+        setRankedError(`No se pudieron cargar suficientes canciones con audio disponible para "${cat.name}". Intenta con otro artista o temática.`);
         setGameState("idle");
         return;
       }
@@ -614,6 +647,31 @@ export default function RankedArenaPage() {
     };
   }, [gameState, currentIdx, handleAnswer]);
 
+  // Keyboard shortcuts [1, 2, 3, 4] for answering during gameState === "playing"
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (gameState !== "playing") return;
+
+      if (e.key === "1") {
+        e.preventDefault();
+        handleAnswer(0);
+      } else if (e.key === "2") {
+        e.preventDefault();
+        handleAnswer(1);
+      } else if (e.key === "3") {
+        e.preventDefault();
+        handleAnswer(2);
+      } else if (e.key === "4") {
+        e.preventDefault();
+        handleAnswer(3);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [gameState, handleAnswer]);
+
   return (
     <div className="min-h-screen bg-[#060D09] text-white flex flex-col font-sans selection:bg-goblinPrimary selection:text-black w-full max-w-full overflow-x-hidden">
       {/* 1. TOP NAVBAR (SIEMPRE ARRIBA DEL TODO TOP-0) */}
@@ -668,6 +726,18 @@ export default function RankedArenaPage() {
             {/* PLAYING & REVEAL STATE */}
             {(gameState === "playing" || gameState === "reveal") && questions[currentIdx] && (
               <div className="w-full max-w-xl mx-auto space-y-4 animate-fade-in">
+                {/* 20s Fluid Animated Progress Bar */}
+                <div className="w-full bg-black/60 h-2.5 rounded-full overflow-hidden border border-emerald-500/20 shadow-inner">
+                  <div
+                    className={`h-full transition-all duration-1000 ease-linear rounded-full ${
+                      timeLeft <= 5
+                        ? "bg-rose-500 shadow-[0_0_15px_rgba(244,63,94,0.9)] animate-pulse"
+                        : "bg-gradient-to-r from-goblinPrimary to-goblinLime shadow-[0_0_12px_rgba(34,197,94,0.6)]"
+                    }`}
+                    style={{ width: `${Math.max(0, Math.min(100, (timeLeft / ROUND_DURATION_SEC) * 100))}%` }}
+                  />
+                </div>
+
                 {/* Status Bar: Clean 2-Row / Flex-Wrap Header on Mobile */}
                 <div className="flex flex-wrap items-center justify-between gap-2 px-2">
                   {/* Fila 1 Izquierda: Canción X/10 + Nombre categoría */}
@@ -792,6 +862,9 @@ export default function RankedArenaPage() {
                         )}
 
                         <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <span className="w-5 h-5 rounded-md bg-white/10 text-zinc-300 text-[10px] font-mono font-bold items-center justify-center shrink-0 hidden sm:flex">
+                            {idx + 1}
+                          </span>
                           <img
                             src={opt.artworkUrl}
                             alt={opt.title}
@@ -1005,10 +1078,46 @@ export default function RankedArenaPage() {
                 Obteniendo ranking en directo y artistas recomendados
               </div>
             </div>
+          ) : artistSheetError ? (
+            <div className="py-24 text-center space-y-4 max-w-md mx-auto animate-fade-in p-6 rounded-3xl bg-black/60 border border-rose-500/30">
+              <div className="w-12 h-12 rounded-full bg-rose-950 border border-rose-500/50 flex items-center justify-center text-rose-400 mx-auto">
+                <X className="w-6 h-6" />
+              </div>
+              <div className="font-display font-bold text-lg text-white">
+                No pudimos cargar a {selectedArtistName}
+              </div>
+              <p className="text-xs text-zinc-400">
+                {artistSheetError}
+              </p>
+              <div className="flex items-center justify-center gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => handleOpenArtistSheet(selectedArtistName!)}
+                  className="px-4 py-2 rounded-xl bg-goblinPrimary text-black font-extrabold text-xs hover:opacity-95 transition cursor-pointer"
+                >
+                  Reintentar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedArtistName(null);
+                    setArtistSheetError(null);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs transition cursor-pointer"
+                >
+                  Volver al catálogo
+                </button>
+              </div>
+            </div>
           ) : artistSheetData ? (
             <div className="space-y-8 animate-fade-in">
               {/* A. CABECERA FICHA ARTISTA OFICIAL (ESMERALDA Y OSCURO SCUINKLEZAM) */}
               <div className="relative overflow-hidden rounded-3xl bg-gradient-to-b from-emerald-950/40 via-[#0B1710] to-[#060D09] border border-emerald-500/25 p-4 sm:p-10 backdrop-blur-xl shadow-2xl w-full max-w-full">
+                {/* Ambient Blurred Background Glow */}
+                <div
+                  className="absolute inset-0 bg-cover bg-center blur-3xl opacity-25 scale-125 pointer-events-none"
+                  style={{ backgroundImage: `url(${artistSheetData.photoUrl})` }}
+                />
                 {/* Subtle background glow */}
                 <div className="absolute top-0 right-1/4 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
                 <div className="absolute -bottom-10 left-1/4 w-96 h-96 bg-lime-500/10 rounded-full blur-3xl pointer-events-none" />
@@ -1166,8 +1275,8 @@ export default function RankedArenaPage() {
                               <div className="text-[11px] sm:text-xs font-bold text-white truncate">{top2?.nickname || "Vacante"}</div>
                               <div className="text-[9px] sm:text-[10px] font-mono text-zinc-300 font-bold">{top2 ? `${top2.totalPoints} pts` : "-"}</div>
                             </div>
-                            <div className="w-full h-20 sm:h-28 bg-gradient-to-t from-zinc-800 to-zinc-700/60 border-t-2 border-zinc-400/80 rounded-t-2xl flex items-center justify-center shadow-lg">
-                              <span className="text-zinc-400 font-black text-xs sm:text-sm tracking-wider">#2</span>
+                            <div className="w-full h-20 sm:h-28 bg-gradient-to-t from-slate-900/90 via-slate-700/80 to-slate-400/70 border-t-2 border-slate-300 rounded-t-2xl flex items-center justify-center shadow-[0_0_20px_rgba(148,163,184,0.25)] ring-1 ring-slate-400/30">
+                              <span className="text-slate-300 font-black text-xs sm:text-sm tracking-wider">#2</span>
                             </div>
                           </div>
 
@@ -1188,7 +1297,7 @@ export default function RankedArenaPage() {
                               <div className="text-xs sm:text-sm font-black text-amber-200 truncate">{top1?.nickname || "Vacante"}</div>
                               <div className="text-[10px] sm:text-xs font-mono text-amber-300 font-extrabold">{top1 ? `${top1.totalPoints} pts` : "-"}</div>
                             </div>
-                            <div className="w-full h-28 sm:h-36 bg-gradient-to-t from-amber-950/80 to-amber-700/70 border-t-2 border-amber-300 rounded-t-2xl flex items-center justify-center shadow-2xl ring-1 ring-amber-400/20">
+                            <div className="w-full h-28 sm:h-36 bg-gradient-to-t from-amber-950/90 via-amber-700/80 to-amber-500/70 border-t-2 border-amber-300 rounded-t-2xl flex items-center justify-center shadow-[0_0_30px_rgba(245,158,11,0.35)] ring-1 ring-amber-400/40">
                               <span className="text-amber-200 font-black text-sm sm:text-base tracking-wider">#1</span>
                             </div>
                           </div>
@@ -1209,7 +1318,7 @@ export default function RankedArenaPage() {
                               <div className="text-[11px] sm:text-xs font-bold text-white truncate">{top3?.nickname || "Vacante"}</div>
                               <div className="text-[9px] sm:text-[10px] font-mono text-amber-400/80 font-bold">{top3 ? `${top3.totalPoints} pts` : "-"}</div>
                             </div>
-                            <div className="w-full h-16 sm:h-24 bg-gradient-to-t from-amber-950/40 to-amber-900/50 border-t-2 border-amber-600/70 rounded-t-2xl flex items-center justify-center shadow-md">
+                            <div className="w-full h-16 sm:h-24 bg-gradient-to-t from-amber-950/90 via-amber-900/70 to-amber-700/60 border-t-2 border-amber-600 rounded-t-2xl flex items-center justify-center shadow-[0_0_20px_rgba(180,83,9,0.25)] ring-1 ring-amber-600/30">
                               <span className="text-amber-500 font-black text-xs sm:text-sm tracking-wider">#3</span>
                             </div>
                           </div>
@@ -1326,57 +1435,102 @@ export default function RankedArenaPage() {
               CATÁLOGO RANKED OFICIAL (ARTISTAS & TEMAS)
              ======================================================== */
           <div className="space-y-8 animate-fade-in">
-            {/* Hero Banner */}
-            <div className="p-6 sm:p-10 rounded-3xl bg-gradient-to-r from-[#0C1D13] via-[#0E2619] to-black border border-emerald-500/25 shadow-2xl relative overflow-hidden flex flex-col md:flex-row items-center justify-between gap-6">
-              <div className="space-y-3 text-center md:text-left">
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-xs font-bold text-amber-300">
-                  <Trophy className="w-3.5 h-3.5" />
-                  <span>Temporada 1 · Modo Ranked Oficial</span>
+            {/* Friendly error banner if song pool had < 4 tracks */}
+            {rankedError && (
+              <div className="p-4 rounded-2xl bg-rose-950/80 border border-rose-500/40 text-rose-200 text-xs flex items-center justify-between gap-3 animate-fade-in shadow-xl">
+                <div className="flex items-center gap-2">
+                  <X className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>{rankedError}</span>
                 </div>
-                <h1 className="font-display font-black text-3xl sm:text-5xl text-white tracking-tight">
-                  Demuestra tu nivel musical
-                </h1>
-                <p className="text-zinc-300 text-sm sm:text-base max-w-xl">
-                  Compite en partidas sobre <strong>1000 puntos</strong>. Compite por artistas o temáticas y sube de rango desde <strong>Bronce</strong> hasta <strong>Maestro</strong>.
-                </p>
+                <button
+                  type="button"
+                  onClick={() => setRankedError(null)}
+                  className="px-3 py-1 rounded-lg bg-rose-900 hover:bg-rose-800 text-white font-bold transition text-xs cursor-pointer shrink-0"
+                >
+                  Entendido
+                </button>
+              </div>
+            )}
+
+            {/* Hero Banner with Season 1 Division Ladder */}
+            <div className="p-6 sm:p-10 rounded-3xl bg-gradient-to-r from-[#0C1D13] via-[#0E2619] to-black border border-emerald-500/25 shadow-2xl relative overflow-hidden flex flex-col gap-6">
+              <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+                <div className="space-y-3 text-left">
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-xs font-bold text-amber-300">
+                    <Trophy className="w-3.5 h-3.5" />
+                    <span>Temporada 1 · Modo Ranked Oficial</span>
+                  </div>
+                  <h1 className="font-display font-black text-3xl sm:text-5xl text-white tracking-tight">
+                    Demuestra tu nivel musical
+                  </h1>
+                  <p className="text-zinc-300 text-sm sm:text-base max-w-xl">
+                    Compite en partidas sobre <strong>1000 puntos</strong>. Compite por artistas o temáticas y sube de rango desde <strong>Bronce</strong> hasta <strong>Maestro</strong>.
+                  </p>
+                </div>
+
+                {/* User Status Card */}
+                <div className="p-4 rounded-2xl bg-black/60 border border-emerald-500/30 shrink-0 w-full md:w-64 space-y-2.5 text-center">
+                  {user ? (
+                    <>
+                      <div className="flex items-center justify-center gap-2.5">
+                        <img
+                          src={user.avatarUrl}
+                          alt={user.nickname}
+                          className="w-8 h-8 rounded-full border border-emerald-400 object-cover"
+                        />
+                        <div className="text-left">
+                          <div className="text-xs font-bold text-white truncate max-w-[130px]">{user.nickname}</div>
+                          <div className="text-[10px] text-emerald-400">
+                            {user.provider === "spotify" ? "Spotify activo" : "Cuenta activa"}
+                          </div>
+                        </div>
+                      </div>
+                      <Link
+                        href="/perfil"
+                        className="block text-xs text-goblinLime hover:underline font-semibold"
+                      >
+                        Ver mis estadísticas y récords →
+                      </Link>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-xs font-bold text-zinc-300">¿Jugando como invitado?</div>
+                      <div className="text-[10px] text-zinc-400">Guarda tus récords y aparece en el ranking</div>
+                      <button
+                        onClick={() => setAuthModalOpen(true)}
+                        className="w-full py-2 rounded-xl bg-goblinPrimary text-black font-extrabold text-xs hover:opacity-95 transition cursor-pointer"
+                      >
+                        Iniciar Sesión / Registro
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
 
-              {/* User Status Card (Oculta banner de invitado si ya hay usuario o Spotify conectado) */}
-              <div className="p-4 rounded-2xl bg-black/60 border border-emerald-500/30 shrink-0 w-full md:w-64 space-y-2.5 text-center">
-                {user ? (
-                  <>
-                    <div className="flex items-center justify-center gap-2.5">
-                      <img
-                        src={user.avatarUrl}
-                        alt={user.nickname}
-                        className="w-8 h-8 rounded-full border border-emerald-400 object-cover"
-                      />
-                      <div className="text-left">
-                        <div className="text-xs font-bold text-white truncate max-w-[130px]">{user.nickname}</div>
-                        <div className="text-[10px] text-emerald-400">
-                          {user.provider === "spotify" ? "Spotify activo" : "Cuenta activa"}
+              {/* Division Ladder Tiers Bar */}
+              <div className="pt-4 border-t border-emerald-500/15">
+                <div className="text-[10px] uppercase font-black text-zinc-400 tracking-wider mb-2.5 flex items-center gap-1.5">
+                  <Shield className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Escalafón de Rangos Oficial</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                  {RANKED_TIERS.map((tier) => (
+                    <div
+                      key={tier.name}
+                      className={`p-2.5 rounded-2xl border ${tier.badgeBg} flex items-center gap-2.5 transition hover:scale-[1.02] shadow-sm`}
+                    >
+                      <span className="text-xl shrink-0">{tier.icon}</span>
+                      <div className="min-w-0">
+                        <div className={`text-xs font-black truncate ${tier.badgeColor}`}>
+                          {tier.name}
+                        </div>
+                        <div className="text-[10px] text-zinc-400 font-mono">
+                          {tier.minScore > 0 ? `${tier.minScore}+ pts` : "0-399 pts"}
                         </div>
                       </div>
                     </div>
-                    <Link
-                      href="/perfil"
-                      className="block text-xs text-goblinLime hover:underline font-semibold"
-                    >
-                      Ver mis estadísticas y récords →
-                    </Link>
-                  </>
-                ) : (
-                  <>
-                    <div className="text-xs font-bold text-zinc-300">¿Jugando como invitado?</div>
-                    <div className="text-[10px] text-zinc-400">Guarda tus récords y aparece en el ranking</div>
-                    <button
-                      onClick={() => setAuthModalOpen(true)}
-                      className="w-full py-2 rounded-xl bg-goblinPrimary text-black font-extrabold text-xs hover:opacity-95 transition cursor-pointer"
-                    >
-                      Iniciar Sesión / Registro
-                    </button>
-                  </>
-                )}
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -1529,18 +1683,18 @@ export default function RankedArenaPage() {
                   key={`mob_${cat.id}`}
                   onClick={() => {
                     if (cat.kind === "artist") {
-                      handleOpenArtistSheet(cat.name);
+                      handleOpenArtistSheet(cat.query || cat.name);
                     } else {
                       handleStartRankedRun(cat);
                     }
                   }}
-                  className="flex items-center justify-between p-3.5 rounded-2xl bg-zinc-900/80 border border-white/10 gap-3 hover:border-emerald-500/40 transition cursor-pointer"
+                  className="flex items-center justify-between p-3.5 rounded-2xl bg-zinc-900/90 border border-white/10 gap-3 hover:border-emerald-500/40 transition cursor-pointer shadow-md"
                 >
                   <div className="flex items-center gap-3 min-w-0">
                     <img
                       src={cat.imageUrl}
                       alt={cat.name}
-                      className="w-14 h-14 rounded-full object-cover border border-emerald-500/30 shrink-0 bg-emerald-950"
+                      className="w-14 h-14 rounded-full object-cover border border-emerald-500/30 shrink-0 bg-emerald-950 shadow"
                       loading="lazy"
                     />
                     <div className="min-w-0">
@@ -1558,12 +1712,12 @@ export default function RankedArenaPage() {
                     onClick={(e) => {
                       e.stopPropagation();
                       if (cat.kind === "artist") {
-                        handleOpenArtistSheet(cat.name);
+                        handleOpenArtistSheet(cat.query || cat.name);
                       } else {
                         handleStartRankedRun(cat);
                       }
                     }}
-                    className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-sm shrink-0 flex items-center gap-1.5 transition cursor-pointer shadow-md"
+                    className="px-4 py-2 rounded-full bg-gradient-to-r from-goblinPrimary to-goblinLime text-zinc-950 font-black text-xs shrink-0 flex items-center gap-1.5 transition cursor-pointer shadow-md active:scale-95"
                   >
                     <Play className="w-3.5 h-3.5 fill-current" />
                     <span>Jugar</span>
@@ -1572,74 +1726,88 @@ export default function RankedArenaPage() {
               ))}
             </div>
 
-            {/* Categories Grid - Desktop View (md:grid) */}
-            <div className="hidden md:grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {/* Categories Grid - Desktop View (md:grid) - Poster Editorial Style */}
+            <div className="hidden md:grid md:grid-cols-2 lg:grid-cols-3 gap-5">
               {filteredCategories.map((cat) => (
                 <div
                   key={cat.id}
                   onClick={() => {
                     if (cat.kind === "artist") {
-                      handleOpenArtistSheet(cat.name);
+                      handleOpenArtistSheet(cat.query || cat.name);
+                    } else {
+                      handleStartRankedRun(cat);
                     }
                   }}
-                  className={`glass-card rounded-3xl p-5 border border-emerald-500/20 hover:border-goblinLime/60 transition group flex flex-col justify-between space-y-4 ${
-                    cat.kind === "artist" ? "cursor-pointer" : ""
-                  }`}
+                  className="group relative rounded-3xl overflow-hidden border border-emerald-500/20 hover:border-goblinLime/70 transition-all duration-300 shadow-xl hover:shadow-2xl hover:shadow-emerald-500/10 cursor-pointer aspect-[4/5] flex flex-col justify-between p-5 bg-[#08120B]"
                 >
-                  <div className="flex items-start gap-3.5">
-                    <img
-                      src={cat.imageUrl}
-                      alt={cat.name}
-                      className="w-14 h-14 rounded-2xl object-cover border border-emerald-500/40 shadow-lg shrink-0 bg-emerald-950"
-                      loading="lazy"
-                    />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-display font-bold text-base text-white group-hover:text-goblinLime transition truncate">
-                          {cat.name}
-                        </h3>
-                      </div>
-                      <p className="text-xs text-zinc-400 line-clamp-2 mt-1 leading-snug">
-                        {cat.description}
-                      </p>
-                      <div className="text-[10px] text-emerald-400 font-semibold mt-1">
-                        {cat.playerCount} {cat.playerCount === 1 ? "partida jugada" : "partidas jugadas"}
-                      </div>
-                    </div>
+                  {/* Poster Image Background with Smooth Zoom on Hover */}
+                  <div
+                    className="absolute inset-0 bg-cover bg-top transition-transform duration-500 ease-out group-hover:scale-105"
+                    style={{ backgroundImage: `url(${cat.imageUrl})` }}
+                  />
+
+                  {/* Gradient Overlay for Editorial Depth */}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/20" />
+
+                  {/* Top Badges */}
+                  <div className="relative z-10 flex items-center justify-between gap-2">
+                    <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider backdrop-blur-md bg-black/60 border border-white/20 text-goblinLime">
+                      {cat.kind === "artist" ? "Artista Oficial" : "Temática Oficial"}
+                    </span>
+                    <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold backdrop-blur-md bg-black/60 border border-white/20 text-zinc-300">
+                      1000 Pts Max
+                    </span>
                   </div>
 
-                  <div className="flex items-center gap-2 pt-2 border-t border-emerald-500/10">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (cat.kind === "artist") {
-                          handleOpenArtistSheet(cat.name);
-                        } else {
-                          handleStartRankedRun(cat);
-                        }
-                      }}
-                      className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-goblinPrimary to-goblinLime text-black font-extrabold text-xs shadow-md transition hover:scale-[1.02] flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      <Play className="w-3.5 h-3.5 fill-current" />
-                      <span>Jugar</span>
-                    </button>
+                  {/* Bottom Information Content */}
+                  <div className="relative z-10 space-y-3">
+                    <div>
+                      <h3 className="font-display font-black text-2xl text-white group-hover:text-goblinLime transition drop-shadow-md truncate">
+                        {cat.name}
+                      </h3>
+                      <p className="text-xs text-zinc-300 line-clamp-2 mt-1 leading-snug drop-shadow">
+                        {cat.description}
+                      </p>
+                      <div className="text-[11px] text-emerald-400 font-semibold mt-1.5 flex items-center gap-1.5">
+                        <Users className="w-3 h-3" />
+                        <span>{cat.playerCount} {cat.playerCount === 1 ? "partida jugada" : "partidas jugadas"}</span>
+                      </div>
+                    </div>
 
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (cat.kind === "artist") {
-                          handleOpenArtistSheet(cat.name);
-                        } else {
-                          handleOpenLeaderboard(cat);
-                        }
-                      }}
-                      className="p-2.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-emerald-500/20 text-zinc-300 hover:text-white transition cursor-pointer"
-                      title={cat.kind === "artist" ? "Ver ficha y ranking" : "Ver tabla de clasificación"}
-                    >
-                      <Trophy className="w-4 h-4 text-amber-400" />
-                    </button>
+                    {/* Bottom Action Row */}
+                    <div className="flex items-center gap-2 pt-2 border-t border-white/10">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (cat.kind === "artist") {
+                            handleOpenArtistSheet(cat.query || cat.name);
+                          } else {
+                            handleStartRankedRun(cat);
+                          }
+                        }}
+                        className="flex-1 py-2.5 rounded-full bg-gradient-to-r from-goblinPrimary to-goblinLime text-black font-extrabold text-xs shadow-lg transition hover:scale-105 active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-current" />
+                        <span>{cat.kind === "artist" ? "Ver Ficha y Jugar" : "Jugar Ahora"}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (cat.kind === "artist") {
+                            handleOpenArtistSheet(cat.query || cat.name);
+                          } else {
+                            handleOpenLeaderboard(cat);
+                          }
+                        }}
+                        className="p-2.5 rounded-full bg-black/70 hover:bg-black border border-white/20 text-amber-400 transition hover:scale-105 active:scale-95 cursor-pointer"
+                        title={cat.kind === "artist" ? "Ver ficha y ranking" : "Ver tabla de clasificación"}
+                      >
+                        <Trophy className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}

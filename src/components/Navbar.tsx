@@ -116,6 +116,11 @@ export default function Navbar({
 
             <Link
               href="/ranked"
+              onClick={() => {
+                if (typeof window !== "undefined") {
+                  window.dispatchEvent(new Event("scuinklezam_reset_ranked"));
+                }
+              }}
               className={`px-3 py-1.5 rounded-full transition flex items-center gap-2 font-semibold whitespace-nowrap ${
                 activeRoute === "ranked"
                   ? "bg-amber-500/25 border border-amber-400 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.25)]"
@@ -214,7 +219,12 @@ export default function Navbar({
 
                     <Link
                       href="/ranked"
-                      onClick={() => setUserMenuOpen(false)}
+                      onClick={() => {
+                        setUserMenuOpen(false);
+                        if (typeof window !== "undefined") {
+                          window.dispatchEvent(new Event("scuinklezam_reset_ranked"));
+                        }
+                      }}
                       className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-amber-300 hover:bg-amber-950/40 flex items-center gap-2.5 transition block"
                     >
                       <Trophy className="w-4 h-4 text-amber-400 shrink-0" />
@@ -339,6 +349,11 @@ export default function Navbar({
         {/* 3. Ranked */}
         <Link
           href="/ranked"
+          onClick={() => {
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new Event("scuinklezam_reset_ranked"));
+            }
+          }}
           className={`flex flex-col items-center justify-center py-1 transition ${
             activeRoute === "ranked"
               ? "text-emerald-400 font-semibold"

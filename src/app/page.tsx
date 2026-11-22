@@ -21,7 +21,7 @@ export default function ScuinklezamLandingPage() {
   const [quizTopic, setQuizTopic] = useState("Éxitos Pop");
   const [customQuizTracks, setCustomQuizTracks] = useState<SpotifyTrackItem[] | undefined>(undefined);
   const [isSpotifyModalOpen, setIsSpotifyModalOpen] = useState(false);
-  const [topicModal, setTopicModal] = useState<string | null>(null);
+  const [topicModal, setTopicModal] = useState<{ name: string; type: "artist" | "theme" } | null>(null);
 
   const handleOpenQuiz = (topic?: string, tracks?: SpotifyTrackItem[]) => {
     setQuizTopic(topic || "Éxitos Pop");
@@ -57,7 +57,7 @@ export default function ScuinklezamLandingPage() {
         <Hero onOpenMiniQuiz={handleOpenQuiz} />
 
         {/* 3. CARRUSEL INFINITO DE GÉNEROS (Interactivo) */}
-        <GenreStrip onSelectGenre={(g) => setTopicModal(g)} />
+        <GenreStrip onSelectGenre={(g) => setTopicModal({ name: g, type: "theme" })} />
 
         {/* 4. DESAFÍA A TUS AMIGOS (CON BOTONES REALES PARA CREAR/UNIRSE A SALA) */}
         <LobbySection onOpenMiniQuiz={handleOpenQuiz} />
@@ -68,7 +68,7 @@ export default function ScuinklezamLandingPage() {
         {/* 6. ARTISTAS FAVORITOS Y GÉNEROS (Interactivo) */}
         <ArtistSection
           onOpenMiniQuiz={handleOpenQuiz}
-          onSelectArtist={(a) => setTopicModal(a)}
+          onSelectArtist={(a) => setTopicModal({ name: a, type: "artist" })}
         />
 
         {/* 7. NOCHE DE JUEGOS / TRANSMISIÓN A TV */}
@@ -107,13 +107,13 @@ export default function ScuinklezamLandingPage() {
               <Music2 className="w-6 h-6 text-black" />
             </div>
             <div>
-              <h3 className="font-display font-extrabold text-xl text-white">{topicModal}</h3>
+              <h3 className="font-display font-extrabold text-xl text-white">{topicModal.name}</h3>
               <p className="text-xs text-zinc-400 mt-1">¿Cómo prefieres competir con este estilo?</p>
             </div>
             <div className="space-y-2 pt-2">
               <button
                 onClick={() => {
-                  const t = topicModal;
+                  const t = topicModal.name;
                   setTopicModal(null);
                   handleOpenQuiz(t);
                 }}
@@ -123,14 +123,22 @@ export default function ScuinklezamLandingPage() {
                 <span>Jugar Solo Ahora (Mini-Quiz)</span>
               </button>
               <a
-                href={`/ranked?artist=${encodeURIComponent(topicModal)}`}
+                href={
+                  topicModal.type === "theme"
+                    ? `/ranked?theme=${encodeURIComponent(topicModal.name)}`
+                    : `/ranked?artist=${encodeURIComponent(topicModal.name)}`
+                }
                 className="w-full py-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-extrabold text-xs border border-amber-500/40 transition text-center flex items-center justify-center gap-2"
               >
                 <Music2 className="w-4 h-4 text-amber-400" />
                 <span>Competir en Modo Ranked</span>
               </a>
               <a
-                href={`/play?artist=${encodeURIComponent(topicModal)}&create=true`}
+                href={
+                  topicModal.type === "theme"
+                    ? `/play?theme=${encodeURIComponent(topicModal.name)}&create=true`
+                    : `/play?artist=${encodeURIComponent(topicModal.name)}&create=true`
+                }
                 className="w-full py-3 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-white font-extrabold text-xs border border-emerald-500/30 transition text-center flex items-center justify-center gap-2"
               >
                 <Users className="w-4 h-4 text-emerald-400" />

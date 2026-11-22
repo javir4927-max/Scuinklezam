@@ -1,5 +1,6 @@
 import { redis } from "./roomStore";
-import { PRELOADED_ARTIST_PHOTOS } from "./artistPhotosCatalog";
+import { getArtistFacePhoto } from "./artistPhotos";
+import { isStrictArtistMatch } from "./songMatching";
 export * from "./rankedTypes";
 import {
   RankedTier,
@@ -37,7 +38,7 @@ const ARTIST_CLUSTERS = [
   // España Urbano & Rap
   [
     "Quevedo", "Saiko", "JC Reyes", "Omar Montes", "Lucho RK", "La Pantera", "Rels B",
-    "Bad Gyal", "Morad", "Lola Indigo", "Cruz Cafuné", "Delaossa", "Hoke", "Recycled J",
+    "Bad Gyal", "Morad", "Lola Indigo", "Cruzzi", "Delaossa", "Hoke", "Recycled J",
     "Cano", "Cyril Kamer", "Ana Mena", "Aitana", "Beny Jr", "Ill Pekeño", "Ergo Pro",
     "Israel B", "Gloosito", "Soto Asa", "Yung Beef", "Kaydy Cain", "Abhir Hathi", "Juicy BAE"
   ],
@@ -58,6 +59,8 @@ const ARTIST_CLUSTERS = [
   ],
 ];
 
+const DEEZER_EMPTY_HASH = "d41d8cd98f00b204e9800998ecf8427e";
+
 export async function getDeezerRelatedArtists(
   artistName: string
 ): Promise<Array<{ name: string; slug: string; imageUrl: string }>> {
@@ -72,7 +75,10 @@ export async function getDeezerRelatedArtists(
     );
     if (!searchRes.ok) return [];
     const searchData = await searchRes.json();
-    const artistId = searchData?.data?.[0]?.id;
+    const matching = (searchData?.data || []).find((a: any) =>
+      isStrictArtistMatch(a.name, clean) || a.name.toLowerCase() === clean.toLowerCase()
+    );
+    const artistId = matching?.id || searchData?.data?.[0]?.id;
     if (!artistId) return [];
 
     const relatedRes = await fetch(
@@ -86,16 +92,17 @@ export async function getDeezerRelatedArtists(
     const relatedData = await relatedRes.json();
     if (!relatedData?.data || !Array.isArray(relatedData.data)) return [];
 
-    return relatedData.data.slice(0, 8).map((a: any) => ({
-      name: a.name,
-      slug: toArtistSlug(a.name),
-      imageUrl:
-        a.picture_xl ||
-        a.picture_big ||
-        a.picture_medium ||
-        PRELOADED_ARTIST_PHOTOS[a.name.toLowerCase()] ||
-        `/api/artists/photo?name=${encodeURIComponent(a.name)}`,
-    }));
+    return relatedData.data.slice(0, 8).map((a: any) => {
+      let img = a.picture_xl || a.picture_big || a.picture_medium;
+      if (img && img.includes(DEEZER_EMPTY_HASH)) {
+        img = "";
+      }
+      return {
+        name: a.name,
+        slug: toArtistSlug(a.name),
+        imageUrl: img || `/api/artists/photo?name=${encodeURIComponent(a.name)}`,
+      };
+    });
   } catch (e) {
     console.warn("[getDeezerRelatedArtists] Failed:", e);
     return [];
@@ -134,7 +141,7 @@ export function getRelatedArtistsFor(artistName: string): Array<{ name: string; 
       result.push({
         name,
         slug: toArtistSlug(name),
-        imageUrl: PRELOADED_ARTIST_PHOTOS[l] || PRELOADED_ARTIST_PHOTOS[ln] || `/api/artists/photo?name=${encodeURIComponent(name)}`,
+        imageUrl: `/api/artists/photo?name=${encodeURIComponent(name)}`,
       });
       if (result.length >= 12) break;
     }
@@ -152,7 +159,7 @@ export function getRelatedArtistsFor(artistName: string): Array<{ name: string; 
           result.push({
             name,
             slug: toArtistSlug(name),
-            imageUrl: PRELOADED_ARTIST_PHOTOS[l] || PRELOADED_ARTIST_PHOTOS[ln] || `/api/artists/photo?name=${encodeURIComponent(name)}`,
+            imageUrl: `/api/artists/photo?name=${encodeURIComponent(name)}`,
           });
           if (result.length >= 12) break;
         }
@@ -573,9 +580,7 @@ export async function getArtistProfileAndLeaderboard(
 }> {
   const cleanName = artistName.trim();
   const slug = toArtistSlug(cleanName);
-  const photoUrl =
-    PRELOADED_ARTIST_PHOTOS[cleanName.toLowerCase()] ||
-    `/api/artists/photo?name=${encodeURIComponent(cleanName)}`;
+  const photoUrl = await getArtistFacePhoto(cleanName);
 
   let totalPlayers = 0;
   let userRank: number | null = null;

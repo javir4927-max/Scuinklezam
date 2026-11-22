@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { PRELOADED_ARTIST_PHOTOS } from "@/lib/artistPhotos";
+import { PRELOADED_ARTIST_PHOTOS } from "@/lib/artistPhotosCatalog";
 
 interface ArtistSectionProps {
   onOpenMiniQuiz: (topic?: string) => void;

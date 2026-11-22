@@ -3,6 +3,7 @@ import { searchVerifiedTracks, searchItunesCatalog, searchStrictArtistTracks } f
 import { RANKED_CATEGORIES } from "@/lib/rankedTypes";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
 import { normalizeSongTitle, getTrackTopic, isStrictArtistMatch, hasNonLatinCharacters } from "@/lib/songMatching";
+import { getSpotifyAppToken } from "@/lib/spotifyAppToken";
 
 export const dynamic = "force-dynamic";
 
@@ -19,15 +20,15 @@ const NO_CACHE_HEADERS = {
 const THEME_ARTIST_POOLS: Record<string, string[]> = {
   theme_viral_espana: [
     "Quevedo", "Saiko", "JC Reyes", "Omar Montes", "Lucho RK", "La Pantera", "Rels B",
-    "Bad Gyal", "Morad", "Lola Indigo", "Cruz Cafuné", "Delaossa", "Hoke", "Recycled J",
+    "Bad Gyal", "Morad", "Lola Indigo", "Cruzzi", "Delaossa", "Hoke", "Recycled J",
     "Cano", "Cyril Kamer", "Ana Mena", "Aitana", "Beny Jr"
   ],
   theme_top_espana: [
     "Quevedo", "Morad", "Aitana", "Lola Indigo", "Rels B", "Cano", "Saiko", "Omar Montes",
-    "Ana Mena", "Bad Gyal", "JC Reyes", "Beny Jr", "Cruz Cafuné"
+    "Ana Mena", "Bad Gyal", "JC Reyes", "Beny Jr", "Cruzzi"
   ],
   theme_under_espana: [
-    "Lucho RK", "La Pantera", "Hoke", "Cruz Cafuné", "Ill Pekeño", "Ergo Pro", "Delaossa",
+    "Lucho RK", "La Pantera", "Hoke", "Cruzzi", "Ill Pekeño", "Ergo Pro", "Delaossa",
     "Israel B", "Gloosito", "Soto Asa", "Yung Beef", "Kaydy Cain", "Abhir Hathi", "Juicy BAE"
   ],
   theme_reggaeton: [
@@ -46,45 +47,58 @@ const THEME_ARTIST_POOLS: Record<string, string[]> = {
 
 /**
  * Queries a deep pool of 60 to 100 songs for a specific artist combining
- * iTunes Search API (limit=80) and Deezer API (top=50), filtered by primary artist
- * and verified audio previews, deduplicated by normalized title.
+ * iTunes Search API (ES + US), Deezer API (top=50), and Spotify Catalog (limit=30),
+ * filtered by primary artist and verified audio previews, deduplicated by normalized title.
  */
 async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrackItem[]> {
   const clean = artistName.split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)/i)[0].trim();
   const isLatin = !hasNonLatinCharacters(clean);
+  const searchTerms = [clean];
+  if (clean.toLowerCase() === "cruzzi") {
+    searchTerms.push("Cruz Cafune");
+  }
 
-  // 1. Fetch iTunes Search API limit=80 country=ES with attribute=artistTerm
-  const itunesPromise = fetch(
-    `https://itunes.apple.com/search?term=${encodeURIComponent(clean)}&entity=song&attribute=artistTerm&country=ES&limit=80`,
-    {
-      headers: { "User-Agent": "Scuinklezam/1.0" },
-      cache: "no-store",
-    }
-  )
-    .then((r) => r.json())
-    .catch(() => ({ results: [] }));
+  // 1. Fetch iTunes Search API limit=80 country=ES and country=US with attribute=artistTerm
+  const itunesPromises = searchTerms.flatMap((term) => [
+    fetch(
+      `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&entity=song&attribute=artistTerm&country=ES&limit=80`,
+      { headers: { "User-Agent": "Scuinklezam/1.0" }, cache: "no-store" }
+    ).then((r) => r.json()).catch(() => ({ results: [] })),
+    fetch(
+      `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&entity=song&attribute=artistTerm&country=US&limit=80`,
+      { headers: { "User-Agent": "Scuinklezam/1.0" }, cache: "no-store" }
+    ).then((r) => r.json()).catch(() => ({ results: [] })),
+  ]);
 
   // 2. Fetch Deezer Artist Top 50 with cache: 'no-store'
   const deezerPromise = (async () => {
     try {
-      const aRes = await fetch(
-        `https://api.deezer.com/search/artist?q=${encodeURIComponent(clean)}`,
-        {
-          headers: { "User-Agent": "Scuinklezam/1.0" },
-          cache: "no-store",
-        }
-      ).then((r) => r.json());
-
-      const artistId = aRes?.data?.[0]?.id;
-      if (artistId) {
-        const topRes = await fetch(
-          `https://api.deezer.com/artist/${artistId}/top?limit=50`,
+      for (const term of searchTerms) {
+        const aRes = await fetch(
+          `https://api.deezer.com/search/artist?q=${encodeURIComponent(term)}`,
           {
             headers: { "User-Agent": "Scuinklezam/1.0" },
             cache: "no-store",
           }
         ).then((r) => r.json());
-        return (topRes?.data || []) as any[];
+
+        const matched = (aRes?.data || []).find((a: any) =>
+          isStrictArtistMatch(a.name, term) || a.name.toLowerCase() === term.toLowerCase()
+        ) || aRes?.data?.[0];
+
+        const artistId = matched?.id;
+        if (artistId) {
+          const topRes = await fetch(
+            `https://api.deezer.com/artist/${artistId}/top?limit=50`,
+            {
+              headers: { "User-Agent": "Scuinklezam/1.0" },
+              cache: "no-store",
+            }
+          ).then((r) => r.json());
+          if (topRes?.data && Array.isArray(topRes.data) && topRes.data.length > 0) {
+            return topRes.data as any[];
+          }
+        }
       }
     } catch (e) {
       console.warn("[ranked/tracks] Deezer track search failed:", e);
@@ -92,37 +106,63 @@ async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrac
     return [] as any[];
   })();
 
-  const [itData, dzTracks] = await Promise.all([itunesPromise, deezerPromise]);
+  // 3. Fetch Spotify Tracks via App Token
+  const spotifyPromise = (async () => {
+    try {
+      const token = await getSpotifyAppToken();
+      if (!token) return [];
+      const sRes = await fetch(
+        `https://api.spotify.com/v1/search?q=artist:"${encodeURIComponent(clean)}"&type=track&market=ES&limit=30`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        }
+      );
+      if (!sRes.ok) return [];
+      const sData = await sRes.json();
+      return (sData?.tracks?.items || []) as any[];
+    } catch {
+      return [];
+    }
+  })();
+
+  const [itResults, dzTracks, spTracks] = await Promise.all([
+    Promise.all(itunesPromises),
+    deezerPromise,
+    spotifyPromise,
+  ]);
 
   const pool = new Map<string, SpotifyTrackItem>();
 
   // Add iTunes tracks
-  for (const it of itData?.results || []) {
-    if (!it.previewUrl || typeof it.previewUrl !== "string" || !it.previewUrl.startsWith("http")) continue;
-    if (isLatin && (hasNonLatinCharacters(it.trackName || "") || hasNonLatinCharacters(it.artistName || ""))) continue;
-    if (!isStrictArtistMatch(it.artistName, clean)) continue;
-    const itTit = it.trackName || "";
-    if (/karaoke|tribute|cover/i.test(itTit) || /karaoke|tribute/i.test(it.artistName || "")) continue;
+  for (const itData of itResults) {
+    for (const it of itData?.results || []) {
+      if (!it.previewUrl || typeof it.previewUrl !== "string" || !it.previewUrl.startsWith("http")) continue;
+      if (isLatin && (hasNonLatinCharacters(it.trackName || "") || hasNonLatinCharacters(it.artistName || ""))) continue;
+      if (!isStrictArtistMatch(it.artistName, clean)) continue;
+      const itTit = it.trackName || "";
+      if (/karaoke|tribute|cover/i.test(itTit) || /karaoke|tribute/i.test(it.artistName || "")) continue;
 
-    const norm = normalizeSongTitle(itTit);
-    if (!norm) continue;
+      const norm = normalizeSongTitle(itTit);
+      if (!norm) continue;
 
-    if (!pool.has(norm)) {
-      const artwork = it.artworkUrl100
-        ? it.artworkUrl100.replace("100x100bb", "600x600bb")
-        : getFallbackArtwork(itTit, it.artistName || clean);
+      if (!pool.has(norm)) {
+        const artwork = it.artworkUrl100
+          ? it.artworkUrl100.replace("100x100bb", "600x600bb")
+          : getFallbackArtwork(itTit, it.artistName || clean);
 
-      pool.set(norm, {
-        id: `it_${it.trackId}`,
-        uri: `spotify:track:it_${it.trackId}`,
-        title: itTit,
-        artist: it.artistName || clean,
-        album: it.collectionName || "Single",
-        artworkUrl: artwork,
-        spotifyUrl: `https://open.spotify.com/search/${encodeURIComponent(`${itTit} ${clean}`)}`,
-        previewUrl: it.previewUrl,
-        durationMs: it.trackTimeMillis || 30000,
-      });
+        pool.set(norm, {
+          id: `it_${it.trackId}`,
+          uri: `spotify:track:it_${it.trackId}`,
+          title: itTit,
+          artist: it.artistName || clean,
+          album: it.collectionName || "Single",
+          artworkUrl: artwork,
+          spotifyUrl: `https://open.spotify.com/search/${encodeURIComponent(`${itTit} ${clean}`)}`,
+          previewUrl: it.previewUrl,
+          durationMs: it.trackTimeMillis || 30000,
+        });
+      }
     }
   }
 
@@ -154,6 +194,33 @@ async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrac
         spotifyUrl: dz.link || `https://open.spotify.com/search/${encodeURIComponent(`${dzTit} ${clean}`)}`,
         previewUrl: dz.preview,
         durationMs: (dz.duration || 30) * 1000,
+      });
+    }
+  }
+
+  // Add Spotify tracks (if preview_url is available)
+  for (const sp of spTracks) {
+    if (!sp.preview_url || typeof sp.preview_url !== "string" || !sp.preview_url.startsWith("http")) continue;
+    const mainArt = sp.artists?.[0]?.name || clean;
+    if (!isStrictArtistMatch(mainArt, clean)) continue;
+    const spTit = sp.name || "";
+    if (/karaoke|tribute|cover/i.test(spTit)) continue;
+
+    const norm = normalizeSongTitle(spTit);
+    if (!norm) continue;
+
+    if (!pool.has(norm)) {
+      const artwork = sp.album?.images?.[0]?.url || getFallbackArtwork(spTit, clean);
+      pool.set(norm, {
+        id: `sp_${sp.id}`,
+        uri: sp.uri || `spotify:track:${sp.id}`,
+        title: spTit,
+        artist: sp.artists?.map((a: any) => a.name).join(", ") || clean,
+        album: sp.album?.name || "Single",
+        artworkUrl: artwork,
+        spotifyUrl: sp.external_urls?.spotify || `https://open.spotify.com/track/${sp.id}`,
+        previewUrl: sp.preview_url,
+        durationMs: sp.duration_ms || 30000,
       });
     }
   }
