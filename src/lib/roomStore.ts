@@ -1550,6 +1550,8 @@ export async function checkRoomStateProgression(room: RoomState, heartbeats?: Re
 
         if (shouldFinish) {
           room.status = "finished";
+          room.rounds = room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length));
+          room.totalRounds = room.rounds.length;
         } else {
           // Continuous infinite survival generation
           if (room.rounds.length - room.currentRound <= 4) {
@@ -1592,6 +1594,8 @@ export async function checkRoomStateProgression(room: RoomState, heartbeats?: Re
           });
         } else {
           room.status = "finished";
+          room.rounds = room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length));
+          room.totalRounds = room.rounds.length;
         }
       }
       changed = true;
@@ -2605,6 +2609,8 @@ export async function advanceRoomRound(
 
       if (shouldFinish) {
         room.status = "finished";
+        room.rounds = room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length));
+        room.totalRounds = room.rounds.length;
       } else {
         if (room.rounds.length - room.currentRound <= 4) {
           try {
@@ -2646,6 +2652,8 @@ export async function advanceRoomRound(
         });
       } else {
         room.status = "finished";
+        room.rounds = room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length));
+        room.totalRounds = room.rounds.length;
       }
     }
 

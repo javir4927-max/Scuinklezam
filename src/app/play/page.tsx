@@ -48,6 +48,8 @@ import {
   Loader2,
   BarChart3,
   LogOut,
+  Play,
+  Pause,
 } from "lucide-react";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
 import type { RoomState, Player, GameMode, GuessType, RoundOption } from "@/lib/roomStore";
@@ -256,6 +258,7 @@ function PlayArenaContent() {
   const [savedTrackIds, setSavedTrackIds] = useState<Set<string>>(new Set());
   const [savingAll, setSavingAll] = useState<boolean>(false);
   const [isRematching, setIsRematching] = useState<boolean>(false);
+  const [playingPodioUrl, setPlayingPodioUrl] = useState<string | null>(null);
 
   // Audio & Timer Refs
   const clockOffsetRef = useRef<number>(0);
@@ -1041,6 +1044,7 @@ function PlayArenaContent() {
     const myId = playerId;
 
     audioPlayer.stop();
+    setPlayingPodioUrl(null);
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.src = "";
@@ -1609,8 +1613,11 @@ function PlayArenaContent() {
   const handleSaveAllTracks = async () => {
     if (!room?.rounds) return;
     setSavingAll(true);
-    for (const r of room.rounds) {
-      await handleSaveTrack(r.targetTrack);
+    const played = room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length));
+    for (const r of played) {
+      if (r?.targetTrack) {
+        await handleSaveTrack(r.targetTrack);
+      }
     }
     setSavingAll(false);
   };
@@ -1619,6 +1626,8 @@ function PlayArenaContent() {
   const handleRematch = async () => {
     if (!roomCode || isRematching) return;
     setIsRematching(true);
+    audioPlayer.stop();
+    setPlayingPodioUrl(null);
     lastLoadedTrackRef.current = "";
     fallbackAttemptsRef.current.clear();
     try {
@@ -1646,6 +1655,8 @@ function PlayArenaContent() {
   // Reset Room to Lobby (Replay)
   const handleResetRoom = async () => {
     if (!roomCode) return;
+    audioPlayer.stop();
+    setPlayingPodioUrl(null);
     lastLoadedTrackRef.current = "";
     fallbackAttemptsRef.current.clear();
     try {
@@ -3770,66 +3781,129 @@ function PlayArenaContent() {
             </div>
 
             {/* Played Songs Tracklist */}
-            <div className="glass-card rounded-3xl p-6 sm:p-8 border border-emerald-500/20 space-y-4">
-              <h2 className="font-display font-extrabold text-lg text-white">
-                Canciones Jugadas en esta Partida ({room.rounds.length})
-              </h2>
+            {(() => {
+              const playedRounds = room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length));
 
-              <div className="divide-y divide-emerald-500/15">
-                {room.rounds.map((roundItem, idx) => (
-                  <div
-                    key={idx}
-                    className="py-3 flex items-center justify-between gap-4 text-xs"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="font-mono text-zinc-500 w-5">#{idx + 1}</span>
-                      <img
-                        src={roundItem.targetTrack.artworkUrl}
-                        alt={roundItem.targetTrack.title}
-                        referrerPolicy="no-referrer"
-                        onError={(e) => {
-                          e.currentTarget.onerror = null;
-                          e.currentTarget.src = getFallbackArtwork(
-                            roundItem.targetTrack.title,
-                            roundItem.targetTrack.artist
-                          );
-                        }}
-                        className="w-10 h-10 rounded-xl object-cover"
-                      />
-                      <div>
-                        <div className="font-bold text-white text-sm">
-                          {roundItem.targetTrack.title}
+              return (
+                <div className="glass-card rounded-3xl p-6 sm:p-8 border border-emerald-500/20 space-y-4">
+                  <h2 className="font-display font-extrabold text-lg text-white">
+                    Canciones Jugadas en esta Partida ({playedRounds.length})
+                  </h2>
+
+                  <div className="divide-y divide-emerald-500/15">
+                    {playedRounds.map((roundItem, idx) => {
+                      const myAns =
+                        room.answersByRound?.[roundItem.roundNumber]?.[playerId] ||
+                        currentMe?.answersByRound?.[roundItem.roundNumber];
+                      const isPlayingThis = playingPodioUrl === roundItem.targetTrack.previewUrl;
+
+                      return (
+                        <div
+                          key={idx}
+                          className="py-3 flex items-center justify-between gap-3 text-xs"
+                        >
+                          {/* Bloque izquierdo: Índice + Imagen + Textos (min-w-0 flex-1 para no desbordar) */}
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            <span className="font-mono text-zinc-500 w-6 text-center shrink-0 text-xs">
+                              #{idx + 1}
+                            </span>
+                            <img
+                              src={roundItem.targetTrack.artworkUrl}
+                              alt={roundItem.targetTrack.title}
+                              referrerPolicy="no-referrer"
+                              onError={(e) => {
+                                e.currentTarget.onerror = null;
+                                e.currentTarget.src = getFallbackArtwork(
+                                  roundItem.targetTrack.title,
+                                  roundItem.targetTrack.artist
+                                );
+                              }}
+                              className="w-11 h-11 rounded-xl object-cover shrink-0 border border-emerald-500/20 bg-emerald-950"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="font-bold text-white text-sm truncate flex items-center gap-2">
+                                <span className="truncate">{roundItem.targetTrack.title}</span>
+                                {myAns?.isCorrect ? (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shrink-0">
+                                    +{myAns.pointsEarned} pts
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 shrink-0">
+                                    0 pts
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-zinc-400 text-xs truncate mt-0.5 flex items-center gap-1">
+                                <span className="truncate">{roundItem.targetTrack.artist}</span>
+                                {roundItem.contributedByPlayerName && (
+                                  <span className="text-zinc-500 shrink-0 text-[11px] font-medium">
+                                    · De {roundItem.contributedByPlayerName}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Bloque derecho: Botón Play/Pause + Botón Guardar + Botón Spotify (shrink-0) */}
+                          <div className="flex items-center gap-2 shrink-0">
+                            {roundItem.targetTrack.previewUrl && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const url = roundItem.targetTrack.previewUrl;
+                                  if (!url) return;
+                                  if (isPlayingThis) {
+                                    audioPlayer.stop();
+                                    setPlayingPodioUrl(null);
+                                  } else {
+                                    audioPlayer.playTrack(url);
+                                    setPlayingPodioUrl(url);
+                                  }
+                                }}
+                                className={`p-2 rounded-xl transition cursor-pointer shrink-0 ${
+                                  isPlayingThis
+                                    ? "bg-goblinLime text-black font-bold shadow-md shadow-emerald-500/30 scale-105"
+                                    : "bg-white/[0.06] hover:bg-white/[0.12] text-zinc-300 hover:text-white"
+                                }`}
+                                title={isPlayingThis ? "Pausar preescucha" : "Escuchar fragmento de 30s"}
+                              >
+                                {isPlayingThis ? (
+                                  <Pause className="w-3.5 h-3.5 fill-current" />
+                                ) : (
+                                  <Play className="w-3.5 h-3.5 fill-current ml-0.5" />
+                                )}
+                              </button>
+                            )}
+
+                            <button
+                              onClick={() => handleSaveTrack(roundItem.targetTrack)}
+                              className="p-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-emerald-400 transition cursor-pointer shrink-0"
+                              title="Guardar en Spotify"
+                            >
+                              {savedTrackIds.has(roundItem.targetTrack.id) ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              ) : (
+                                <Heart className="w-3.5 h-3.5 text-rose-400" />
+                              )}
+                            </button>
+
+                            <a
+                              href={roundItem.targetTrack.spotifyUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-3 py-1.5 rounded-xl bg-[#1DB954]/20 hover:bg-[#1DB954]/30 text-[#1DB954] font-bold flex items-center gap-1 transition shrink-0"
+                            >
+                              <span>Spotify</span>
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                          </div>
                         </div>
-                        <div className="text-zinc-400">{roundItem.targetTrack.artist}</div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => handleSaveTrack(roundItem.targetTrack)}
-                        className="p-2 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-emerald-400"
-                        title="Guardar en Spotify"
-                      >
-                        {savedTrackIds.has(roundItem.targetTrack.id) ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        ) : (
-                          <Heart className="w-3.5 h-3.5 text-rose-400" />
-                        )}
-                      </button>
-                      <a
-                        href={roundItem.targetTrack.spotifyUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-3 py-1.5 rounded-lg bg-[#1DB954]/20 hover:bg-[#1DB954]/30 text-[#1DB954] font-bold flex items-center gap-1"
-                      >
-                        <span>Spotify</span>
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </a>
-                    </div>
+                      );
+                    })}
                   </div>
-                ))}
-              </div>
-            </div>
+                </div>
+              );
+            })()}
           </div>
         )}
       </main>
