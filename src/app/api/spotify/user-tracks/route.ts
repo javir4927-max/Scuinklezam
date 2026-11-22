@@ -206,7 +206,7 @@ export async function POST(request: Request) {
           const dUrl = `https://api.deezer.com/search/track?q=${encodeURIComponent(cleanName)}&limit=10`;
           const dRes = await fetch(dUrl, {
             headers: { "User-Agent": "Scuinklezam/1.0" },
-            next: { revalidate: 3600 },
+            cache: "no-store",
           });
           if (dRes.ok) {
             const dData = await dRes.json();

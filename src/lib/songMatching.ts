@@ -171,6 +171,7 @@ export function isStrictArtistMatch(foundArtist: string, expectedArtist: string)
   const nExpected = deepNormalize(expectedArtist);
   if (!nFound || !nExpected) return false;
   if (nFound === nExpected) return true;
+  if (nFound.replace(/\s+/g, "") === nExpected.replace(/\s+/g, "")) return true;
 
   // Split both by collaboration separators
   const foundList = foundArtist
@@ -191,6 +192,13 @@ export function isStrictArtistMatch(foundArtist: string, expectedArtist: string)
   if (pFound === pExpected) return true;
   if (foundList.includes(pExpected)) return true;
   if (expList.includes(pFound)) return true;
+
+  const strip = (s: string) => s.replace(/\s+/g, "");
+  for (const f of foundList) {
+    for (const e of expList) {
+      if (f === e || strip(f) === strip(e)) return true;
+    }
+  }
 
   const wordsFound = nFound.split(" ").filter(Boolean);
   const wordsExp = nExpected.split(" ").filter(Boolean);

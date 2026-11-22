@@ -251,8 +251,7 @@ function PlayArenaContent() {
   const scorePopupTimerRef = useRef<NodeJS.Timeout | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [showAudioUnlockButton, setShowAudioUnlockButton] = useState<boolean>(false);
-  const [audioUnavailable, setAudioUnavailable] = useState<boolean>(false);
-  const hasRescuedAudioRef = useRef<string | null>(null);
+  const fallbackAttemptsRef = useRef<Map<string, number>>(new Map());
   const hasUnlockedAudioRef = useRef<boolean>(false);
   const { volume: globalVolume, muted: isGlobalMutedState } = useGlobalVolume();
   const [savedTrackIds, setSavedTrackIds] = useState<Set<string>>(new Set());
@@ -357,15 +356,14 @@ function PlayArenaContent() {
     const artist = target?.artist || "";
     if (!title) return;
     const rescueKey = `${title}-${artist}`;
-    if (hasRescuedAudioRef.current === rescueKey) {
-      setAudioUnavailable(true);
-      return;
-    }
-    hasRescuedAudioRef.current = rescueKey;
+    const attempts = fallbackAttemptsRef.current.get(rescueKey) || 0;
+    if (attempts >= 2) return;
+    fallbackAttemptsRef.current.set(rescueKey, attempts + 1);
 
     try {
       const res = await fetch(
-        `/api/audio/resolve?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist)}`
+        `/api/audio/resolve?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist)}&t=${Date.now()}`,
+        { cache: "no-store" }
       );
       if (!res.ok) throw new Error("Resolve failed");
       const data = await res.json();
@@ -374,17 +372,15 @@ function PlayArenaContent() {
         audio.pause();
         audio.currentTime = 0;
         audio.src = data.previewUrl;
-        audio.muted = isGlobalMutedState;
-        audio.volume = isGlobalMutedState ? 0 : Math.max(0.05, globalVolume);
+        audio.muted = isGlobalMutedState || globalVolume === 0;
+        audio.volume = isGlobalMutedState ? 0 : globalVolume;
+        audio.load();
         audio.play().then(() => {
           setShowAudioUnlockButton(false);
-          setAudioUnavailable(false);
         }).catch((err) => {
-          if (err.name === "AbortError") return;
-          if (err.name === "NotAllowedError") {
+          if (err?.name === "AbortError") return;
+          if (err?.name === "NotAllowedError") {
             setShowAudioUnlockButton(true);
-          } else {
-            setAudioUnavailable(true);
           }
         });
         return;
@@ -392,7 +388,6 @@ function PlayArenaContent() {
     } catch (err) {
       console.warn("[Audio] Fallback resolve failed:", err);
     }
-    setAudioUnavailable(true);
   };
 
   // Artist Autocomplete Debounce (250ms)
@@ -868,7 +863,6 @@ function PlayArenaContent() {
       setSelectedOption(null);
       setSelectedFriend(null);
       setScorePopup(null);
-      setAudioUnavailable(false);
 
       const previewUrl = currentRoundData?.targetTrack?.previewUrl;
       const trackKey = `${room.currentRound}-${previewUrl || ""}`;
@@ -889,7 +883,7 @@ function PlayArenaContent() {
           if (audioRef.current && (audioRef.current.readyState === 0 || audioRef.current.paused)) {
             handleAudioFallback(currentRoundData);
           }
-        }, 3000);
+        }, 3500);
 
         audio.pause();
         audio.currentTime = 0;
@@ -1776,7 +1770,6 @@ function PlayArenaContent() {
             stallTimerRef.current = null;
           }
           setShowAudioUnlockButton(false);
-          setAudioUnavailable(false);
         }}
         className="hidden"
       />
@@ -3175,12 +3168,6 @@ function PlayArenaContent() {
                     <Volume2 className="w-3.5 h-3.5 shrink-0" />
                     <span>Tocar para activar sonido</span>
                   </button>
-                )}
-
-                {audioUnavailable && (
-                  <span className="text-[11px] font-semibold text-amber-400/90 bg-amber-950/60 border border-amber-500/30 px-2 py-0.5 rounded-lg shrink-0">
-                    ⚠️ Audio no disponible en este fragmento
-                  </span>
                 )}
 
                 {/* Audio Equalizer visualizer animation */}

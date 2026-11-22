@@ -480,17 +480,21 @@ export function fisherYatesShuffle<T>(array: T[]): T[] {
 }
 
 /**
- * Fast HEAD validation for audio URLs (1.5s timeout).
- * Returns true if status is 200 or 206 (partial content streaming).
+ * Fast stream validation for audio URLs (2s timeout) using HTTP GET with Range: bytes=0-1.
+ * Confirms real bytes download and excludes text/html error pages.
+ * Returns true if status is 200 or 206 and content-type is not text/html.
  */
 export async function validateAudioUrl(url: string | null | undefined): Promise<boolean> {
-  if (!url || typeof url !== "string" || !url.startsWith("https://")) return false;
+  if (!url || typeof url !== "string" || !url.startsWith("http")) return false;
   try {
     const res = await fetch(url, {
-      method: "HEAD",
-      signal: AbortSignal.timeout(1500),
+      method: "GET",
+      headers: { Range: "bytes=0-1", "User-Agent": "Scuinklezam/1.0" },
+      signal: AbortSignal.timeout(2000),
     });
-    return res.status === 200 || res.status === 206 || res.ok;
+    const contentType = (res.headers.get("content-type") || "").toLowerCase();
+    if (contentType.includes("text/html")) return false;
+    return res.status === 200 || res.status === 206;
   } catch {
     return false;
   }
@@ -498,36 +502,134 @@ export async function validateAudioUrl(url: string | null | undefined): Promise<
 
 /**
  * Ensures a track has a valid, working audio preview URL.
- * Prioritizes Apple iTunes permanent URLs, validates with HEAD,
- * and falls back to resolveAudioStream if stalled or broken.
+ * Validates with Range: bytes=0-1. If broken or missing, refreshes via resolveAudioStream.
+ * Returns null if after all attempts the audio cannot be verified with 200/206.
  */
-export async function ensureVerifiedTrackAudio(track: SpotifyTrackItem): Promise<SpotifyTrackItem> {
+export async function ensureVerifiedTrackAudio(track: SpotifyTrackItem): Promise<SpotifyTrackItem | null> {
+  if (!track || !track.title) return null;
   const result = { ...track };
 
-  // 1. If not iTunes permanent link, resolve fresh Apple stream
-  if (!result.previewUrl || !result.previewUrl.includes("apple.com")) {
-    try {
-      const fresh = await resolveAudioStream(result.title, result.artist);
-      if (fresh?.previewUrl && fresh.previewUrl.includes("apple.com")) {
-        result.previewUrl = fresh.previewUrl;
-        if (fresh.artworkUrl) result.artworkUrl = fresh.artworkUrl;
-      }
-    } catch {}
+  // 1. If track already has previewUrl, validate it with real stream test
+  if (result.previewUrl && typeof result.previewUrl === "string" && result.previewUrl.startsWith("http")) {
+    const isValid = await validateAudioUrl(result.previewUrl);
+    if (isValid) {
+      return result;
+    }
   }
 
-  // 2. Validate URL via fast HEAD check
-  const isValid = await validateAudioUrl(result.previewUrl);
-  if (!isValid) {
-    try {
-      const fresh = await resolveAudioStream(result.title, result.artist);
-      if (fresh?.previewUrl) {
+  // 2. If missing or invalid, resolve fresh stream via resolveAudioStream (iTunes ES/US + Deezer no-store)
+  try {
+    const fresh = await resolveAudioStream(result.title, result.artist);
+    if (fresh?.previewUrl) {
+      const isValid = await validateAudioUrl(fresh.previewUrl);
+      if (isValid) {
         result.previewUrl = fresh.previewUrl;
         if (fresh.artworkUrl) result.artworkUrl = fresh.artworkUrl;
+        return result;
       }
-    } catch {}
+    }
+  } catch {}
+
+  // If audio cannot be verified, strictly discard by returning null
+  return null;
+}
+
+/**
+ * Iterates through candidate pool in batches of 5 and collects tracks with 100% verified live audio.
+ * Discards any candidate whose audio fails, automatically pulling the next candidate until
+ * neededCount is satisfied or pool is exhausted.
+ */
+export async function collectVerifiedTargets(
+  candidates: SpotifyTrackItem[],
+  neededCount: number,
+  fallbackPool: SpotifyTrackItem[] = FALLBACK_SPOTIFY_TRACKS
+): Promise<SpotifyTrackItem[]> {
+  const verified: SpotifyTrackItem[] = [];
+  const seenKeys = new Set<string>();
+
+  const pool = [...candidates];
+  for (const fb of fallbackPool) {
+    pool.push(fb);
   }
 
-  return result;
+  const batchSize = 5;
+  let index = 0;
+
+  while (verified.length < neededCount && index < pool.length) {
+    const chunk = pool.slice(index, index + batchSize);
+    index += batchSize;
+
+    const validatedChunk = await Promise.all(
+      chunk.map(async (t) => {
+        if (!t || !t.title) return null;
+        const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${(t.artist || "").toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+        if (seenKeys.has(key)) return null;
+        const checked = await ensureVerifiedTrackAudio(t);
+        if (checked) {
+          seenKeys.add(key);
+          return checked;
+        }
+        return null;
+      })
+    );
+
+    for (const item of validatedChunk) {
+      if (item && verified.length < neededCount) {
+        verified.push(item);
+      }
+    }
+  }
+
+  return verified;
+}
+
+/**
+ * Iterates through candidate target objects in batches of 5 and collects items with 100% verified live audio.
+ * Preserves metadata such as playerId, playerName, etc.
+ */
+export async function collectVerifiedTargetObjects<T extends { track: SpotifyTrackItem }>(
+  candidates: T[],
+  neededCount: number,
+  fallbackPool: SpotifyTrackItem[] = FALLBACK_SPOTIFY_TRACKS
+): Promise<T[]> {
+  const verified: T[] = [];
+  const seenKeys = new Set<string>();
+
+  const pool = [...candidates];
+  for (const fb of fallbackPool) {
+    pool.push({ track: fb } as T);
+  }
+
+  const batchSize = 5;
+  let index = 0;
+
+  while (verified.length < neededCount && index < pool.length) {
+    const chunk = pool.slice(index, index + batchSize);
+    index += batchSize;
+
+    const validatedChunk = await Promise.all(
+      chunk.map(async (item) => {
+        const t = item?.track;
+        if (!t || !t.title) return null;
+        const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${(t.artist || "").toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+        if (seenKeys.has(key)) return null;
+        const checked = await ensureVerifiedTrackAudio(t);
+        if (checked) {
+          seenKeys.add(key);
+          return { ...item, track: checked };
+        }
+        return null;
+      })
+    );
+
+    for (const validItem of validatedChunk) {
+      if (validItem && verified.length < neededCount) {
+        verified.push(validItem);
+      }
+    }
+  }
+
+  return verified;
 }
 
 /**
@@ -575,10 +677,8 @@ export async function buildRoundsForTheme(themeQuery: string, totalRounds = 10):
     }
   }
 
-  const shuffledTargets = fisherYatesShuffle(uniquePool).slice(0, totalRounds);
-
-  // Parallel verification in chunks of 5
-  const verifiedTargets = await processInChunks(shuffledTargets, 5, ensureVerifiedTrackAudio);
+  const shuffledTargets = fisherYatesShuffle(uniquePool);
+  const verifiedTargets = await collectVerifiedTargets(shuffledTargets, totalRounds, uniquePool);
 
   const usedDistractorKeys = new Set<string>();
   const rounds: RoundData[] = await Promise.all(
@@ -699,10 +799,8 @@ export async function generateSurvivalBatch(room: RoomState, count: number = 10)
     }
   }
 
-  const shuffledTargets = fisherYatesShuffle(availableTracks).slice(0, count);
-
-  // Parallel target audio verification in chunks of 5
-  const verifiedTargets = await processInChunks(shuffledTargets, 5, ensureVerifiedTrackAudio);
+  const shuffledCandidates = fisherYatesShuffle(availableTracks);
+  const verifiedTargets = await collectVerifiedTargets(shuffledCandidates, count, candidatePool);
 
   // Parallel distractor generation
   const newRounds: RoundData[] = await Promise.all(
@@ -759,10 +857,8 @@ export async function buildRoundsFromTracks(tracks: SpotifyTrackItem[], totalRou
   const valid = tracks.filter((t) => t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl);
   const catalog = valid.length >= 4 ? valid : FALLBACK_SPOTIFY_TRACKS;
   const shuffled = fisherYatesShuffle(catalog);
-  const count = Math.min(totalRounds, shuffled.length);
-  const targetsSlice = shuffled.slice(0, count);
 
-  const verifiedTargets = await processInChunks(targetsSlice, 5, ensureVerifiedTrackAudio);
+  const verifiedTargets = await collectVerifiedTargets(shuffled, totalRounds, catalog);
   const usedDistractorKeys = new Set<string>();
 
   const rounds: RoundData[] = await Promise.all(
@@ -1799,8 +1895,8 @@ export async function startRoomGame(
         }
       }
       const validPool = topPool.length >= room.totalRounds ? topPool : [...topPool, ...FALLBACK_SPOTIFY_TRACKS];
-      const shuffledTargets = fisherYatesShuffle(validPool).slice(0, room.totalRounds);
-      const verifiedTargets = await processInChunks(shuffledTargets, 5, ensureVerifiedTrackAudio);
+      const shuffledTargets = fisherYatesShuffle(validPool);
+      const verifiedTargets = await collectVerifiedTargets(shuffledTargets, room.totalRounds, validPool);
       const usedDistractorKeys = new Set<string>();
 
       const rounds: RoundData[] = await Promise.all(
@@ -1857,8 +1953,8 @@ export async function startRoomGame(
         }
       }
       const validPool = randomPool.length >= room.totalRounds ? randomPool : [...randomPool, ...FALLBACK_SPOTIFY_TRACKS];
-      const shuffledTargets = fisherYatesShuffle(validPool).slice(0, room.totalRounds);
-      const verifiedTargets = await processInChunks(shuffledTargets, 5, ensureVerifiedTrackAudio);
+      const shuffledTargets = fisherYatesShuffle(validPool);
+      const verifiedTargets = await collectVerifiedTargets(shuffledTargets, room.totalRounds, validPool);
       const usedDistractorKeys = new Set<string>();
 
       const rounds: RoundData[] = await Promise.all(
@@ -1985,15 +2081,17 @@ export async function startRoomGame(
       }
 
       const randomizedTargets = fisherYatesShuffle(validUniquePool);
-      const roundsToGenerate = Math.min(room.totalRounds, randomizedTargets.length);
-      const targetsSlice = randomizedTargets.slice(0, roundsToGenerate);
       const poolTracks = validUniquePool.map((u) => u.track);
-      const verifiedTargets = await processInChunks(targetsSlice.map((ts) => ts.track), 5, ensureVerifiedTrackAudio);
+      const verifiedTargetObjects = await collectVerifiedTargetObjects(
+        randomizedTargets,
+        room.totalRounds,
+        poolTracks
+      );
       const usedDistractorKeys = new Set<string>();
 
       const rounds: RoundData[] = await Promise.all(
-        verifiedTargets.map(async (target, i) => {
-          const item = targetsSlice[i];
+        verifiedTargetObjects.map(async (item, i) => {
+          const target = item.track;
           const targetTopic = getTrackTopic(target);
           const roundNumber = i + 1;
 

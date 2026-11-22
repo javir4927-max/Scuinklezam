@@ -7,6 +7,7 @@ import {
   deepNormalize,
   getTrackTopic,
   hasNonLatinCharacters,
+  ARTIST_COLLAB_REGEX,
 } from "./songMatching";
 
 // Bypass local Windows certificate verification issues for iTunes and Spotify APIs
@@ -23,8 +24,8 @@ export interface AudioStreamResolution {
 }
 
 /**
- * Searches iTunes API (country=ES) and falls back to Deezer API to guarantee
- * a verified 30s playable audio stream and HD 600x600 artwork.
+ * Searches iTunes API (country=ES, then country=US) and falls back to Deezer API (cache: "no-store")
+ * to guarantee a verified 30s playable audio stream and HD 600x600 artwork.
  * STRICT: Guarantees that the audio belongs EXACTLY to the requested artist and title.
  * Unmatched audio is discarded (returns null) so no mismatched audio ever plays.
  */
@@ -33,81 +34,133 @@ export async function resolveAudioStream(
   artist: string
 ): Promise<AudioStreamResolution | null> {
   const cleanTitle = deepNormalize(title);
-  const mainArtist = (artist || "").split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)|(\s+with\s+)|(\s+x\s+)/i)[0].trim();
-  const query = `${cleanTitle} ${mainArtist}`.trim();
+  if (!cleanTitle) return null;
 
-  // 1. iTunes Search API (country=ES, limit=10) with 3500ms timeout
-  try {
-    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&entity=song&country=ES&limit=10`;
-    const res = await fetch(url, {
-      headers: { "User-Agent": "Scuinklezam/1.0" },
-      signal: AbortSignal.timeout(3500),
-      next: { revalidate: 3600 },
-    });
+  // Split all credited artists (e.g. "Madvillain, Madlib, MF DOOM" -> ["Madvillain", "Madlib", "MF DOOM"])
+  const artists = (artist || "")
+    .split(ARTIST_COLLAB_REGEX)
+    .map((a) => a.trim())
+    .filter(Boolean);
+  const mainArtist = artists[0] || (artist || "").trim();
 
-    if (res.ok) {
-      const data = await res.json();
-      if (data.results && Array.isArray(data.results)) {
-        for (const item of data.results) {
-          if (!item.previewUrl || typeof item.previewUrl !== "string" || !item.previewUrl.startsWith("http")) {
-            continue;
-          }
+  // Helper to validate and extract an iTunes result
+  const checkItunesMatch = (item: any): AudioStreamResolution | null => {
+    if (!item?.previewUrl || typeof item.previewUrl !== "string" || !item.previewUrl.startsWith("http")) {
+      return null;
+    }
+    const artistMatches = isStrictArtistMatch(item.artistName, artist);
+    const titleMatches = matchSongTitleStrict(item.trackName, title);
+    if (artistMatches && titleMatches) {
+      const art = item.artworkUrl100
+        ? item.artworkUrl100.replace("100x100bb", "600x600bb")
+        : getFallbackArtwork(title, artist);
+      return {
+        previewUrl: item.previewUrl,
+        artworkUrl: art,
+        genre: item.primaryGenreName,
+      };
+    }
+    return null;
+  };
 
-          // Strict match: must match both artist AND song title with high precision
-          const artistMatches = isStrictArtistMatch(item.artistName, artist);
-          const titleMatches = matchSongTitleStrict(item.trackName, title);
+  // Helper to validate and extract a Deezer result
+  const checkDeezerMatch = (dItem: any): AudioStreamResolution | null => {
+    if (!dItem?.preview || typeof dItem.preview !== "string" || !dItem.preview.startsWith("http")) {
+      return null;
+    }
+    const artistMatches = isStrictArtistMatch(dItem.artist?.name, artist);
+    const titleMatches = matchSongTitleStrict(dItem.title, title);
+    if (artistMatches && titleMatches) {
+      const dArt = dItem.album?.cover_xl || dItem.album?.cover_big || getFallbackArtwork(title, artist);
+      return {
+        previewUrl: dItem.preview,
+        artworkUrl: dArt,
+      };
+    }
+    return null;
+  };
 
-          if (artistMatches && titleMatches) {
-            const art = item.artworkUrl100
-              ? item.artworkUrl100.replace("100x100bb", "600x600bb")
-              : getFallbackArtwork(title, artist);
-
-            return {
-              previewUrl: item.previewUrl,
-              artworkUrl: art,
-              genre: item.primaryGenreName,
-            };
-          }
+  // Helper to query iTunes by term and country (2500ms timeout)
+  const queryItunes = async (term: string, country: "ES" | "US"): Promise<AudioStreamResolution | null> => {
+    try {
+      const url = `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&media=music&entity=song&country=${country}&limit=10`;
+      const res = await fetch(url, {
+        headers: { "User-Agent": "Scuinklezam/1.0" },
+        signal: AbortSignal.timeout(2500),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        for (const item of data.results || []) {
+          const match = checkItunesMatch(item);
+          if (match) return match;
         }
       }
-    }
-  } catch (err) {
-    console.warn("[resolveAudioStream] iTunes search failed:", err);
+    } catch {}
+    return null;
+  };
+
+  // Helper to query Deezer with cache: "no-store" (2500ms timeout)
+  const queryDeezer = async (dQuery: string, limit = 8): Promise<AudioStreamResolution | null> => {
+    try {
+      const dUrl = `https://api.deezer.com/search/track?q=${encodeURIComponent(dQuery)}&limit=${limit}`;
+      const dRes = await fetch(dUrl, {
+        headers: { "User-Agent": "Scuinklezam/1.0" },
+        signal: AbortSignal.timeout(2500),
+        cache: "no-store",
+      });
+      if (dRes.ok) {
+        const dData = await dRes.json();
+        for (const dItem of dData.data || []) {
+          const match = checkDeezerMatch(dItem);
+          if (match) return match;
+        }
+      }
+    } catch {}
+    return null;
+  };
+
+  const primaryQuery = `${cleanTitle} ${mainArtist}`.trim();
+
+  // 1. iTunes ES Search
+  let result = await queryItunes(primaryQuery, "ES");
+  if (result) return result;
+
+  // If first query didn't find anything and a collaborator exists, try with collaborator in ES
+  if (artists.length > 1) {
+    const secondaryQuery = `${cleanTitle} ${artists[1]}`.trim();
+    result = await queryItunes(secondaryQuery, "ES");
+    if (result) return result;
   }
 
-  // 2. Deezer API Fallback (limit=6) with 3500ms timeout
-  try {
-    const dUrl = `https://api.deezer.com/search/track?q=${encodeURIComponent(query)}&limit=6`;
-    const dRes = await fetch(dUrl, {
-      headers: { "User-Agent": "Scuinklezam/1.0" },
-      signal: AbortSignal.timeout(3500),
-      next: { revalidate: 3600 },
-    });
+  // 2. iTunes US Search (essential for US / underground hip-hop like MF DOOM / Madvillain)
+  result = await queryItunes(primaryQuery, "US");
+  if (result) return result;
 
-    if (dRes.ok) {
-      const dData = await dRes.json();
-      if (dData.data && Array.isArray(dData.data)) {
-        for (const dItem of dData.data) {
-          if (!dItem.preview || typeof dItem.preview !== "string" || !dItem.preview.startsWith("http")) {
-            continue;
-          }
+  if (artists.length > 1) {
+    const secondaryQuery = `${cleanTitle} ${artists[1]}`.trim();
+    result = await queryItunes(secondaryQuery, "US");
+    if (result) return result;
+  }
 
-          // Strict match on Deezer as well
-          const artistMatches = isStrictArtistMatch(dItem.artist?.name, artist);
-          const titleMatches = matchSongTitleStrict(dItem.title, title);
+  if (artists.length > 2) {
+    const thirdQuery = `${cleanTitle} ${artists[2]}`.trim();
+    result = await queryItunes(thirdQuery, "US");
+    if (result) return result;
+  }
 
-          if (artistMatches && titleMatches) {
-            const dArt = dItem.album?.cover_xl || dItem.album?.cover_big || getFallbackArtwork(title, artist);
-            return {
-              previewUrl: dItem.preview,
-              artworkUrl: dArt,
-            };
-          }
-        }
-      }
-    }
-  } catch (dErr) {
-    console.warn("[resolveAudioStream] Deezer search failed:", dErr);
+  // 3. Deezer API Fallback with cache: "no-store"
+  // 3a. Direct query
+  result = await queryDeezer(primaryQuery, 8);
+  if (result) return result;
+
+  // 3b. Advanced syntax: artist:"..." track:"..."
+  result = await queryDeezer(`artist:"${mainArtist}" track:"${cleanTitle}"`, 6);
+  if (result) return result;
+
+  // 3c. Try collaborator on Deezer
+  if (artists.length > 1) {
+    result = await queryDeezer(`artist:"${artists[1]}" track:"${cleanTitle}"`, 6);
+    if (result) return result;
   }
 
   // If no exact match found, reject audio to prevent playing the wrong song
