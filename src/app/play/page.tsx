@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useTransition, Suspense } from "react";
-import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { playSynthNote } from "@/lib/audio";
 import { playCorrectSound, playWrongSound } from "@/lib/soundEffects";
@@ -840,6 +839,17 @@ function PlayArenaContent() {
 
     const currentRoundData = room.rounds[room.currentRound - 1];
 
+    // Status changed to Lobby
+    if (room.status === "lobby" && prevStatusRef.current !== "lobby") {
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      audioPlayer.stop();
+      lastLoadedTrackRef.current = "";
+      fallbackAttemptsRef.current.clear();
+      setOptionImageErrors({});
+    }
+
     // Status changed to Countdown
     if (room.status === "countdown" && prevStatusRef.current !== "countdown") {
       if (audioRef.current) {
@@ -1609,6 +1619,8 @@ function PlayArenaContent() {
   const handleRematch = async () => {
     if (!roomCode || isRematching) return;
     setIsRematching(true);
+    lastLoadedTrackRef.current = "";
+    fallbackAttemptsRef.current.clear();
     try {
       const res = await fetch(`/api/rooms/${roomCode}`, {
         method: "PATCH",
@@ -1634,6 +1646,8 @@ function PlayArenaContent() {
   // Reset Room to Lobby (Replay)
   const handleResetRoom = async () => {
     if (!roomCode) return;
+    lastLoadedTrackRef.current = "";
+    fallbackAttemptsRef.current.clear();
     try {
       const res = await fetch(`/api/rooms/${roomCode}`, {
         method: "PATCH",
@@ -3739,7 +3753,7 @@ function PlayArenaContent() {
                 ) : (
                   <div className="w-full text-center py-1">
                     <span className="text-xs text-zinc-400 font-medium">
-                      Esperando a que el anfitrión repita la partida o vuelva a la sala…
+                      Esperando al anfitrión para volver a la sala…
                     </span>
                   </div>
                 )}
@@ -3752,13 +3766,6 @@ function PlayArenaContent() {
                   <Heart className="w-3.5 h-3.5 text-rose-400 fill-current" />
                   <span>{savingAll ? "Guardando..." : "Guardar Canciones en Spotify"}</span>
                 </button>
-
-                <Link
-                  href="/"
-                  className="px-5 py-3.5 rounded-2xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 font-bold text-xs transition"
-                >
-                  Volver al Inicio
-                </Link>
               </div>
             </div>
 
