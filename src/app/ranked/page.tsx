@@ -57,6 +57,18 @@ interface AnswerHistoryItem {
   chosenTitle: string;
 }
 
+function toLocalArtistSlug(name: string): string {
+  if (!name) return "artist";
+  return (
+    name
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "artist"
+  );
+}
+
 export default function RankedArenaPage() {
   const [activeTab, setActiveTab] = useState<"artist" | "theme">("artist");
   const [searchFilter, setSearchFilter] = useState<string>("");
@@ -1224,17 +1236,21 @@ export default function RankedArenaPage() {
                     <div className="pt-2 w-full">
                       <button
                         type="button"
-                        onClick={() =>
+                        onClick={() => {
+                          const canonical = (categories || RANKED_CATEGORIES).find(
+                            (c) => c.kind === "artist" && toLocalArtistSlug(c.query || c.name) === artistSheetData.slug
+                          );
+                          const chosenId = canonical ? canonical.id : `artist_${artistSheetData.slug}`;
                           handleStartRankedRun({
-                            id: `artist_${artistSheetData.slug}`,
-                            name: artistSheetData.artistName,
+                            id: chosenId,
+                            name: canonical ? canonical.name : artistSheetData.artistName,
                             kind: "artist",
-                            description: `Quiz de ${artistSheetData.artistName}`,
-                            imageUrl: artistSheetData.photoUrl,
-                            query: artistSheetData.artistName,
-                            playerCount: artistSheetData.userStats.totalPlayers,
-                          })
-                        }
+                            description: canonical ? canonical.description : `Quiz de ${artistSheetData.artistName}`,
+                            imageUrl: artistSheetData.photoUrl || (canonical ? canonical.imageUrl : ""),
+                            query: canonical ? canonical.query : artistSheetData.artistName,
+                            playerCount: canonical ? canonical.playerCount : artistSheetData.userStats.totalPlayers,
+                          });
+                        }}
                         className="w-full h-12 md:w-auto px-8 rounded-full bg-gradient-to-r from-emerald-500 via-emerald-600 to-lime-400 hover:opacity-95 text-black font-black text-base shadow-lg shadow-emerald-900/40 transition hover:scale-105 active:scale-95 flex items-center justify-center gap-2.5 cursor-pointer"
                       >
                         <Play className="w-4 h-4 fill-current" />
@@ -1747,8 +1763,8 @@ export default function RankedArenaPage() {
               ))}
             </div>
 
-            {/* Categories Grid - Desktop View (md:grid) - Poster Editorial Style */}
-            <div className="hidden md:grid md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
+            {/* Categories Grid - Desktop View (md:grid) - Compact Editorial Cards */}
+            <div className="hidden md:grid md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3.5">
               {filteredCategories.map((cat) => (
                 <div
                   key={cat.id}
@@ -1759,7 +1775,7 @@ export default function RankedArenaPage() {
                       handleStartRankedRun(cat);
                     }
                   }}
-                  className="group relative rounded-3xl overflow-hidden border border-emerald-500/20 hover:border-goblinLime/70 transition-all duration-300 shadow-xl hover:shadow-2xl hover:shadow-emerald-500/10 cursor-pointer aspect-[4/5] flex flex-col justify-between p-4 sm:p-5 bg-[#08120B]"
+                  className="group relative rounded-2xl overflow-hidden border border-emerald-500/20 hover:border-goblinLime/70 transition-all duration-300 shadow-md hover:shadow-xl hover:shadow-emerald-500/10 cursor-pointer h-48 flex flex-col justify-between p-3 bg-[#08120B]"
                 >
                   {/* Poster Image Background with Smooth Zoom on Hover */}
                   <div
@@ -1771,10 +1787,13 @@ export default function RankedArenaPage() {
                   <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-transparent" />
 
                   {/* Top Badges */}
-                  <div className="relative z-10 flex items-center justify-between gap-2">
-                    <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold backdrop-blur-md bg-black/60 border border-white/10 text-emerald-300 flex items-center gap-1.5 shadow">
-                      <Users className="w-3 h-3 text-goblinLime" />
-                      <span>{cat.playerCount}</span>
+                  <div className="relative z-10 flex items-center justify-between gap-1.5">
+                    <span
+                      className="px-2 py-0.5 rounded-full text-[10px] font-semibold backdrop-blur-md bg-black/60 border border-white/10 text-emerald-300 flex items-center gap-1 shadow"
+                      title={`${cat.playerCount} ${cat.playerCount === 1 ? "partida jugada" : "partidas jugadas"}`}
+                    >
+                      <Users className="w-3 h-3 text-goblinLime shrink-0" />
+                      <span>{cat.playerCount} {cat.playerCount === 1 ? "jugada" : "jugadas"}</span>
                     </span>
 
                     <button
@@ -1787,19 +1806,19 @@ export default function RankedArenaPage() {
                           handleOpenLeaderboard(cat);
                         }
                       }}
-                      className="w-8 h-8 rounded-full bg-black/60 hover:bg-black/90 backdrop-blur-md border border-white/20 text-amber-400 flex items-center justify-center transition hover:scale-110 active:scale-95 shadow-md cursor-pointer"
+                      className="w-7 h-7 rounded-full bg-black/60 hover:bg-black/90 backdrop-blur-md border border-white/20 text-amber-400 flex items-center justify-center transition hover:scale-110 active:scale-95 shadow-md cursor-pointer shrink-0"
                       title={cat.kind === "artist" ? "Ver ranking del artista" : "Ver clasificación"}
                     >
-                      <Trophy className="w-3.5 h-3.5" />
+                      <Trophy className="w-3 h-3" />
                     </button>
                   </div>
 
                   {/* Bottom Information Content */}
-                  <div className="relative z-10 space-y-1">
-                    <h3 className="font-display font-black text-xl text-white group-hover:text-goblinLime transition drop-shadow-md truncate">
+                  <div className="relative z-10 space-y-0.5">
+                    <h3 className="font-display font-extrabold text-sm sm:text-base leading-tight text-white group-hover:text-goblinLime transition drop-shadow-md truncate">
                       {cat.name}
                     </h3>
-                    <p className="text-xs text-zinc-300 line-clamp-1 leading-snug drop-shadow">
+                    <p className="text-[11px] line-clamp-1 text-zinc-300/90 leading-tight drop-shadow">
                       {cat.description}
                     </p>
 
@@ -1813,9 +1832,9 @@ export default function RankedArenaPage() {
                           handleStartRankedRun(cat);
                         }
                       }}
-                      className="w-full mt-3 py-2.5 rounded-full bg-gradient-to-r from-goblinPrimary to-goblinLime hover:brightness-110 text-black font-black text-xs shadow-lg transition hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-1.5 cursor-pointer"
+                      className="w-full mt-2 py-1.5 rounded-xl bg-gradient-to-r from-goblinPrimary to-goblinLime hover:brightness-110 text-black font-black text-xs shadow-md transition hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-1.5 cursor-pointer"
                     >
-                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <Play className="w-3 h-3 fill-current" />
                       <span>{cat.kind === "artist" ? "Ver Ficha" : "Jugar"}</span>
                     </button>
                   </div>
