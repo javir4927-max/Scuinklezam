@@ -69,6 +69,7 @@ export default function ScuinklezamLandingPage() {
         <ArtistSection
           onOpenMiniQuiz={handleOpenQuiz}
           onSelectArtist={(a) => setTopicModal({ name: a, type: "artist" })}
+          onSelectGenre={(g) => setTopicModal({ name: g, type: "theme" })}
         />
 
         {/* 7. NOCHE DE JUEGOS / TRANSMISIÓN A TV */}
@@ -100,60 +101,71 @@ export default function ScuinklezamLandingPage() {
       />
 
       {/* MODAL INTERACTIVO DE ELECCIÓN AL PULSAR UN ARTISTA O GÉNERO */}
-      {topicModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-[#0B1710] border border-emerald-500/30 rounded-3xl max-w-sm w-full p-6 text-center space-y-4 shadow-2xl">
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-goblinPrimary to-goblinLime mx-auto flex items-center justify-center text-black font-black shadow-lg shadow-emerald-500/20">
-              <Music2 className="w-6 h-6 text-black" />
-            </div>
-            <div>
-              <h3 className="font-display font-extrabold text-xl text-white">{topicModal.name}</h3>
-              <p className="text-xs text-zinc-400 mt-1">¿Cómo prefieres competir con este estilo?</p>
-            </div>
-            <div className="space-y-2 pt-2">
+      {topicModal && (() => {
+        const KNOWN_THEMES = new Set([
+          "pop", "reggaeton", "reggaetón", "rock", "k-pop", "kpop", "éxitos 80s", "exitos 80s",
+          "éxitos 90s", "exitos 90s", "éxitos latinos", "exitos latinos", "country", "metal",
+          "trap latino", "rock en español", "rock en espanol", "urbano latino", "tus placeres culpables",
+          "viral spotify españa", "viral spotify espana", "indie / alternativo", "indie", "viral españa",
+          "top españa", "under español / urbano"
+        ]);
+        const isTheme = topicModal.type === "theme" || KNOWN_THEMES.has(topicModal.name.toLowerCase().trim());
+
+        return (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+            <div className="bg-[#0B1710] border border-emerald-500/30 rounded-3xl max-w-sm w-full p-6 text-center space-y-4 shadow-2xl">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-goblinPrimary to-goblinLime mx-auto flex items-center justify-center text-black font-black shadow-lg shadow-emerald-500/20">
+                <Music2 className="w-6 h-6 text-black" />
+              </div>
+              <div>
+                <h3 className="font-display font-extrabold text-xl text-white">{topicModal.name}</h3>
+                <p className="text-xs text-zinc-400 mt-1">¿Cómo prefieres competir con este estilo?</p>
+              </div>
+              <div className="space-y-2 pt-2">
+                <button
+                  onClick={() => {
+                    const t = topicModal.name;
+                    setTopicModal(null);
+                    handleOpenQuiz(t);
+                  }}
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-goblinPrimary to-goblinLime text-black font-extrabold text-xs shadow hover:opacity-95 transition cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <Gamepad2 className="w-4 h-4" />
+                  <span>Jugar Solo Ahora (Mini-Quiz)</span>
+                </button>
+                <a
+                  href={
+                    isTheme
+                      ? `/ranked?theme=${encodeURIComponent(topicModal.name)}`
+                      : `/ranked?artist=${encodeURIComponent(topicModal.name)}`
+                  }
+                  className="w-full py-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-extrabold text-xs border border-amber-500/40 transition text-center flex items-center justify-center gap-2"
+                >
+                  <Music2 className="w-4 h-4 text-amber-400" />
+                  <span>Competir en Modo Ranked</span>
+                </a>
+                <a
+                  href={
+                    isTheme
+                      ? `/play?theme=${encodeURIComponent(topicModal.name)}&create=true`
+                      : `/play?artist=${encodeURIComponent(topicModal.name)}&create=true`
+                  }
+                  className="w-full py-3 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-white font-extrabold text-xs border border-emerald-500/30 transition text-center flex items-center justify-center gap-2"
+                >
+                  <Users className="w-4 h-4 text-emerald-400" />
+                  <span>Crear Sala Multijugador</span>
+                </a>
+              </div>
               <button
-                onClick={() => {
-                  const t = topicModal.name;
-                  setTopicModal(null);
-                  handleOpenQuiz(t);
-                }}
-                className="w-full py-3 rounded-xl bg-gradient-to-r from-goblinPrimary to-goblinLime text-black font-extrabold text-xs shadow hover:opacity-95 transition cursor-pointer flex items-center justify-center gap-2"
+                onClick={() => setTopicModal(null)}
+                className="text-xs text-zinc-500 hover:text-zinc-300 pt-1 cursor-pointer"
               >
-                <Gamepad2 className="w-4 h-4" />
-                <span>Jugar Solo Ahora (Mini-Quiz)</span>
+                Cancelar
               </button>
-              <a
-                href={
-                  topicModal.type === "theme"
-                    ? `/ranked?theme=${encodeURIComponent(topicModal.name)}`
-                    : `/ranked?artist=${encodeURIComponent(topicModal.name)}`
-                }
-                className="w-full py-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-extrabold text-xs border border-amber-500/40 transition text-center flex items-center justify-center gap-2"
-              >
-                <Music2 className="w-4 h-4 text-amber-400" />
-                <span>Competir en Modo Ranked</span>
-              </a>
-              <a
-                href={
-                  topicModal.type === "theme"
-                    ? `/play?theme=${encodeURIComponent(topicModal.name)}&create=true`
-                    : `/play?artist=${encodeURIComponent(topicModal.name)}&create=true`
-                }
-                className="w-full py-3 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-white font-extrabold text-xs border border-emerald-500/30 transition text-center flex items-center justify-center gap-2"
-              >
-                <Users className="w-4 h-4 text-emerald-400" />
-                <span>Crear Sala Multijugador</span>
-              </a>
             </div>
-            <button
-              onClick={() => setTopicModal(null)}
-              className="text-xs text-zinc-500 hover:text-zinc-300 pt-1 cursor-pointer"
-            >
-              Cancelar
-            </button>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

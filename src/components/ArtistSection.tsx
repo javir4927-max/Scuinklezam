@@ -6,6 +6,7 @@ import { PRELOADED_ARTIST_PHOTOS } from "@/lib/artistPhotosCatalog";
 interface ArtistSectionProps {
   onOpenMiniQuiz: (topic?: string) => void;
   onSelectArtist?: (artist: string) => void;
+  onSelectGenre?: (genre: string) => void;
 }
 
 const ARTISTS_ROW_1 = [
@@ -47,7 +48,7 @@ const GENRES = [
   "Trap Latino",
 ];
 
-export default function ArtistSection({ onOpenMiniQuiz, onSelectArtist }: ArtistSectionProps) {
+export default function ArtistSection({ onOpenMiniQuiz, onSelectArtist, onSelectGenre }: ArtistSectionProps) {
   const [photos, setPhotos] = useState<Record<string, string>>(PRELOADED_ARTIST_PHOTOS);
 
   useEffect(() => {
@@ -147,7 +148,13 @@ export default function ArtistSection({ onOpenMiniQuiz, onSelectArtist }: Artist
         {GENRES.map((genre) => (
           <button
             key={genre}
-            onClick={() => handleClick(genre)}
+            onClick={() => {
+              if (onSelectGenre) {
+                onSelectGenre(genre);
+              } else {
+                handleClick(genre);
+              }
+            }}
             className="px-4 py-2 rounded-xl bg-white/[0.04] hover:bg-emerald-950/80 border border-emerald-500/20 hover:border-goblinLime text-xs font-semibold text-zinc-300 hover:text-white transition cursor-pointer"
           >
             {genre}

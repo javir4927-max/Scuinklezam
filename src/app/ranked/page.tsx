@@ -301,17 +301,23 @@ export default function RankedArenaPage() {
     };
   }, [searchFilter, activeTab]);
 
-  // Filter categories
+  // Filter categories with accent-insensitive and multi-field search
   const filteredCategories = categories.filter((c) => {
     const matchesTab = c.kind === activeTab;
-    const matchesSearch = c.name.toLowerCase().includes(searchFilter.toLowerCase().trim());
-    return matchesTab && matchesSearch;
+    const cleanFilter = searchFilter.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    if (!cleanFilter) return matchesTab;
+    const nName = c.name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const nDesc = c.description.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const nQuery = (c.query || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    return matchesTab && (nName.includes(cleanFilter) || nDesc.includes(cleanFilter) || nQuery.includes(cleanFilter));
   });
 
   // Check if search has exact match or if custom search card should be displayed
-  const hasExactSearchMatch = filteredCategories.some(
-    (c) => c.name.toLowerCase() === searchFilter.toLowerCase().trim()
-  );
+  const hasExactSearchMatch = filteredCategories.some((c) => {
+    const cleanFilter = searchFilter.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    const nName = c.name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    return nName === cleanFilter;
+  });
   const showCustomArtistCard =
     activeTab === "artist" && searchFilter.trim().length >= 2 && !hasExactSearchMatch;
 
@@ -1069,13 +1075,28 @@ export default function RankedArenaPage() {
               FICHA DE ARTISTA OFICIAL (CON RANKING & 12 ARTISTAS)
              ======================================================== */
           loadingArtistSheet && !artistSheetData ? (
-            <div className="py-24 text-center space-y-4 max-w-xl mx-auto animate-fade-in">
-              <div className="w-12 h-12 border-4 border-emerald-400 border-t-transparent rounded-full animate-spin mx-auto" />
-              <div className="font-display font-bold text-lg text-white">
-                Cargando ficha de {selectedArtistName}...
+            <div className="space-y-8 animate-pulse max-w-4xl mx-auto w-full">
+              <div className="rounded-3xl bg-[#0B1710] border border-emerald-500/20 p-6 sm:p-10 flex flex-col md:flex-row items-center gap-6">
+                <div className="w-32 h-32 sm:w-44 sm:h-44 rounded-full bg-emerald-950/60 border border-emerald-500/20 shrink-0" />
+                <div className="flex-1 space-y-4 w-full">
+                  <div className="w-28 h-5 rounded-full bg-emerald-950" />
+                  <div className="w-56 h-8 rounded-xl bg-emerald-950" />
+                  <div className="grid grid-cols-4 gap-2 pt-2">
+                    <div className="h-16 rounded-2xl bg-black/40 border border-white/5" />
+                    <div className="h-16 rounded-2xl bg-black/40 border border-white/5" />
+                    <div className="h-16 rounded-2xl bg-black/40 border border-white/5" />
+                    <div className="h-16 rounded-2xl bg-black/40 border border-white/5" />
+                  </div>
+                  <div className="w-36 h-12 rounded-full bg-emerald-950 mt-2" />
+                </div>
               </div>
-              <div className="text-xs text-zinc-400">
-                Obteniendo ranking en directo y artistas recomendados
+              <div className="rounded-3xl bg-[#0B1710] border border-emerald-500/20 p-6 space-y-4">
+                <div className="w-36 h-6 rounded-lg bg-emerald-950" />
+                <div className="flex items-end justify-center gap-4 pt-10 pb-4">
+                  <div className="w-24 h-24 rounded-t-2xl bg-slate-900/60" />
+                  <div className="w-28 h-32 rounded-t-2xl bg-amber-950/60" />
+                  <div className="w-24 h-20 rounded-t-2xl bg-amber-950/40" />
+                </div>
               </div>
             </div>
           ) : artistSheetError ? (
@@ -1727,7 +1748,7 @@ export default function RankedArenaPage() {
             </div>
 
             {/* Categories Grid - Desktop View (md:grid) - Poster Editorial Style */}
-            <div className="hidden md:grid md:grid-cols-2 lg:grid-cols-3 gap-5">
+            <div className="hidden md:grid md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
               {filteredCategories.map((cat) => (
                 <div
                   key={cat.id}
@@ -1738,7 +1759,7 @@ export default function RankedArenaPage() {
                       handleStartRankedRun(cat);
                     }
                   }}
-                  className="group relative rounded-3xl overflow-hidden border border-emerald-500/20 hover:border-goblinLime/70 transition-all duration-300 shadow-xl hover:shadow-2xl hover:shadow-emerald-500/10 cursor-pointer aspect-[4/5] flex flex-col justify-between p-5 bg-[#08120B]"
+                  className="group relative rounded-3xl overflow-hidden border border-emerald-500/20 hover:border-goblinLime/70 transition-all duration-300 shadow-xl hover:shadow-2xl hover:shadow-emerald-500/10 cursor-pointer aspect-[4/5] flex flex-col justify-between p-4 sm:p-5 bg-[#08120B]"
                 >
                   {/* Poster Image Background with Smooth Zoom on Hover */}
                   <div
@@ -1747,67 +1768,56 @@ export default function RankedArenaPage() {
                   />
 
                   {/* Gradient Overlay for Editorial Depth */}
-                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/20" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-transparent" />
 
                   {/* Top Badges */}
                   <div className="relative z-10 flex items-center justify-between gap-2">
-                    <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider backdrop-blur-md bg-black/60 border border-white/20 text-goblinLime">
-                      {cat.kind === "artist" ? "Artista Oficial" : "Temática Oficial"}
+                    <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold backdrop-blur-md bg-black/60 border border-white/10 text-emerald-300 flex items-center gap-1.5 shadow">
+                      <Users className="w-3 h-3 text-goblinLime" />
+                      <span>{cat.playerCount}</span>
                     </span>
-                    <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold backdrop-blur-md bg-black/60 border border-white/20 text-zinc-300">
-                      1000 Pts Max
-                    </span>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (cat.kind === "artist") {
+                          handleOpenArtistSheet(cat.query || cat.name);
+                        } else {
+                          handleOpenLeaderboard(cat);
+                        }
+                      }}
+                      className="w-8 h-8 rounded-full bg-black/60 hover:bg-black/90 backdrop-blur-md border border-white/20 text-amber-400 flex items-center justify-center transition hover:scale-110 active:scale-95 shadow-md cursor-pointer"
+                      title={cat.kind === "artist" ? "Ver ranking del artista" : "Ver clasificación"}
+                    >
+                      <Trophy className="w-3.5 h-3.5" />
+                    </button>
                   </div>
 
                   {/* Bottom Information Content */}
-                  <div className="relative z-10 space-y-3">
-                    <div>
-                      <h3 className="font-display font-black text-2xl text-white group-hover:text-goblinLime transition drop-shadow-md truncate">
-                        {cat.name}
-                      </h3>
-                      <p className="text-xs text-zinc-300 line-clamp-2 mt-1 leading-snug drop-shadow">
-                        {cat.description}
-                      </p>
-                      <div className="text-[11px] text-emerald-400 font-semibold mt-1.5 flex items-center gap-1.5">
-                        <Users className="w-3 h-3" />
-                        <span>{cat.playerCount} {cat.playerCount === 1 ? "partida jugada" : "partidas jugadas"}</span>
-                      </div>
-                    </div>
+                  <div className="relative z-10 space-y-1">
+                    <h3 className="font-display font-black text-xl text-white group-hover:text-goblinLime transition drop-shadow-md truncate">
+                      {cat.name}
+                    </h3>
+                    <p className="text-xs text-zinc-300 line-clamp-1 leading-snug drop-shadow">
+                      {cat.description}
+                    </p>
 
-                    {/* Bottom Action Row */}
-                    <div className="flex items-center gap-2 pt-2 border-t border-white/10">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (cat.kind === "artist") {
-                            handleOpenArtistSheet(cat.query || cat.name);
-                          } else {
-                            handleStartRankedRun(cat);
-                          }
-                        }}
-                        className="flex-1 py-2.5 rounded-full bg-gradient-to-r from-goblinPrimary to-goblinLime text-black font-extrabold text-xs shadow-lg transition hover:scale-105 active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
-                      >
-                        <Play className="w-3.5 h-3.5 fill-current" />
-                        <span>{cat.kind === "artist" ? "Ver Ficha y Jugar" : "Jugar Ahora"}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (cat.kind === "artist") {
-                            handleOpenArtistSheet(cat.query || cat.name);
-                          } else {
-                            handleOpenLeaderboard(cat);
-                          }
-                        }}
-                        className="p-2.5 rounded-full bg-black/70 hover:bg-black border border-white/20 text-amber-400 transition hover:scale-105 active:scale-95 cursor-pointer"
-                        title={cat.kind === "artist" ? "Ver ficha y ranking" : "Ver tabla de clasificación"}
-                      >
-                        <Trophy className="w-4 h-4" />
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (cat.kind === "artist") {
+                          handleOpenArtistSheet(cat.query || cat.name);
+                        } else {
+                          handleStartRankedRun(cat);
+                        }
+                      }}
+                      className="w-full mt-3 py-2.5 rounded-full bg-gradient-to-r from-goblinPrimary to-goblinLime hover:brightness-110 text-black font-black text-xs shadow-lg transition hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <span>{cat.kind === "artist" ? "Ver Ficha" : "Jugar"}</span>
+                    </button>
                   </div>
                 </div>
               ))}
@@ -1843,9 +1853,23 @@ export default function RankedArenaPage() {
             </div>
 
             {loadingLeaderboard ? (
-              <div className="py-12 text-center text-xs text-zinc-400">
-                <Loader2 className="w-6 h-6 animate-spin text-goblinLime mx-auto mb-2" />
-                Consultando ranking oficial...
+              <div className="space-y-2 py-2">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <div
+                    key={i}
+                    className="p-3 rounded-2xl border border-white/5 bg-white/5 animate-pulse flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-6 h-4 bg-white/10 rounded" />
+                      <div className="w-7 h-7 rounded-full bg-white/10" />
+                      <div className="space-y-1">
+                        <div className="w-24 h-3 bg-white/10 rounded" />
+                        <div className="w-16 h-2 bg-white/10 rounded" />
+                      </div>
+                    </div>
+                    <div className="w-12 h-4 bg-white/10 rounded" />
+                  </div>
+                ))}
               </div>
             ) : leaderboardEntries.length === 0 ? (
               <div className="py-12 text-center space-y-3 px-4">
