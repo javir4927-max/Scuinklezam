@@ -33,7 +33,7 @@ import { playCorrectSound, playWrongSound } from "@/lib/soundEffects";
 import { audioPlayer } from "@/lib/audioPlayer";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
 import { ROUND_DURATION_SEC, REVEAL_DURATION_MS, calculateRoundPoints } from "@/lib/scoring";
-import { normalizeSongTitle, normalizeText, getCoherentDistractors } from "@/lib/songMatching";
+import { normalizeSongTitle, normalizeText, getCoherentDistractors, isStrictArtistMatch } from "@/lib/songMatching";
 import {
   RANKED_CATEGORIES,
   RANKED_TIERS,
@@ -167,6 +167,7 @@ export default function RankedArenaPage() {
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const advanceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const scorePopupTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const answersHistoryRef = useRef<AnswerHistoryItem[]>([]);
 
   // Fetch real categories and current user session
   const loadInitialData = async () => {
@@ -193,6 +194,12 @@ export default function RankedArenaPage() {
 
   useEffect(() => {
     loadInitialData();
+    return () => {
+      audioPlayer.stop();
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current);
+      if (scorePopupTimerRef.current) clearTimeout(scorePopupTimerRef.current);
+    };
   }, []);
 
   // Close live search dropdown when clicking outside
@@ -323,6 +330,7 @@ export default function RankedArenaPage() {
     setAnsweredIdx(null);
     setScorePopup(null);
     setSummaryData(null);
+    answersHistoryRef.current = [];
     setAnswersHistory([]);
     setPlayingPreviewUrl(null);
 
@@ -387,9 +395,10 @@ export default function RankedArenaPage() {
 
         if (cat.kind === "artist") {
           // If artist quiz, prefer other songs by this artist with different titles
+          const targetArtist = cat.query || cat.name;
           const sameArtistTracks = tracks.filter(
             (t) =>
-              normalizeText(t.artist) === normalizeText(correct.artist) &&
+              (isStrictArtistMatch(t.artist, targetArtist) || isStrictArtistMatch(t.artist, correct.artist)) &&
               normalizeSongTitle(t.title) !== normalizeSongTitle(correct.title)
           );
           if (sameArtistTracks.length >= 3) {
@@ -478,15 +487,14 @@ export default function RankedArenaPage() {
 
       // Record in answers history for the summary screen
       const chosenTitle = idx >= 0 && currentQ.options[idx] ? currentQ.options[idx].title : "Tiempo agotado";
-      setAnswersHistory((prev) => [
-        ...prev,
-        {
-          track: currentQ.correctTrack,
-          isCorrect,
-          points: roundPoints,
-          chosenTitle,
-        },
-      ]);
+      const nextHistoryItem: AnswerHistoryItem = {
+        track: currentQ.correctTrack,
+        isCorrect,
+        points: roundPoints,
+        chosenTitle,
+      };
+      answersHistoryRef.current = [...answersHistoryRef.current, nextHistoryItem];
+      setAnswersHistory(answersHistoryRef.current);
 
       // Floating arcade score animation
       if (scorePopupTimerRef.current) clearTimeout(scorePopupTimerRef.current);
@@ -542,7 +550,7 @@ export default function RankedArenaPage() {
                 categoryName: activeCategory.name,
                 artistName: activeCategory.kind === "artist" ? (activeCategory.query || activeCategory.name) : undefined,
                 score: finalScore,
-                correctCount: answersHistory.filter((a) => a.isCorrect).length + (isCorrect ? 1 : 0),
+                correctCount: answersHistoryRef.current.filter((a) => a.isCorrect).length,
                 guestUserId: guestId,
                 guestNickname: user?.nickname || localStorage.getItem("scuinklezam_player_name") || "Jugador Ranked",
               }),

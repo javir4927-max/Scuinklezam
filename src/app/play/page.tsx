@@ -259,6 +259,8 @@ function PlayArenaContent() {
   const [savingAll, setSavingAll] = useState<boolean>(false);
 
   // Audio & Timer Refs
+  const clockOffsetRef = useRef<number>(0);
+  const lastRoomVersionRef = useRef<number>(0);
   const prevStatusRef = useRef<string>("");
   const prevRoundRef = useRef<number>(0);
   const currentRoundRef = useRef<number>(1);
@@ -296,8 +298,9 @@ function PlayArenaContent() {
       try {
         if (!audio.src) {
           audio.src = SILENT_WAV;
-          audio.muted = false;
-          audio.volume = Math.max(0.05, getEffectiveVolume() || 0.25);
+          const effVol = getEffectiveVolume();
+          audio.muted = isGlobalMutedState || effVol === 0;
+          audio.volume = isGlobalMutedState ? 0 : effVol;
           const p = audio.play();
           if (p !== undefined) {
             p.then(() => {
@@ -330,16 +333,17 @@ function PlayArenaContent() {
   // Synchronize persistent audio element with global volume
   useEffect(() => {
     if (audioRef.current) {
-      audioRef.current.muted = isGlobalMutedState;
-      audioRef.current.volume = isGlobalMutedState ? 0 : Math.max(0.05, globalVolume);
+      audioRef.current.muted = isGlobalMutedState || globalVolume === 0;
+      audioRef.current.volume = isGlobalMutedState ? 0 : globalVolume;
     }
   }, [globalVolume, isGlobalMutedState]);
 
   useEffect(() => {
     const handleVol = (e: any) => {
       if (audioRef.current && e.detail) {
-        audioRef.current.muted = e.detail.volume === 0;
-        audioRef.current.volume = Math.max(0.05, e.detail.volume);
+        const vol = typeof e.detail.volume === "number" ? e.detail.volume : 0.5;
+        audioRef.current.muted = vol === 0;
+        audioRef.current.volume = vol;
       }
     };
     window.addEventListener("scuinklezam_volume_change", handleVol);
@@ -443,19 +447,11 @@ function PlayArenaContent() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // 1. Initialize Player Identity from SessionStorage / LocalStorage / Spotify (isolated per tab)
+  // 1. Initialize Player Identity from Cookies / SessionStorage / LocalStorage / Spotify (isolated per tab)
   useEffect(() => {
     if (typeof window === "undefined") return;
 
     let localId = sessionStorage.getItem("scuinklezam_player_id");
-    let localName =
-      sessionStorage.getItem("scuinklezam_player_name") ||
-      localStorage.getItem("scuinklezam_player_name") ||
-      localStorage.getItem("scuinklezam_nickname") ||
-      localStorage.getItem("squinkle_player_name") ||
-      localStorage.getItem("squinkle_nickname") ||
-      "";
-
     if (!localId) {
       localId =
         typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -465,14 +461,85 @@ function PlayArenaContent() {
     }
     setPlayerId(localId);
 
-    if (spotifyAuthUser?.displayName && !hasManuallyEditedNameRef.current) {
-      localName = spotifyAuthUser.displayName;
-      sessionStorage.setItem("scuinklezam_player_name", localName);
-      localStorage.setItem("scuinklezam_player_name", localName);
+    const parseCookie = (name: string): string | null => {
+      try {
+        const match = document.cookie.match(
+          new RegExp("(?:^|; )" + name.replace(/([\.$?*|{}\(\)\[\]\\\/\+^])/g, "\\$1") + "=([^;]*)")
+        );
+        return match ? decodeURIComponent(match[1]) : null;
+      } catch {
+        return null;
+      }
+    };
+
+    let candidateName = "";
+
+    // 1. Check spotify_user_name cookie
+    const spotifyCookie = parseCookie("spotify_user_name");
+    if (spotifyCookie && spotifyCookie.trim()) {
+      candidateName = spotifyCookie.trim();
     }
 
-    if (localName) {
-      setPlayerName(localName);
+    // 2. Check scuinklezam_user cookie
+    if (!candidateName) {
+      const userCookie = parseCookie("scuinklezam_user");
+      if (userCookie) {
+        try {
+          const parsed = JSON.parse(userCookie);
+          if (parsed?.nickname) candidateName = parsed.nickname.trim();
+          else if (parsed?.displayName) candidateName = parsed.displayName.trim();
+          else if (parsed?.name) candidateName = parsed.name.trim();
+        } catch {
+          if (userCookie.trim() && !userCookie.startsWith("{")) {
+            candidateName = userCookie.trim();
+          }
+        }
+      }
+    }
+
+    // 3. Check storage
+    if (!candidateName) {
+      candidateName =
+        sessionStorage.getItem("scuinklezam_player_name") ||
+        localStorage.getItem("scuinklezam_player_name") ||
+        localStorage.getItem("scuinklezam_nickname") ||
+        localStorage.getItem("squinkle_player_name") ||
+        localStorage.getItem("squinkle_nickname") ||
+        "";
+    }
+
+    // 4. Check spotifyAuthUser
+    if (spotifyAuthUser?.displayName && !hasManuallyEditedNameRef.current) {
+      candidateName = spotifyAuthUser.displayName;
+    }
+
+    // 5. Fallback to /api/auth/user/me if still empty
+    if (!candidateName) {
+      fetch("/api/auth/user/me")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data && !hasManuallyEditedNameRef.current) {
+            const fetched =
+              data.nickname ||
+              data.displayName ||
+              data.name ||
+              data.user?.nickname ||
+              data.user?.name;
+            if (fetched && typeof fetched === "string") {
+              const clean = fetched.trim();
+              setPlayerName(clean);
+              sessionStorage.setItem("scuinklezam_player_name", clean);
+              localStorage.setItem("scuinklezam_player_name", clean);
+            }
+          }
+        })
+        .catch(() => {});
+    }
+
+    if (candidateName) {
+      setPlayerName(candidateName);
+      sessionStorage.setItem("scuinklezam_player_name", candidateName);
+      localStorage.setItem("scuinklezam_player_name", candidateName);
     }
   }, [spotifyAuthUser]);
 
@@ -623,8 +690,17 @@ function PlayArenaContent() {
           return;
         }
         const data = await res.json();
+        if (data.serverTime) {
+          clockOffsetRef.current = data.serverTime - Date.now();
+        }
         if (data.success && isMounted && data.room) {
           const currentRoom: RoomState = data.room;
+
+          // Monotonic version check: drop stale responses
+          if (currentRoom.version && currentRoom.version < lastRoomVersionRef.current) {
+            return;
+          }
+          lastRoomVersionRef.current = currentRoom.version || 0;
 
           // Check if current player was kicked by host
           const wasKicked = currentRoom.kickedPlayerIds && currentRoom.kickedPlayerIds.includes(playerId);
@@ -671,7 +747,18 @@ function PlayArenaContent() {
                 name: playerName || "Jugador",
                 spotifyConnected,
               }),
-            }).catch(() => {});
+            })
+              .then(async (r) => {
+                if (r.ok) {
+                  const d = await r.json();
+                  if (d.serverTime) clockOffsetRef.current = d.serverTime - Date.now();
+                  if (d.success && d.room) {
+                    lastRoomVersionRef.current = d.room.version || 0;
+                    setRoom(d.room);
+                  }
+                }
+              })
+              .catch(() => {});
           }
 
           setRoom(currentRoom);
@@ -700,9 +787,9 @@ function PlayArenaContent() {
       return;
     }
 
-    const now = Date.now();
+    const now = Date.now() + clockOffsetRef.current;
     const endsAt = room.revealEndsAt || (room.revealStartTime ? room.revealStartTime + REVEAL_DURATION_MS : now + REVEAL_DURATION_MS);
-    const delay = Math.max(500, Math.min(REVEAL_DURATION_MS, endsAt - now));
+    const delay = Math.max(200, Math.min(REVEAL_DURATION_MS, endsAt - now));
     const roundToAdvance = room.currentRound;
 
     nextRoundTimerRef.current = setTimeout(async () => {
@@ -720,13 +807,15 @@ function PlayArenaContent() {
           }),
         });
         const data = await res.json();
+        if (data.serverTime) {
+          clockOffsetRef.current = data.serverTime - Date.now();
+        }
         if (data.success && data.room) {
-          if (data.room.currentRound >= currentRoundRef.current) {
-            setRoom(data.room);
-          }
+          lastRoomVersionRef.current = data.room.version || 0;
+          setRoom(data.room);
         }
       } catch (err) {
-        console.error("Error advancing round:", err);
+        console.error("Failed to advance round:", err);
       }
     }, delay);
 
@@ -737,6 +826,7 @@ function PlayArenaContent() {
       }
     };
   }, [room?.status, room?.currentRound, room?.revealEndsAt, roomCode, playerId]);
+
 
   // Smooth local ticker to update seconds on screen between polling cycles
   const [, setTicker] = useState<number>(Date.now());
@@ -794,11 +884,18 @@ function PlayArenaContent() {
           stallTimerRef.current = null;
         }
 
+        // Arm stall detection BEFORE audio.play()
+        stallTimerRef.current = setTimeout(() => {
+          if (audioRef.current && (audioRef.current.readyState === 0 || audioRef.current.paused)) {
+            handleAudioFallback(currentRoundData);
+          }
+        }, 3000);
+
         audio.pause();
         audio.currentTime = 0;
         audio.src = previewUrl;
-        audio.muted = isGlobalMutedState;
-        audio.volume = isGlobalMutedState ? 0 : Math.max(0.05, globalVolume);
+        audio.muted = isGlobalMutedState || globalVolume === 0;
+        audio.volume = isGlobalMutedState ? 0 : globalVolume;
         audio.play().then(() => {
           setShowAudioUnlockButton(false);
           // Preload next track silently while current track plays
@@ -806,12 +903,6 @@ function PlayArenaContent() {
           if (nextTrackPreview) {
             audioPlayer.preloadNext(nextTrackPreview);
           }
-          // Arm stall detection: if readyState still 0 after 2500ms, attempt fallback
-          stallTimerRef.current = setTimeout(() => {
-            if (audioRef.current && audioRef.current.readyState === 0 && audioRef.current.paused) {
-              handleAudioFallback(currentRoundData);
-            }
-          }, 2500);
         }).catch((err: any) => {
           if (err?.name === "AbortError") {
             const onCanPlay = () => {
@@ -906,12 +997,21 @@ function PlayArenaContent() {
 
   // Beacon for page leave / close
   useEffect(() => {
-    const handleUnload = () => {
+    const handleUnload = (e: PageTransitionEvent | BeforeUnloadEvent) => {
+      if ("persisted" in e && (e as PageTransitionEvent).persisted) return;
       if (roomCode && playerId && !hasLeftRoomRef.current) {
-        navigator.sendBeacon?.(
-          `/api/rooms/${roomCode}`,
-          JSON.stringify({ action: "leave_room", playerId })
-        );
+        const payload = JSON.stringify({ action: "leave_room", playerId });
+        if (navigator.sendBeacon) {
+          const blob = new Blob([payload], { type: "application/json" });
+          navigator.sendBeacon(`/api/rooms/${roomCode}`, blob);
+        } else {
+          fetch(`/api/rooms/${roomCode}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: payload,
+            keepalive: true,
+          }).catch(() => {});
+        }
       }
     };
 
@@ -928,6 +1028,7 @@ function PlayArenaContent() {
   // Leave Room Action
   const handleLeaveRoom = async () => {
     hasLeftRoomRef.current = true;
+    lastRoomVersionRef.current = 0;
     const currentCode = roomCode;
     const myId = playerId;
 
@@ -958,6 +1059,8 @@ function PlayArenaContent() {
   // Create Room (0 initial artists by default)
   const handleCreateRoom = async (initialArtist?: string) => {
     unlockAudioElement();
+    hasLeftRoomRef.current = false;
+    lastRoomVersionRef.current = 0;
     setIsLoading(true);
     setErrorMessage(null);
     try {
@@ -976,7 +1079,11 @@ function PlayArenaContent() {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) {
+        clockOffsetRef.current = data.serverTime - Date.now();
+      }
       if (data.success && data.room) {
+        lastRoomVersionRef.current = data.room.version || 0;
         setRoom(data.room);
         setRoomCode(data.room.code);
       } else {
@@ -992,6 +1099,8 @@ function PlayArenaContent() {
   // Join Room (0 initial artists by default)
   const handleJoinRoom = async (codeToJoin: string) => {
     unlockAudioElement();
+    hasLeftRoomRef.current = false;
+    lastRoomVersionRef.current = 0;
     const cleanCode = codeToJoin.trim().toUpperCase();
     if (!cleanCode) return;
 
@@ -1014,7 +1123,11 @@ function PlayArenaContent() {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) {
+        clockOffsetRef.current = data.serverTime - Date.now();
+      }
       if (data.success && data.room) {
+        lastRoomVersionRef.current = data.room.version || 0;
         setRoom(data.room);
         setRoomCode(data.room.code);
       } else {
@@ -1046,7 +1159,9 @@ function PlayArenaContent() {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
       if (data.success && data.room) {
+        lastRoomVersionRef.current = data.room.version || 0;
         setRoom(data.room);
       }
     } catch (err) {
@@ -1070,7 +1185,9 @@ function PlayArenaContent() {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
       if (data.success && data.room) {
+        lastRoomVersionRef.current = data.room.version || 0;
         setRoom(data.room);
       } else {
         setErrorMessage(data.error || "No se pudo iniciar la partida.");
@@ -1094,7 +1211,7 @@ function PlayArenaContent() {
     hasSubmittedRef.current = true;
     setSelectedOption(optionIdx);
 
-    const now = Date.now();
+    const now = Date.now() + clockOffsetRef.current;
     const timeMs = room.roundStartTime ? now - room.roundStartTime : 5000;
     const currentRound = room.rounds[room.currentRound - 1];
 
@@ -1165,6 +1282,7 @@ function PlayArenaContent() {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
       if (data.success) {
         if (
           typeof data.pointsEarned === "number" &&
@@ -1177,6 +1295,7 @@ function PlayArenaContent() {
         }
         if (data.room) {
           if (data.room.currentRound >= currentRoundRef.current) {
+            lastRoomVersionRef.current = data.room.version || 0;
             setRoom(data.room);
           }
         }
@@ -1200,7 +1319,9 @@ function PlayArenaContent() {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
       if (data.success && data.room) {
+        lastRoomVersionRef.current = data.room.version || 0;
         setRoom(data.room);
       }
     } catch (err) {
@@ -1222,7 +1343,9 @@ function PlayArenaContent() {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
       if (data.success && data.room) {
+        lastRoomVersionRef.current = data.room.version || 0;
         setRoom(data.room);
         setNewThemeProposal("");
       }
@@ -1251,7 +1374,9 @@ function PlayArenaContent() {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
       if (data.success && data.room) {
+        lastRoomVersionRef.current = data.room.version || 0;
         setRoom(data.room);
         setPlayerName(clean);
         sessionStorage.setItem("scuinklezam_player_name", clean);
@@ -1303,7 +1428,9 @@ function PlayArenaContent() {
       });
 
       const patchData = await patchRes.json();
+      if (patchData.serverTime) clockOffsetRef.current = patchData.serverTime - Date.now();
       if (patchData.success && patchData.room) {
+        lastRoomVersionRef.current = patchData.room.version || 0;
         setRoom(patchData.room);
         setPlaylistUrlInput("");
       } else {
@@ -1331,7 +1458,9 @@ function PlayArenaContent() {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
       if (data.success && data.room) {
+        lastRoomVersionRef.current = data.room.version || 0;
         setRoom(data.room);
       }
     } catch (err) {
@@ -1356,7 +1485,9 @@ function PlayArenaContent() {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
       if (data.success && data.room) {
+        lastRoomVersionRef.current = data.room.version || 0;
         setRoom(data.room);
         setNewArtistInput("");
         setShowSuggestions(false);
@@ -1437,7 +1568,11 @@ function PlayArenaContent() {
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.room) setRoom(data.room);
+        if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
+        if (data.room) {
+          lastRoomVersionRef.current = data.room.version || 0;
+          setRoom(data.room);
+        }
       }
     } catch (err) {
       console.error("Error casting vote:", err);
@@ -1485,7 +1620,9 @@ function PlayArenaContent() {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
       if (data.success && data.room) {
+        lastRoomVersionRef.current = data.room.version || 0;
         setRoom(data.room);
       }
     } catch (err) {
@@ -1509,7 +1646,9 @@ function PlayArenaContent() {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
       if (data.success && data.room) {
+        lastRoomVersionRef.current = data.room.version || 0;
         setRoom(data.room);
       } else {
         setErrorMessage(data.error || "No se pudo expulsar al jugador.");
@@ -1535,7 +1674,9 @@ function PlayArenaContent() {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
       if (data.success && data.room) {
+        lastRoomVersionRef.current = data.room.version || 0;
         setRoom(data.room);
       } else {
         setErrorMessage(data.error || "No se pudo transferir el anfitrión.");
@@ -1575,7 +1716,7 @@ function PlayArenaContent() {
   // Synchronized Timer Remaining calculation based authoritatively on server timestamps
   const getSecondsRemaining = () => {
     if (!room) return ROUND_DURATION_SEC;
-    const now = Date.now();
+    const now = Date.now() + clockOffsetRef.current;
     if (room.roundEndsAt) {
       return Math.max(0, Math.ceil((room.roundEndsAt - now) / 1000));
     }
@@ -1589,7 +1730,7 @@ function PlayArenaContent() {
 
   const getCountdownSeconds = () => {
     if (!room) return 3;
-    const now = Date.now();
+    const now = Date.now() + clockOffsetRef.current;
     if (room.countdownEndsAt) {
       return Math.max(1, Math.ceil((room.countdownEndsAt - now) / 1000));
     }
@@ -1603,7 +1744,7 @@ function PlayArenaContent() {
 
   const getVotingSeconds = () => {
     if (!room) return 10;
-    const now = Date.now();
+    const now = Date.now() + clockOffsetRef.current;
     if (room.votingEndsAt) {
       return Math.max(0, Math.ceil((room.votingEndsAt - now) / 1000));
     }
@@ -1630,6 +1771,10 @@ function PlayArenaContent() {
           }
         }}
         onPlaying={() => {
+          if (stallTimerRef.current) {
+            clearTimeout(stallTimerRef.current);
+            stallTimerRef.current = null;
+          }
           setShowAudioUnlockButton(false);
           setAudioUnavailable(false);
         }}
@@ -1950,41 +2095,30 @@ function PlayArenaContent() {
                     })}
                   </div>
 
-                  {/* Host Match Options: Rounds & Question Type */}
+                  {/* Host Match Options: Rounds */}
                   {isHost && (
                     <div className="mt-4 pt-4 border-t border-emerald-500/15 flex flex-wrap items-center justify-between gap-3 text-xs">
                       <div className="flex items-center gap-2">
                         <span className="text-zinc-400 font-semibold">Rondas:</span>
-                        {[5, 10, 15, 20].map((num) => (
-                          <button
-                            key={num}
-                            onClick={() => handleChangeSettings({ totalRounds: num })}
-                            className={`px-2.5 py-1 rounded-lg font-bold transition ${
-                              room.totalRounds === num
-                                ? "bg-goblinPrimary text-black"
-                                : "bg-white/[0.05] text-zinc-400 hover:text-white"
-                            }`}
-                          >
-                            {num}
-                          </button>
-                        ))}
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <span className="text-zinc-400 font-semibold">Preguntar:</span>
-                        {(["song", "artist", "both"] as GuessType[]).map((gt) => (
-                          <button
-                            key={gt}
-                            onClick={() => handleChangeSettings({ guessType: gt })}
-                            className={`px-2.5 py-1 rounded-lg font-bold transition ${
-                              room.guessType === gt
-                                ? "bg-goblinPrimary text-black"
-                                : "bg-white/[0.05] text-zinc-400 hover:text-white"
-                            }`}
-                          >
-                            {gt === "song" ? "Canción" : gt === "artist" ? "Artista" : "Ambos"}
-                          </button>
-                        ))}
+                        {room.gameMode === "survival" ? (
+                          <span className="px-3 py-1 rounded-lg font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                            ∞ Rondas Infinitas · 3 Vidas ❤️❤️❤️
+                          </span>
+                        ) : (
+                          [5, 10, 15, 20].map((num) => (
+                            <button
+                              key={num}
+                              onClick={() => handleChangeSettings({ totalRounds: num })}
+                              className={`px-2.5 py-1 rounded-lg font-bold transition ${
+                                room.totalRounds === num
+                                  ? "bg-goblinPrimary text-black"
+                                  : "bg-white/[0.05] text-zinc-400 hover:text-white"
+                              }`}
+                            >
+                              {num}
+                            </button>
+                          ))
+                        )}
                       </div>
                     </div>
                   )}

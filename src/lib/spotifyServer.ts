@@ -14,7 +14,7 @@ export { resolveSpotifyRedirectUri, resolveSpotifyOrigin } from "./spotify";
 export { getSpotifyAppToken } from "./spotifyAppToken";
 
 // Bypass local Windows certificate verification issues for iTunes and Spotify APIs
-if (typeof process !== "undefined" && process.env) {
+if (typeof process !== "undefined" && process.env && process.env.NODE_ENV !== "production") {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 }
 

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { searchVerifiedTracks, searchItunesCatalog } from "@/lib/musicService";
+import { searchVerifiedTracks, searchItunesCatalog, searchStrictArtistTracks } from "@/lib/musicService";
 import { RANKED_CATEGORIES } from "@/lib/rankedTypes";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
 import { normalizeSongTitle, getTrackTopic, isStrictArtistMatch, hasNonLatinCharacters } from "@/lib/songMatching";
@@ -7,7 +7,7 @@ import { normalizeSongTitle, getTrackTopic, isStrictArtistMatch, hasNonLatinChar
 export const dynamic = "force-dynamic";
 
 // Bypass local Windows certificate verification issues for external music APIs
-if (typeof process !== "undefined" && process.env) {
+if (typeof process !== "undefined" && process.env && process.env.NODE_ENV !== "production") {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 }
 
@@ -229,7 +229,7 @@ export async function GET(request: Request) {
       }
 
       // Complement with iTunes search if deep pool was small
-      const directTracks = await searchItunesCatalog(cleanArtist, 35);
+      const directTracks = await searchStrictArtistTracks(cleanArtist, 35);
       const verified = directTracks.filter((t) => t.previewUrl);
       const merged = [...deepPool];
       for (const t of verified) {
@@ -255,7 +255,7 @@ export async function GET(request: Request) {
       const collected: SpotifyTrackItem[] = [];
 
       for (const artistName of selectedArtists) {
-        const itunesTracks = await searchItunesCatalog(artistName, 5);
+        const itunesTracks = await searchStrictArtistTracks(artistName, 5);
         for (const t of itunesTracks) {
           if (
             t.previewUrl &&

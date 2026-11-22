@@ -123,16 +123,24 @@ export function matchSongTitleStrict(t1: string, t2: string): boolean {
   const n2 = deepNormalize(t2);
   if (n1 === n2) return true;
   if (!n1 || !n2) return false;
-  if (n1.length >= 4 && n2.length >= 4) {
-    if (n1.startsWith(n2) || n2.startsWith(n1)) return true;
+
+  const words1 = n1.split(" ").filter((w) => w.length > 1);
+  const words2 = n2.split(" ").filter((w) => w.length > 1);
+  if (words1.length === 0 || words2.length === 0) return false;
+  const set2 = new Set(words2);
+  const common = words1.filter((w) => set2.has(w)).length;
+
+  if (common >= 2 && common / Math.max(words1.length, words2.length) >= 0.85) {
+    return true;
   }
-  return getKeywordOverlapRatio(t1, t2) >= 0.8;
+  return false;
 }
 
 /**
- * Split regex for artist collaborations.
+ * Split regex for artist collaborations (using non-capturing groups so .split() does not leak separators).
  */
-export const ARTIST_COLLAB_REGEX = /[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)|(\s+with\s+)|(\s+x\s+)|(\s+y\s+)/i;
+export const ARTIST_COLLAB_REGEX =
+  /[/,&]|(?:\s+feat\.?\s+)|(?:\s+ft\.?\s+)|(?:\s+with\s+)|(?:\s+x\s+)|(?:\s+y\s+)/i;
 
 /**
  * Common stop words in Spanish & English artist names.
@@ -492,11 +500,21 @@ export function getCoherentDistractors(
 }
 
 /**
- * In-memory caches to ensure fast parallel generation across all 10 questions (under 600ms total).
+ * In-memory caches to ensure fast parallel generation across all 10 questions (max 200 entries each).
  */
 const albumTracksMemoryCache = new Map<string, Array<{ title: string; artist: string; artworkUrl: string }>>();
 const artistTracksMemoryCache = new Map<string, Array<{ title: string; artist: string; artworkUrl: string }>>();
 const relatedTracksMemoryCache = new Map<string, Array<{ title: string; artist: string; artworkUrl: string }>>();
+
+function setBoundedCache<K, V>(map: Map<K, V>, key: K, value: V, maxEntries = 200) {
+  if (map.size >= maxEntries) {
+    const firstKey = map.keys().next().value;
+    if (firstKey !== undefined) map.delete(firstKey);
+  }
+  map.set(key, value);
+}
+
+const JUNK_SONG_REGEX = /karaoke|tribute|cover|instrumental|lullaby|piano version/i;
 
 /**
  * Builds challenging, realistic distractors following strict hierarchy:
@@ -533,6 +551,11 @@ export async function getDifficultDistractors(
     if (distractors.length >= count) return false;
     const norm = deepNormalize(item.title);
     if (!norm || seenTitles.has(norm)) return false;
+
+    // Filter junk tracks (karaoke, cover, instrumental, etc.)
+    if (JUNK_SONG_REGEX.test(item.title) || JUNK_SONG_REGEX.test(item.artist || "")) {
+      return false;
+    }
 
     // Filter out non-Latin scripts if target is Latin
     if (isTargetLatin && (hasNonLatinCharacters(item.title) || hasNonLatinCharacters(item.artist))) {
@@ -578,10 +601,16 @@ export async function getDifficultDistractors(
           if (data.results && Array.isArray(data.results)) {
             const list: Array<{ title: string; artist: string; artworkUrl: string }> = [];
             const normAlbum = deepNormalize(albumName);
-            for (const item of data.results) {
-              if (!item.trackName) continue;
-              const itColl = deepNormalize(item.collectionName || "");
-              if (itColl && (itColl === normAlbum || itColl.includes(normAlbum) || normAlbum.includes(itColl))) {
+            if (normAlbum.length >= 4) {
+              for (const item of data.results) {
+                if (!item.trackName) continue;
+                if (!isStrictArtistMatch(item.artistName, mainArtist)) continue;
+                if (JUNK_SONG_REGEX.test(item.trackName) || JUNK_SONG_REGEX.test(item.artistName || "")) continue;
+                const itColl = deepNormalize(item.collectionName || "");
+                if (!itColl) continue;
+                const isAlbumMatch = itColl === normAlbum || getKeywordOverlapRatio(itColl, normAlbum) >= 0.8;
+                if (!isAlbumMatch) continue;
+
                 const art = item.artworkUrl100
                   ? item.artworkUrl100.replace("100x100bb", "600x600bb")
                   : getFallbackArtwork(item.trackName, item.artistName || mainArtist);
@@ -593,7 +622,7 @@ export async function getDifficultDistractors(
               }
             }
             albumSongs = list;
-            albumTracksMemoryCache.set(albumKey, list);
+            setBoundedCache(albumTracksMemoryCache, albumKey, list);
           }
         }
       } catch {
@@ -654,7 +683,7 @@ export async function getDifficultDistractors(
                 }
               }
               artistSongs = list;
-              artistTracksMemoryCache.set(artistKey, list);
+              setBoundedCache(artistTracksMemoryCache, artistKey, list);
             }
           }
         } catch {
@@ -724,7 +753,7 @@ export async function getDifficultDistractors(
                   } catch {}
                 }
                 relatedSongs = list;
-                relatedTracksMemoryCache.set(relKey, list);
+                setBoundedCache(relatedTracksMemoryCache, relKey, list);
               }
             }
           }

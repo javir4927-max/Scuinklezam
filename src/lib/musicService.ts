@@ -10,7 +10,7 @@ import {
 } from "./songMatching";
 
 // Bypass local Windows certificate verification issues for iTunes and Spotify APIs
-if (typeof process !== "undefined" && process.env) {
+if (typeof process !== "undefined" && process.env && process.env.NODE_ENV !== "production") {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 }
 
@@ -314,4 +314,63 @@ export async function searchVerifiedTracks(
   }
 
   return collected;
+}
+
+/**
+ * Strictly searches tracks by a given artist name on iTunes.
+ * Guarantees:
+ * - isStrictArtistMatch(item.artistName, artistName) is true
+ * - Has valid previewUrl (audio stream)
+ * - Excludes karaoke, tribute, cover, instrumental, lullaby, piano version
+ * - Preserves Latin script if the artist name is Latin
+ */
+export async function searchStrictArtistTracks(
+  artistName: string,
+  limit = 25
+): Promise<SpotifyTrackItem[]> {
+  const cleanArtist = (artistName || "").trim();
+  if (!cleanArtist) return [];
+
+  const isLatin = !hasNonLatinCharacters(cleanArtist);
+  const JUNK_REGEX = /karaoke|tribute|cover|instrumental|lullaby|piano version/i;
+
+  try {
+    const fetchLimit = Math.min(50, Math.max(limit * 2, 30));
+    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(cleanArtist)}&entity=song&attribute=artistTerm&country=ES&limit=${fetchLimit}`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Scuinklezam/1.0" },
+      signal: AbortSignal.timeout(4000),
+      next: { revalidate: 1800 },
+    });
+
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!data.results || !Array.isArray(data.results)) return [];
+
+    const tracks: SpotifyTrackItem[] = [];
+    const seenTitles = new Set<string>();
+
+    for (let i = 0; i < data.results.length; i++) {
+      const item = data.results[i];
+      if (!item.trackName || !item.previewUrl) continue;
+      if (!isStrictArtistMatch(item.artistName || "", cleanArtist)) continue;
+      if (JUNK_REGEX.test(item.trackName) || JUNK_REGEX.test(item.artistName || "")) continue;
+      if (isLatin && (hasNonLatinCharacters(item.trackName) || hasNonLatinCharacters(item.artistName || ""))) continue;
+
+      const normTitle = deepNormalize(item.trackName);
+      if (!normTitle || seenTitles.has(normTitle)) continue;
+      seenTitles.add(normTitle);
+
+      const normalized = normalizeItunesItem(item, i);
+      if (normalized && normalized.previewUrl) {
+        tracks.push(normalized);
+        if (tracks.length >= limit) break;
+      }
+    }
+
+    return tracks;
+  } catch (err) {
+    console.warn("[searchStrictArtistTracks] error:", err);
+    return [];
+  }
 }

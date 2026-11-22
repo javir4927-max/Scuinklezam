@@ -41,7 +41,13 @@ class AudioPlayerService {
 
       this.audioEl = new Audio();
       // DO NOT set crossOrigin="anonymous": causes CORS failures with Apple CDN (audio-ssl.itunes.apple.com)
-      this.audioEl.volume = Math.max(0.05, this.currentVolume);
+      if (this.currentVolume === 0) {
+        this.audioEl.volume = 0;
+        this.audioEl.muted = true;
+      } else {
+        this.audioEl.muted = false;
+        this.audioEl.volume = this.currentVolume;
+      }
 
       this.preloaderEl = new Audio();
       this.preloaderEl.preload = "auto";
@@ -93,8 +99,13 @@ class AudioPlayerService {
   public async unlock(): Promise<boolean> {
     if (typeof window === "undefined" || !this.audioEl) return false;
     try {
-      this.audioEl.muted = false;
-      this.audioEl.volume = Math.max(0.05, this.currentVolume);
+      if (this.currentVolume === 0) {
+        this.audioEl.volume = 0;
+        this.audioEl.muted = true;
+      } else {
+        this.audioEl.muted = false;
+        this.audioEl.volume = this.currentVolume;
+      }
       this.audioEl.src = SILENT_WAV;
       const playPromise = this.audioEl.play();
       if (playPromise !== undefined) {
@@ -146,7 +157,13 @@ class AudioPlayerService {
       this.audioEl.pause();
       this.audioEl.currentTime = 0;
       this.audioEl.src = url;
-      this.audioEl.volume = Math.max(0.05, this.currentVolume);
+      if (this.currentVolume === 0) {
+        this.audioEl.volume = 0;
+        this.audioEl.muted = true;
+      } else {
+        this.audioEl.muted = false;
+        this.audioEl.volume = this.currentVolume;
+      }
 
       const playPromise = this.audioEl.play();
       if (playPromise !== undefined) {
@@ -184,8 +201,13 @@ class AudioPlayerService {
     if (!this.audioEl || !this.currentUrl) return false;
 
     try {
-      this.audioEl.muted = false;
-      this.audioEl.volume = Math.max(0.05, this.currentVolume);
+      if (this.currentVolume === 0) {
+        this.audioEl.volume = 0;
+        this.audioEl.muted = true;
+      } else {
+        this.audioEl.muted = false;
+        this.audioEl.volume = this.currentVolume;
+      }
       await this.audioEl.play();
       this.isPlaying = true;
       this.isBlocked = false;
@@ -246,7 +268,13 @@ class AudioPlayerService {
   public setVolume(vol: number) {
     this.currentVolume = Math.max(0, Math.min(1, vol));
     if (this.audioEl) {
-      this.audioEl.volume = Math.max(0.05, this.currentVolume);
+      if (this.currentVolume === 0) {
+        this.audioEl.volume = 0;
+        this.audioEl.muted = true;
+      } else {
+        this.audioEl.muted = false;
+        this.audioEl.volume = this.currentVolume;
+      }
     }
   }
 

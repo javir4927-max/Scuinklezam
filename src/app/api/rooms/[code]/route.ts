@@ -1,4 +1,4 @@
-if (typeof process !== "undefined" && process.env) {
+if (typeof process !== "undefined" && process.env && process.env.NODE_ENV !== "production") {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 }
 
@@ -49,7 +49,7 @@ export async function GET(request: Request, { params }: RouteParams) {
 
   if (!room) {
     return NextResponse.json(
-      { success: false, error: "Sala no encontrada o inactiva." },
+      { success: false, error: "Sala no encontrada o inactiva.", serverTime: Date.now() },
       { status: 404, headers: NO_CACHE_HEADERS }
     );
   }
@@ -58,6 +58,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     {
       success: true,
       room,
+      serverTime: Date.now(),
     },
     { headers: NO_CACHE_HEADERS }
   );
@@ -65,14 +66,6 @@ export async function GET(request: Request, { params }: RouteParams) {
 
 export async function PATCH(request: Request, { params }: RouteParams) {
   const code = params.code?.toUpperCase();
-  const room = await getRoom(code);
-
-  if (!room) {
-    return NextResponse.json(
-      { success: false, error: "Sala no encontrada." },
-      { status: 404, headers: NO_CACHE_HEADERS }
-    );
-  }
 
   try {
     const body = await request.json();
@@ -91,28 +84,32 @@ export async function PATCH(request: Request, { params }: RouteParams) {
 
         if (!joinResult.success) {
           return NextResponse.json(
-            { success: false, error: joinResult.error },
+            { success: false, error: joinResult.error, serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
         return NextResponse.json(
-          { success: true, room: joinResult.room },
+          { success: true, room: joinResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
 
-
       case "update_taste": {
         if (!playerId || !Array.isArray(body.favoriteArtists)) {
           return NextResponse.json(
-            { success: false, error: "Datos incompletos" },
+            { success: false, error: "Datos incompletos", serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
-        await updatePlayerTaste(code, playerId, body.favoriteArtists);
-        const updated = await getRoom(code);
+        const tasteResult = await updatePlayerTaste(code, playerId, body.favoriteArtists);
+        if (!tasteResult.success) {
+          return NextResponse.json(
+            { success: false, error: tasteResult.error, serverTime: Date.now() },
+            { status: 400, headers: NO_CACHE_HEADERS }
+          );
+        }
         return NextResponse.json(
-          { success: true, room: updated },
+          { success: true, room: tasteResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
@@ -120,14 +117,19 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       case "inject_spotify_tracks": {
         if (!playerId || !Array.isArray(body.tracks)) {
           return NextResponse.json(
-            { success: false, error: "Datos incompletos para inyección de canciones" },
+            { success: false, error: "Datos incompletos para inyección de canciones", serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
-        await injectSpotifyTracksToRoom(code, playerId, body.tracks, body.artists, body.label, body.modeName);
-        const updated = await getRoom(code);
+        const injectResult = await injectSpotifyTracksToRoom(code, playerId, body.tracks, body.artists, body.label, body.modeName);
+        if (!injectResult.success) {
+          return NextResponse.json(
+            { success: false, error: injectResult.error, serverTime: Date.now() },
+            { status: 400, headers: NO_CACHE_HEADERS }
+          );
+        }
         return NextResponse.json(
-          { success: true, room: updated },
+          { success: true, room: injectResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
@@ -135,14 +137,19 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       case "propose_theme": {
         if (!playerId || !body.label) {
           return NextResponse.json(
-            { success: false, error: "Tema no especificado" },
+            { success: false, error: "Tema no especificado", serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
-        await proposeTheme(code, playerId, body.label);
-        const updated = await getRoom(code);
+        const propResult = await proposeTheme(code, playerId, body.label);
+        if (!propResult.success) {
+          return NextResponse.json(
+            { success: false, error: propResult.error, serverTime: Date.now() },
+            { status: 400, headers: NO_CACHE_HEADERS }
+          );
+        }
         return NextResponse.json(
-          { success: true, room: updated },
+          { success: true, room: propResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
@@ -150,14 +157,19 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       case "vote_theme": {
         if (!playerId || !body.proposalId) {
           return NextResponse.json(
-            { success: false, error: "Propuesta no especificada" },
+            { success: false, error: "Propuesta no especificada", serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
-        await voteTheme(code, playerId, body.proposalId);
-        const updated = await getRoom(code);
+        const voteResult = await voteTheme(code, playerId, body.proposalId);
+        if (!voteResult.success) {
+          return NextResponse.json(
+            { success: false, error: voteResult.error, serverTime: Date.now() },
+            { status: 400, headers: NO_CACHE_HEADERS }
+          );
+        }
         return NextResponse.json(
-          { success: true, room: updated },
+          { success: true, room: voteResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
@@ -165,13 +177,13 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       case "leave_room": {
         if (!playerId) {
           return NextResponse.json(
-            { success: false, error: "playerId requerido" },
+            { success: false, error: "playerId requerido", serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
         const leaveResult = await leaveRoom(code, playerId);
         return NextResponse.json(
-          { success: true, room: leaveResult.room },
+          { success: true, room: leaveResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
@@ -180,34 +192,33 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         const themeId = body.themeId;
         if (!playerId || !themeId) {
           return NextResponse.json(
-            { success: false, error: "Datos de voto no válidos" },
+            { success: false, error: "Datos de voto no válidos", serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
 
         const voteResult = await castVote(code, playerId, themeId);
         return NextResponse.json(
-          { success: true, room: voteResult.room },
+          { success: true, room: voteResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
 
       case "change_settings": {
-        const changed = await changeRoomSettings(code, playerId, {
+        const settingsResult = await changeRoomSettings(code, playerId, {
           gameMode: body.gameMode,
           guessType: body.guessType,
           totalRounds: body.totalRounds,
           name: body.name,
         });
-        if (!changed) {
+        if (!settingsResult.success) {
           return NextResponse.json(
-            { success: false, error: "No autorizado o sala no válida" },
+            { success: false, error: settingsResult.error || "No autorizado o sala no válida", serverTime: Date.now() },
             { status: 403, headers: NO_CACHE_HEADERS }
           );
         }
-        const updated = await getRoom(code);
         return NextResponse.json(
-          { success: true, room: updated },
+          { success: true, room: settingsResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
@@ -216,13 +227,12 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         const startResult = await startRoomGame(code, playerId);
         if (!startResult.success) {
           return NextResponse.json(
-            { success: false, error: startResult.error },
+            { success: false, error: startResult.error, serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
-        const updated = startResult.room || (await getRoom(code));
         return NextResponse.json(
-          { success: true, room: updated },
+          { success: true, room: startResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
@@ -230,7 +240,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       case "submit_answer": {
         if (typeof body.optionIndex !== "number" || !playerId) {
           return NextResponse.json(
-            { success: false, error: "Respuesta no válida" },
+            { success: false, error: "Respuesta no válida", serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
@@ -244,25 +254,23 @@ export async function PATCH(request: Request, { params }: RouteParams) {
           typeof body.selectedTitle === "string" ? body.selectedTitle : undefined,
           typeof body.optionId === "string" ? body.optionId : undefined
         );
-        const updated = ansResult.room || (await getRoom(code));
         return NextResponse.json(
           {
-            success: true,
+            success: ansResult.success,
             pointsEarned: ansResult.pointsEarned,
             isCorrect: ansResult.isCorrect,
-            room: updated,
+            room: ansResult.room,
+            serverTime: Date.now(),
           },
           { headers: NO_CACHE_HEADERS }
         );
       }
 
       case "next_round": {
-        const expectedRoundIndex =
-          typeof body.expectedRoundIndex === "number" ? body.expectedRoundIndex : room.currentRound;
+        const expectedRoundIndex = typeof body.expectedRoundIndex === "number" ? body.expectedRoundIndex : 1;
         const advanceResult = await advanceRoomRound(code, playerId || "", expectedRoundIndex);
-        const updated = advanceResult.room || (await getRoom(code));
         return NextResponse.json(
-          { success: true, room: updated },
+          { success: advanceResult.success, room: advanceResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
@@ -270,19 +278,19 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       case "kick_player": {
         if (!playerId || !body.targetPlayerId) {
           return NextResponse.json(
-            { success: false, error: "Datos de expulsión incompletos" },
+            { success: false, error: "Datos de expulsión incompletos", serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
         const kickResult = await kickPlayer(code, playerId, body.targetPlayerId);
         if (!kickResult.success) {
           return NextResponse.json(
-            { success: false, error: kickResult.error },
+            { success: false, error: kickResult.error, serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
         return NextResponse.json(
-          { success: true, room: kickResult.room },
+          { success: true, room: kickResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
@@ -290,19 +298,19 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       case "transfer_host": {
         if (!playerId || !body.targetPlayerId) {
           return NextResponse.json(
-            { success: false, error: "Datos de transferencia incompletos" },
+            { success: false, error: "Datos de transferencia incompletos", serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
         const transferResult = await transferHost(code, playerId, body.targetPlayerId);
         if (!transferResult.success) {
           return NextResponse.json(
-            { success: false, error: transferResult.error },
+            { success: false, error: transferResult.error, serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
         return NextResponse.json(
-          { success: true, room: transferResult.room },
+          { success: true, room: transferResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
@@ -310,19 +318,19 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       case "rename_player": {
         if (!playerId || !body.name) {
           return NextResponse.json(
-            { success: false, error: "Nombre no especificado" },
+            { success: false, error: "Nombre no especificado", serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
         const renameResult = await renamePlayer(code, playerId, body.name);
         if (!renameResult.success) {
           return NextResponse.json(
-            { success: false, error: renameResult.error },
+            { success: false, error: renameResult.error, serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
         return NextResponse.json(
-          { success: true, room: renameResult.room },
+          { success: true, room: renameResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
@@ -330,7 +338,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       case "update_player_profile": {
         if (!playerId) {
           return NextResponse.json(
-            { success: false, error: "Player ID requerido" },
+            { success: false, error: "Player ID requerido", serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
@@ -340,12 +348,12 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         });
         if (!updateResult.success) {
           return NextResponse.json(
-            { success: false, error: updateResult.error },
+            { success: false, error: updateResult.error, serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
         return NextResponse.json(
-          { success: true, room: updateResult.room },
+          { success: true, room: updateResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
@@ -353,19 +361,19 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       case "add_playlist": {
         if (!playerId || !body.playlist) {
           return NextResponse.json(
-            { success: false, error: "Datos de playlist incompletos" },
+            { success: false, error: "Datos de playlist incompletos", serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
         const addResult = await addPlaylistToRoom(code, playerId, body.playlist);
         if (!addResult.success) {
           return NextResponse.json(
-            { success: false, error: addResult.error },
+            { success: false, error: addResult.error, serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
         return NextResponse.json(
-          { success: true, room: addResult.room },
+          { success: true, room: addResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
@@ -373,49 +381,48 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       case "remove_playlist": {
         if (!playerId || !body.playlistId) {
           return NextResponse.json(
-            { success: false, error: "ID de playlist no especificado" },
+            { success: false, error: "ID de playlist no especificado", serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
         const removeResult = await removePlaylistFromRoom(code, playerId, body.playlistId);
         if (!removeResult.success) {
           return NextResponse.json(
-            { success: false, error: removeResult.error },
+            { success: false, error: removeResult.error, serverTime: Date.now() },
             { status: 400, headers: NO_CACHE_HEADERS }
           );
         }
         return NextResponse.json(
-          { success: true, room: removeResult.room },
+          { success: true, room: removeResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
 
       case "reset_room":
       case "reset_to_lobby": {
-        const resetSuccess = await resetRoomToLobby(code, playerId);
-        if (!resetSuccess) {
+        const resetResult = await resetRoomToLobby(code, playerId);
+        if (!resetResult.success) {
           return NextResponse.json(
-            { success: false, error: "Solo el anfitrión puede reiniciar la sala." },
+            { success: false, error: resetResult.error || "Solo el anfitrión puede reiniciar la sala.", serverTime: Date.now() },
             { status: 403, headers: NO_CACHE_HEADERS }
           );
         }
-        const updated = await getRoom(code);
         return NextResponse.json(
-          { success: true, room: updated },
+          { success: true, room: resetResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }
 
       default:
         return NextResponse.json(
-          { success: false, error: "Acción no reconocida" },
+          { success: false, error: "Acción no reconocida", serverTime: Date.now() },
           { status: 400, headers: NO_CACHE_HEADERS }
         );
     }
   } catch (error: any) {
     console.error("Room action error:", error);
     return NextResponse.json(
-      { success: false, error: error?.message || "Error procesando acción" },
+      { success: false, error: error?.message || "Error procesando acción", serverTime: Date.now() },
       { status: 500, headers: NO_CACHE_HEADERS }
     );
   }
@@ -440,19 +447,19 @@ export async function POST(request: Request, { params }: RouteParams) {
     if (body.action === "leave_room" && body.playerId) {
       const leaveResult = await leaveRoom(code, body.playerId);
       return NextResponse.json(
-        { success: true, room: leaveResult.room },
+        { success: true, room: leaveResult.room, serverTime: Date.now() },
         { headers: NO_CACHE_HEADERS }
       );
     }
 
     return NextResponse.json(
-      { success: false, error: "Acción POST no reconocida" },
+      { success: false, error: "Acción POST no reconocida", serverTime: Date.now() },
       { status: 400, headers: NO_CACHE_HEADERS }
     );
   } catch (err: any) {
     console.error("Room POST action error:", err);
     return NextResponse.json(
-      { success: false, error: err?.message || "Error procesando acción" },
+      { success: false, error: err?.message || "Error procesando acción", serverTime: Date.now() },
       { status: 500, headers: NO_CACHE_HEADERS }
     );
   }

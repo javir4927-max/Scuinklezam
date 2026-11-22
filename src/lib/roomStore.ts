@@ -1,10 +1,10 @@
-if (typeof process !== "undefined" && process.env) {
+if (typeof process !== "undefined" && process.env && process.env.NODE_ENV !== "production") {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 }
 
 import { Redis } from "@upstash/redis";
 import { SpotifyTrackItem, FALLBACK_SPOTIFY_TRACKS, getFallbackArtwork } from "./spotifyTypes";
-import { searchVerifiedTracks, resolveAudioStream } from "./musicService";
+import { searchVerifiedTracks, searchStrictArtistTracks, resolveAudioStream } from "./musicService";
 import {
   getTrackTopic,
   getCoherentDistractors,
@@ -128,6 +128,7 @@ export interface RoomState {
   code: string;
   hostId: string;
   name: string;
+  version: number;
   status: "lobby" | "countdown" | "voting" | "playing" | "round_reveal" | "finished";
   gameMode: GameMode;
   guessType: GuessType;
@@ -145,6 +146,7 @@ export interface RoomState {
   votingCandidates?: VotingCandidate[];
   candidateRounds?: Record<string, RoundData[]>;
   winningTheme?: string;
+  themeVotes?: Record<string, string>;
   players: Player[];
   themeProposals: ThemeProposal[];
   rounds: RoundData[];
@@ -277,6 +279,19 @@ export async function withRoomLock<T>(code: string, fn: () => Promise<T>): Promi
       }
     }
   }
+}
+
+/**
+ * Helper to process items in parallel chunks to prevent CDN rate limits
+ */
+async function processInChunks<T, R>(items: T[], chunkSize: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const chunkResults = await Promise.all(chunk.map(fn));
+    results.push(...chunkResults);
+  }
+  return results;
 }
 
 /**
@@ -465,7 +480,7 @@ export function fisherYatesShuffle<T>(array: T[]): T[] {
 }
 
 /**
- * Fast HEAD validation for audio URLs (2s timeout).
+ * Fast HEAD validation for audio URLs (1.5s timeout).
  * Returns true if status is 200 or 206 (partial content streaming).
  */
 export async function validateAudioUrl(url: string | null | undefined): Promise<boolean> {
@@ -473,7 +488,7 @@ export async function validateAudioUrl(url: string | null | undefined): Promise<
   try {
     const res = await fetch(url, {
       method: "HEAD",
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(1500),
     });
     return res.status === 200 || res.status === 206 || res.ok;
   } catch {
@@ -516,6 +531,102 @@ export async function ensureVerifiedTrackAudio(track: SpotifyTrackItem): Promise
 }
 
 /**
+ * Builds coherent, audio-verified rounds for a specified theme/artist query.
+ */
+export async function buildRoundsForTheme(themeQuery: string, totalRounds = 10): Promise<RoundData[]> {
+  const candidatePool: SpotifyTrackItem[] = [];
+  const searchPromises: Promise<SpotifyTrackItem[]>[] = [
+    searchVerifiedTracks(themeQuery, 20),
+  ];
+
+  // Also query specific artist terms if query has multiple words
+  const terms = themeQuery.split(/\s+/).filter((w) => w.length > 2).slice(0, 5);
+  for (const term of terms) {
+    searchPromises.push(searchStrictArtistTracks(term, 8));
+  }
+
+  const settled = await Promise.allSettled(searchPromises);
+  for (const res of settled) {
+    if (res.status === "fulfilled" && Array.isArray(res.value)) {
+      candidatePool.push(...res.value);
+    }
+  }
+
+  const seen = new Set<string>();
+  const uniquePool: SpotifyTrackItem[] = [];
+  for (const t of candidatePool) {
+    if (!t || !t.previewUrl || !t.previewUrl.startsWith("http") || !t.artworkUrl) continue;
+    const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+    if (!seen.has(key) && !seen.has(t.id)) {
+      seen.add(key);
+      seen.add(t.id);
+      uniquePool.push(t);
+    }
+  }
+
+  if (uniquePool.length < totalRounds) {
+    for (const fb of FALLBACK_SPOTIFY_TRACKS) {
+      const key = `${fb.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${fb.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+      if (!seen.has(key) && !seen.has(fb.id)) {
+        seen.add(key);
+        seen.add(fb.id);
+        uniquePool.push(fb);
+      }
+    }
+  }
+
+  const shuffledTargets = fisherYatesShuffle(uniquePool).slice(0, totalRounds);
+
+  // Parallel verification in chunks of 5
+  const verifiedTargets = await processInChunks(shuffledTargets, 5, ensureVerifiedTrackAudio);
+
+  const usedDistractorKeys = new Set<string>();
+  const rounds: RoundData[] = await Promise.all(
+    verifiedTargets.map(async (target, i) => {
+      const targetTopic = getTrackTopic(target);
+      const roundNumber = i + 1;
+      const correctOptId = `opt_${roundNumber}_c_${Math.random().toString(36).substring(2, 7)}`;
+      const correctOption: RoundOption = {
+        id: correctOptId,
+        title: target.title,
+        artist: target.artist,
+        artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+        topic: targetTopic,
+      };
+
+      const distractors = await getDifficultDistractors(target, uniquePool, 3, usedDistractorKeys);
+      const distractorOptions: RoundOption[] = distractors.map((d, dIdx) => ({
+        id: `opt_${roundNumber}_d${dIdx}_${Math.random().toString(36).substring(2, 7)}`,
+        title: d.title,
+        artist: d.artist,
+        artworkUrl: d.artworkUrl,
+        topic: d.topic,
+      }));
+
+      const options = fisherYatesShuffle([correctOption, ...distractorOptions]);
+      const correctIndex = options.findIndex((opt) => opt.id === correctOption.id);
+
+      return {
+        roundNumber,
+        targetTrack: {
+          ...target,
+          artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+          topic: targetTopic,
+        },
+        options,
+        correctIndex: correctIndex >= 0 ? correctIndex : 0,
+        correctOptionId: correctOption.id,
+        correctTrackId: target.id,
+        correctTitle: target.title,
+        topic: targetTopic,
+      };
+    })
+  );
+
+  return rounds;
+}
+
+/**
  * Generates an infinite batch of coherent, audio-verified rounds for Survival mode.
  * Excludes already played tracks (using room.usedTrackKeys).
  * Guarantees unique option IDs and tracks usedDistractorKeys across rounds.
@@ -525,7 +636,7 @@ export async function generateSurvivalBatch(room: RoomState, count: number = 10)
   const usedDistractorKeys = new Set<string>();
   const startRoundNumber = room.rounds.length + 1;
 
-  // 1. Gather candidates from player injected tracks and favorites
+  // 1. Gather candidates from player injected tracks, custom playlists, and favorites
   const candidatePool: SpotifyTrackItem[] = [];
 
   room.players.forEach((p) => {
@@ -534,22 +645,36 @@ export async function generateSurvivalBatch(room: RoomState, count: number = 10)
     }
   });
 
+  if (room.playlists && room.playlists.length > 0) {
+    room.playlists.forEach((pl) => {
+      if (pl.tracks && pl.tracks.length > 0) {
+        candidatePool.push(...pl.tracks);
+      }
+    });
+  }
+
   const playerArtists = Array.from(
     new Set(room.players.flatMap((p) => p.favoriteArtists).filter((a) => a && a.trim().length > 0))
   );
 
-  // If candidatePool has few unused tracks, search iTunes for player artists
+  // If candidatePool has few unused tracks, search iTunes for player artists in parallel
   const unusedFromPool = candidatePool.filter((t) => {
     const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
     return !usedKeys.has(key);
   });
 
-  if (unusedFromPool.length < count * 2 && playerArtists.length > 0) {
-    for (const artist of playerArtists.slice(0, 6)) {
-      try {
-        const found = await searchVerifiedTracks(artist, 6);
-        candidatePool.push(...found);
-      } catch {}
+  if (unusedFromPool.length < count * 2) {
+    const searchArtists = playerArtists.length > 0
+      ? playerArtists.slice(0, 6)
+      : ["Quevedo", "Bad Bunny", "Duki", "Aitana", "Saiko", "Feid"];
+
+    const searchResults = await Promise.allSettled(
+      searchArtists.map((artist) => searchStrictArtistTracks(artist, 8))
+    );
+    for (const res of searchResults) {
+      if (res.status === "fulfilled" && Array.isArray(res.value)) {
+        candidatePool.push(...res.value);
+      }
     }
   }
 
@@ -576,52 +701,55 @@ export async function generateSurvivalBatch(room: RoomState, count: number = 10)
 
   const shuffledTargets = fisherYatesShuffle(availableTracks).slice(0, count);
 
-  const newRounds: RoundData[] = [];
-  for (let i = 0; i < shuffledTargets.length; i++) {
-    const rawTarget = shuffledTargets[i];
-    const target = await ensureVerifiedTrackAudio(rawTarget);
-    const targetTopic = getTrackTopic(target);
-    const roundNumber = startRoundNumber + i;
+  // Parallel target audio verification in chunks of 5
+  const verifiedTargets = await processInChunks(shuffledTargets, 5, ensureVerifiedTrackAudio);
 
-    const correctOptId = `opt_${roundNumber}_c_${Math.random().toString(36).substring(2, 7)}`;
-    const correctOption: RoundOption = {
-      id: correctOptId,
-      title: target.title,
-      artist: target.artist,
-      artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
-      topic: targetTopic,
-    };
+  // Parallel distractor generation
+  const newRounds: RoundData[] = await Promise.all(
+    verifiedTargets.map(async (target, i) => {
+      const targetTopic = getTrackTopic(target);
+      const roundNumber = startRoundNumber + i;
 
-    const distractors = await getDifficultDistractors(target, candidatePool, 3, usedDistractorKeys);
-    const distractorOptions: RoundOption[] = distractors.map((d, dIdx) => ({
-      id: `opt_${roundNumber}_d${dIdx}_${Math.random().toString(36).substring(2, 7)}`,
-      title: d.title,
-      artist: d.artist,
-      artworkUrl: d.artworkUrl,
-      topic: d.topic,
-    }));
-
-    const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractorOptions]);
-    const correctIndex = options.findIndex((opt) => opt.id === correctOption.id);
-
-    const key = `${target.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${target.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-    usedKeys.add(key);
-
-    newRounds.push({
-      roundNumber,
-      targetTrack: {
-        ...target,
+      const correctOptId = `opt_${roundNumber}_c_${Math.random().toString(36).substring(2, 7)}`;
+      const correctOption: RoundOption = {
+        id: correctOptId,
+        title: target.title,
+        artist: target.artist,
         artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
         topic: targetTopic,
-      },
-      options,
-      correctIndex: correctIndex >= 0 ? correctIndex : 0,
-      correctOptionId: correctOption.id,
-      correctTrackId: target.id,
-      correctTitle: target.title,
-      topic: targetTopic,
-    });
-  }
+      };
+
+      const distractors = await getDifficultDistractors(target, candidatePool, 3, usedDistractorKeys);
+      const distractorOptions: RoundOption[] = distractors.map((d, dIdx) => ({
+        id: `opt_${roundNumber}_d${dIdx}_${Math.random().toString(36).substring(2, 7)}`,
+        title: d.title,
+        artist: d.artist,
+        artworkUrl: d.artworkUrl,
+        topic: d.topic,
+      }));
+
+      const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractorOptions]);
+      const correctIndex = options.findIndex((opt) => opt.id === correctOption.id);
+
+      const key = `${target.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${target.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+      usedKeys.add(key);
+
+      return {
+        roundNumber,
+        targetTrack: {
+          ...target,
+          artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+          topic: targetTopic,
+        },
+        options,
+        correctIndex: correctIndex >= 0 ? correctIndex : 0,
+        correctOptionId: correctOption.id,
+        correctTrackId: target.id,
+        correctTitle: target.title,
+        topic: targetTopic,
+      };
+    })
+  );
 
   room.usedTrackKeys = Array.from(usedKeys);
   return newRounds;
@@ -632,69 +760,62 @@ export async function buildRoundsFromTracks(tracks: SpotifyTrackItem[], totalRou
   const catalog = valid.length >= 4 ? valid : FALLBACK_SPOTIFY_TRACKS;
   const shuffled = fisherYatesShuffle(catalog);
   const count = Math.min(totalRounds, shuffled.length);
+  const targetsSlice = shuffled.slice(0, count);
+
+  const verifiedTargets = await processInChunks(targetsSlice, 5, ensureVerifiedTrackAudio);
   const usedDistractorKeys = new Set<string>();
 
-  const rounds: RoundData[] = [];
-  for (let i = 0; i < count; i++) {
-    const rawTarget = shuffled[i];
-    const target = { ...rawTarget };
-    if (!target.previewUrl || !target.previewUrl.includes("apple.com")) {
-      try {
-        const fresh = await resolveAudioStream(target.title, target.artist);
-        if (fresh?.previewUrl && fresh.previewUrl.includes("apple.com")) {
-          target.previewUrl = fresh.previewUrl;
-          if (fresh.artworkUrl) target.artworkUrl = fresh.artworkUrl;
-        }
-      } catch {}
-    }
+  const rounds: RoundData[] = await Promise.all(
+    verifiedTargets.map(async (target, i) => {
+      const targetTopic = getTrackTopic(target);
+      const roundNumber = i + 1;
+      const correctOptId = `opt_${roundNumber}_c_${Math.random().toString(36).substring(2, 7)}`;
 
-    const targetTopic = getTrackTopic(target);
-    const roundNumber = i + 1;
-    const correctOptId = `opt_${roundNumber}_c_${Math.random().toString(36).substring(2, 7)}`;
-
-    const correctOption: RoundOption = {
-      id: correctOptId,
-      title: target.title,
-      artist: target.artist,
-      artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
-      topic: targetTopic,
-    };
-
-    const distractors = await getDifficultDistractors(target, catalog, 3, usedDistractorKeys);
-    const distractorOptions: RoundOption[] = distractors.map((d, dIdx) => ({
-      id: `opt_${roundNumber}_d${dIdx}_${Math.random().toString(36).substring(2, 7)}`,
-      title: d.title,
-      artist: d.artist,
-      artworkUrl: d.artworkUrl,
-      topic: d.topic,
-    }));
-
-    const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractorOptions]);
-    const correctIndex = options.findIndex((o) => o.id === correctOption.id);
-
-    rounds.push({
-      roundNumber,
-      targetTrack: {
-        ...target,
+      const correctOption: RoundOption = {
+        id: correctOptId,
+        title: target.title,
+        artist: target.artist,
         artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
         topic: targetTopic,
-      },
-      options,
-      correctIndex: correctIndex >= 0 ? correctIndex : 0,
-      correctOptionId: correctOption.id,
-      correctTrackId: target.id,
-      correctTitle: target.title,
-      topic: targetTopic,
-    });
-  }
+      };
+
+      const distractors = await getDifficultDistractors(target, catalog, 3, usedDistractorKeys);
+      const distractorOptions: RoundOption[] = distractors.map((d, dIdx) => ({
+        id: `opt_${roundNumber}_d${dIdx}_${Math.random().toString(36).substring(2, 7)}`,
+        title: d.title,
+        artist: d.artist,
+        artworkUrl: d.artworkUrl,
+        topic: d.topic,
+      }));
+
+      const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractorOptions]);
+      const correctIndex = options.findIndex((o) => o.id === correctOption.id);
+
+      return {
+        roundNumber,
+        targetTrack: {
+          ...target,
+          artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+          topic: targetTopic,
+        },
+        options,
+        correctIndex: correctIndex >= 0 ? correctIndex : 0,
+        correctOptionId: correctOption.id,
+        correctTrackId: target.id,
+        correctTitle: target.title,
+        topic: targetTopic,
+      };
+    })
+  );
 
   return rounds;
 }
 
 /**
- * Persists room state in Upstash Redis and in-memory cache.
+ * Persists room state in Upstash Redis and in-memory cache with monotonic version increment.
  */
 export async function saveRoom(room: RoomState): Promise<void> {
+  room.version = (room.version || 0) + 1;
   const code = room.code.toUpperCase();
   rooms.set(code, room);
   if (redis) {
@@ -760,7 +881,7 @@ export async function getRawRoom(code: string): Promise<RoomState | null> {
 }
 
 /**
- * Creates a new room with host player.
+ * Creates a new room with host player and version 1.
  */
 export async function createRoom(
   hostName: string,
@@ -809,6 +930,7 @@ export async function createRoom(
     code,
     hostId,
     name: roomName ? roomName.trim() : `Sala de ${cleanHostName}`,
+    version: 0,
     status: "lobby",
     gameMode: "blend",
     guessType: "song",
@@ -853,13 +975,13 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
   const now = Date.now();
   const heartbeats = await getPlayerHeartbeats(upperCode);
 
-  // 3. Mark player connectivity (<= 12000ms is connected)
+  // 3. Mark player connectivity (<= 15000ms is connected, lobby prune threshold 45000ms)
   let anyDisconnectedInLobby = false;
   room.players.forEach((p) => {
     const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-    p.isConnected = (now - hb) <= 12000;
+    p.isConnected = (now - hb) <= 15000;
     p.isOnline = p.isConnected;
-    if (room.status === "lobby" && !p.isConnected) {
+    if (room.status === "lobby" && (now - hb) > 45000) {
       anyDisconnectedInLobby = true;
     }
   });
@@ -881,11 +1003,11 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
       const freshHeartbeats = await getPlayerHeartbeats(upperCode);
       freshRoom.players.forEach((p) => {
         const hb = Number(freshHeartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-        p.isConnected = (now - hb) <= 12000;
+        p.isConnected = (now - hb) <= 15000;
         p.isOnline = p.isConnected;
       });
 
-      const progressed = checkRoomStateProgression(freshRoom, freshHeartbeats);
+      const progressed = await checkRoomStateProgression(freshRoom, freshHeartbeats);
       if (progressed) {
         freshRoom.lastActive = Date.now();
         await saveRoom(freshRoom);
@@ -902,7 +1024,7 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
  * Progresses room state authoritatively based on timestamps and player responses.
  * Strictly guarantees rooms NEVER loop back to "lobby" automatically.
  */
-export function checkRoomStateProgression(room: RoomState, heartbeats?: Record<string, number>): boolean {
+export async function checkRoomStateProgression(room: RoomState, heartbeats?: Record<string, number>): Promise<boolean> {
   const now = Date.now();
   let changed = false;
 
@@ -910,15 +1032,18 @@ export function checkRoomStateProgression(room: RoomState, heartbeats?: Record<s
   if (heartbeats) {
     room.players.forEach((p) => {
       const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-      p.isConnected = (now - hb) <= 12000;
+      p.isConnected = (now - hb) <= 15000;
       p.isOnline = p.isConnected;
     });
   }
 
-  // LOBBY: prune disconnected players (>12s)
+  // LOBBY: prune disconnected players (>45s)
   if (room.status === "lobby") {
     const beforeCount = room.players.length;
-    room.players = room.players.filter((p) => p.isConnected !== false);
+    room.players = room.players.filter((p) => {
+      const hb = Number(heartbeats?.[p.id] || p.lastSeen || p.joinedAt || 0);
+      return (now - hb) <= 45000;
+    });
     if (room.players.length !== beforeCount) {
       changed = true;
       if (!room.players.some((p) => p.id === room.hostId) && room.players.length > 0) {
@@ -937,22 +1062,24 @@ export function checkRoomStateProgression(room: RoomState, heartbeats?: Record<s
     if (now >= endsAt || allVoted) {
       let winningCandidate = room.votingCandidates?.[0];
       if (room.votingCandidates && room.votingCandidates.length > 0) {
-        const sorted = [...room.votingCandidates].sort((a, b) => b.votes.length - a.votes.length);
-        const maxVotes = sorted[0].votes.length;
-        const topTied = sorted.filter((c) => c.votes.length === maxVotes);
+        const sorted = [...room.votingCandidates].sort((a, b) => (b.votes?.length || 0) - (a.votes?.length || 0));
+        const maxVotes = sorted[0].votes?.length || 0;
+        const topTied = sorted.filter((c) => (c.votes?.length || 0) === maxVotes);
         winningCandidate = topTied[Math.floor(Math.random() * topTied.length)];
       }
 
       const winnerName = winningCandidate?.name || "Top 50 España";
       room.winningTheme = winnerName;
 
-      if (winningCandidate && room.candidateRounds && room.candidateRounds[winningCandidate.id]) {
+      if (winningCandidate && room.candidateRounds && room.candidateRounds[winningCandidate.id] && room.candidateRounds[winningCandidate.id].length > 0) {
         room.rounds = room.candidateRounds[winningCandidate.id];
+      } else if (winningCandidate) {
+        room.rounds = await buildRoundsForTheme(winningCandidate.query || winningCandidate.name, room.totalRounds || 10);
       }
 
       room.status = "countdown";
       room.countdownStartTime = now;
-      room.countdownEndsAt = now + 3500;
+      room.countdownEndsAt = now + 5000; // 5s countdown
       room.votingStartTime = undefined;
       room.votingEndsAt = undefined;
       room.currentRound = 1;
@@ -1041,6 +1168,17 @@ export function checkRoomStateProgression(room: RoomState, heartbeats?: Record<s
         if (shouldFinish) {
           room.status = "finished";
         } else {
+          // Continuous infinite survival generation
+          if (room.rounds.length - room.currentRound <= 4) {
+            try {
+              const nextBatch = await generateSurvivalBatch(room, 10);
+              room.rounds.push(...nextBatch);
+              room.totalRounds = room.rounds.length;
+            } catch (err) {
+              console.error("[Survival progression] Error generating next batch:", err);
+            }
+          }
+
           room.currentRound += 1;
           room.status = "playing";
           room.roundStartTime = now;
@@ -1162,6 +1300,7 @@ export async function joinRoom(
  * Handles explicit player exit (button or sendBeacon).
  * In lobby: removes player immediately (and transfers host / deletes empty room).
  * In game: marks eliminated/disconnected and removes heartbeat so game progresses without delay.
+ * Reconnection is preserved for classic modes (only survival marks isEliminated = true).
  */
 export async function leaveRoom(
   code: string,
@@ -1188,9 +1327,12 @@ export async function leaveRoom(
       if (player) {
         player.isConnected = false;
         player.isOnline = false;
-        player.isEliminated = true;
-        if (player.eliminatedAtRound === null) {
-          player.eliminatedAtRound = room.currentRound;
+        // Only mark eliminated in survival mode
+        if (room.gameMode === "survival") {
+          player.isEliminated = true;
+          if (player.eliminatedAtRound === null) {
+            player.eliminatedAtRound = room.currentRound;
+          }
         }
       }
 
@@ -1224,18 +1366,18 @@ export async function updatePlayerTaste(
   code: string,
   playerId: string,
   favoriteArtists: string[]
-): Promise<boolean> {
+): Promise<{ success: boolean; room?: RoomState | null; error?: string }> {
   return await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
-    if (!room) return false;
+    if (!room) return { success: false, error: "Sala no encontrada." };
 
     const player = room.players.find((p) => p.id === playerId);
-    if (!player) return false;
+    if (!player) return { success: false, error: "Jugador no encontrado." };
 
     player.favoriteArtists = favoriteArtists.filter((a) => a.trim().length > 0).slice(0, 5);
     room.lastActive = Date.now();
     await saveRoom(room);
-    return true;
+    return { success: true, room };
   });
 }
 
@@ -1249,13 +1391,13 @@ export async function injectSpotifyTracksToRoom(
   artists?: string[],
   label?: string,
   modeName?: string
-): Promise<boolean> {
+): Promise<{ success: boolean; room?: RoomState | null; error?: string }> {
   return await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
-    if (!room) return false;
+    if (!room) return { success: false, error: "Sala no encontrada." };
 
     const player = room.players.find((p) => p.id === playerId);
-    if (!player) return false;
+    if (!player) return { success: false, error: "Jugador no encontrado." };
 
     player.spotifyConnected = true;
 
@@ -1283,7 +1425,7 @@ export async function injectSpotifyTracksToRoom(
 
     room.lastActive = Date.now();
     await saveRoom(room);
-    return true;
+    return { success: true, room };
   });
 }
 
@@ -1435,16 +1577,16 @@ export async function removePlaylistFromRoom(
 /**
  * Proposes a new theme/genre for the lobby vote.
  */
-export async function proposeTheme(code: string, playerId: string, label: string): Promise<boolean> {
+export async function proposeTheme(code: string, playerId: string, label: string): Promise<{ success: boolean; room?: RoomState | null; error?: string }> {
   return await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
-    if (!room) return false;
+    if (!room) return { success: false, error: "Sala no encontrada." };
 
     const player = room.players.find((p) => p.id === playerId);
-    if (!player) return false;
+    if (!player) return { success: false, error: "Jugador no encontrado." };
 
     const cleanLabel = label.trim();
-    if (!cleanLabel) return false;
+    if (!cleanLabel) return { success: false, error: "Tema no válido." };
 
     const newProposal: ThemeProposal = {
       id: `prop_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -1461,20 +1603,20 @@ export async function proposeTheme(code: string, playerId: string, label: string
     room.themeProposals.push(newProposal);
     room.lastActive = Date.now();
     await saveRoom(room);
-    return true;
+    return { success: true, room };
   });
 }
 
 /**
  * Casts a vote for a theme in the lobby.
  */
-export async function voteTheme(code: string, playerId: string, proposalId: string): Promise<boolean> {
+export async function voteTheme(code: string, playerId: string, proposalId: string): Promise<{ success: boolean; room?: RoomState | null; error?: string }> {
   return await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
-    if (!room) return false;
+    if (!room) return { success: false, error: "Sala no encontrada." };
 
     const player = room.players.find((p) => p.id === playerId);
-    if (!player) return false;
+    if (!player) return { success: false, error: "Jugador no encontrado." };
 
     room.themeProposals.forEach((p) => {
       p.votes = p.votes.filter((id) => id !== playerId);
@@ -1488,7 +1630,7 @@ export async function voteTheme(code: string, playerId: string, proposalId: stri
 
     room.lastActive = Date.now();
     await saveRoom(room);
-    return true;
+    return { success: true, room };
   });
 }
 
@@ -1507,11 +1649,22 @@ export async function castVote(code: string, playerId: string, themeId: string):
 
     if (room.votingCandidates) {
       room.votingCandidates.forEach((c) => {
-        c.votes = c.votes.filter((id) => id !== playerId);
+        c.votes = (c.votes || []).filter((id) => id !== playerId);
         if (c.id === themeId) {
           c.votes.push(playerId);
         }
       });
+    }
+
+    if (!room.themeVotes) room.themeVotes = {};
+    room.themeVotes[playerId] = themeId;
+
+    // Check if all active players have voted
+    const activePlayers = room.players.filter((p) => p.isConnected !== false && p.isOnline !== false);
+    const allVoted = activePlayers.length > 0 && activePlayers.every((p) => p.votedTheme !== null);
+
+    if (allVoted) {
+      await checkRoomStateProgression(room);
     }
 
     room.lastActive = Date.now();
@@ -1532,10 +1685,11 @@ export async function changeRoomSettings(
     totalRounds?: number;
     name?: string;
   }
-): Promise<boolean> {
+): Promise<{ success: boolean; room?: RoomState | null; error?: string }> {
   return await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
-    if (!room || room.hostId !== hostId) return false;
+    if (!room) return { success: false, error: "Sala no encontrada." };
+    if (room.hostId !== hostId) return { success: false, error: "No autorizado." };
 
     if (settings.gameMode) room.gameMode = settings.gameMode;
     if (settings.guessType) room.guessType = settings.guessType;
@@ -1544,12 +1698,12 @@ export async function changeRoomSettings(
 
     room.lastActive = Date.now();
     await saveRoom(room);
-    return true;
+    return { success: true, room };
   });
 }
 
 /**
- * Starts game with full atomic lock and distinct round distractors.
+ * Starts game with full atomic lock, distinct round distractors and parallel audio verification.
  */
 export async function startRoomGame(
   code: string,
@@ -1565,153 +1719,13 @@ export async function startRoomGame(
     const now = Date.now();
     room.players.forEach((p) => {
       const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-      p.isConnected = (now - hb) <= 12000;
+      p.isConnected = (now - hb) <= 15000;
       p.isOnline = p.isConnected;
     });
 
     const connectedPlayers = room.players.filter((p) => p.isConnected !== false);
     if (connectedPlayers.length === 0) {
       return { success: false, error: "No hay jugadores conectados en la sala." };
-    }
-
-    // 1. Collect candidate tracks from player taste, injected playlists, and catalogs
-    const candidateTracks: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
-
-    // Injected Spotify tracks
-    room.players.forEach((p) => {
-      if (p.injectedTracks && p.injectedTracks.length > 0) {
-        p.injectedTracks.forEach((t) => {
-          candidateTracks.push({
-            track: t,
-            playerId: p.id,
-            playerName: p.name,
-          });
-        });
-      }
-    });
-
-    // Custom Room Playlists
-    if (room.playlists && room.playlists.length > 0) {
-      room.playlists.forEach((pl) => {
-        (pl.tracks || []).forEach((t) => {
-          candidateTracks.push({
-            track: t,
-            playerId: pl.addedByPlayerId,
-            playerName: pl.addedByPlayerName,
-          });
-        });
-      });
-    }
-
-    // Deduplicate pool
-    const seenUris = new Set<string>();
-    const validUniquePool: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
-
-    for (const item of candidateTracks) {
-      const key = `${item.track.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${item.track.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-      if (!seenUris.has(key) && !seenUris.has(item.track.id)) {
-        seenUris.add(key);
-        seenUris.add(item.track.id);
-        validUniquePool.push(item);
-      }
-    }
-
-    // If pool is small, search tracks for player artists
-    const playerArtists = Array.from(
-      new Set(room.players.flatMap((p) => p.favoriteArtists).filter((a) => a && a.trim().length > 0))
-    );
-
-    if (validUniquePool.length < room.totalRounds * 2 && playerArtists.length > 0) {
-      for (const artist of playerArtists.slice(0, 8)) {
-        try {
-          const found = await searchVerifiedTracks(artist, 5);
-          found.forEach((t) => {
-            const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-            if (!seenUris.has(key) && !seenUris.has(t.id)) {
-              seenUris.add(key);
-              seenUris.add(t.id);
-              validUniquePool.push({ track: t });
-            }
-          });
-        } catch {}
-      }
-    }
-
-    // Fallback tracks if pool is still insufficient
-    if (validUniquePool.length < room.totalRounds) {
-      FALLBACK_SPOTIFY_TRACKS.forEach((t) => {
-        const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-        if (!seenUris.has(key) && !seenUris.has(t.id)) {
-          seenUris.add(key);
-          seenUris.add(t.id);
-          validUniquePool.push({ track: t });
-        }
-      });
-    }
-
-    const randomizedTargets = fisherYatesShuffle(validUniquePool);
-
-    let rounds: RoundData[] = [];
-
-    if (room.gameMode === "survival") {
-      room.usedTrackKeys = [];
-      room.initialPlayerCount = room.players.length;
-      rounds = await generateSurvivalBatch(room, 12);
-      room.totalRounds = rounds.length;
-      room.roundDuration = getSurvivalRoundDuration(0);
-    } else {
-      const roundsToGenerate = Math.min(room.totalRounds, randomizedTargets.length);
-      const poolTracks = validUniquePool.map((u) => u.track);
-      const usedDistractorKeys = new Set<string>();
-
-      for (let i = 0; i < roundsToGenerate; i++) {
-        const item = randomizedTargets[i];
-        const target = await ensureVerifiedTrackAudio(item.track);
-        const targetTopic = getTrackTopic(target);
-        const roundNumber = i + 1;
-
-        const correctOptId = `opt_${roundNumber}_c_${Math.random().toString(36).substring(2, 7)}`;
-        const correctOption: RoundOption = {
-          id: correctOptId,
-          title: target.title,
-          artist: target.artist,
-          artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
-          topic: targetTopic,
-        };
-
-        const distractors = await getDifficultDistractors(target, poolTracks, 3, usedDistractorKeys);
-        const distractorOptions: RoundOption[] = distractors.map((d, dIdx) => ({
-          id: `opt_${roundNumber}_d${dIdx}_${Math.random().toString(36).substring(2, 7)}`,
-          title: d.title,
-          artist: d.artist,
-          artworkUrl: d.artworkUrl,
-          topic: d.topic,
-        }));
-
-        const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractorOptions]);
-        const correctIndex = options.findIndex((opt) => opt.id === correctOption.id);
-
-        const playerSource = item.playerId ? room.players.find((p) => p.id === item.playerId) : undefined;
-
-        rounds.push({
-          roundNumber,
-          targetTrack: {
-            ...target,
-            artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
-            topic: targetTopic,
-          },
-          options,
-          correctIndex: correctIndex >= 0 ? correctIndex : 0,
-          correctOptionId: correctOption.id,
-          correctTrackId: target.id,
-          correctTitle: target.title,
-          topic: targetTopic,
-          contributedByPlayerId: item.playerId,
-          contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name,
-          sourceMode: target.sourceMode || playerSource?.injectedModeName,
-        });
-      }
-      room.roundDuration = ROUND_DURATION_SEC;
     }
 
     // Reset players for new match
@@ -1727,9 +1741,308 @@ export async function startRoomGame(
       p.lostLifeThisRound = false;
       p.currentAnswer = null;
       p.answersByRound = {};
+      p.votedTheme = null;
     });
 
-    room.rounds = rounds;
+    // 1. GAME MODE: VOTE
+    if (room.gameMode === "vote") {
+      const candidates: VotingCandidate[] = [];
+      const userProposals = (room.themeProposals || []).filter((tp) => tp.label && tp.label.trim().length > 0);
+      for (const up of userProposals.slice(0, 2)) {
+        candidates.push({
+          id: up.id,
+          name: up.label,
+          description: `Propuesto por ${up.proposedBy || "jugador"}`,
+          query: up.label,
+          icon: "Sparkles",
+          votes: [],
+        });
+      }
+      const shuffledCatalog = fisherYatesShuffle(DEMOCRATIC_VOTING_CATALOG);
+      for (const item of shuffledCatalog) {
+        if (candidates.length >= 4) break;
+        if (!candidates.some((c) => c.name.toLowerCase() === item.name.toLowerCase())) {
+          candidates.push({
+            id: item.id,
+            name: item.name,
+            description: item.description,
+            query: item.query,
+            icon: item.icon,
+            votes: [],
+          });
+        }
+      }
+
+      room.votingCandidates = candidates;
+      room.candidateRounds = {};
+      room.status = "voting";
+      room.votingStartTime = now;
+      room.votingEndsAt = now + 10000; // 10s voting
+      room.currentRound = 1;
+      room.rounds = [];
+      room.answersByRound = { 1: {} };
+      room.lastActive = now;
+
+      await saveRoom(room);
+      return { success: true, room };
+    }
+
+    // 2. GAME MODE: TOP 50
+    if (room.gameMode === "top50") {
+      const topArtists = ["Quevedo", "Saiko", "Bad Bunny", "Feid", "Morad", "Aitana", "Lola Indigo", "Myke Towers", "Mora", "Rauw Alejandro"];
+      const trackPromises = topArtists.map((a) => searchStrictArtistTracks(a, 6));
+      const results = await Promise.allSettled(trackPromises);
+      const topPool: SpotifyTrackItem[] = [];
+      for (const r of results) {
+        if (r.status === "fulfilled" && Array.isArray(r.value)) {
+          topPool.push(...r.value);
+        }
+      }
+      const validPool = topPool.length >= room.totalRounds ? topPool : [...topPool, ...FALLBACK_SPOTIFY_TRACKS];
+      const shuffledTargets = fisherYatesShuffle(validPool).slice(0, room.totalRounds);
+      const verifiedTargets = await processInChunks(shuffledTargets, 5, ensureVerifiedTrackAudio);
+      const usedDistractorKeys = new Set<string>();
+
+      const rounds: RoundData[] = await Promise.all(
+        verifiedTargets.map(async (target, i) => {
+          const targetTopic = getTrackTopic(target);
+          const roundNumber = i + 1;
+          const correctOptId = `opt_${roundNumber}_c_${Math.random().toString(36).substring(2, 7)}`;
+          const correctOption: RoundOption = {
+            id: correctOptId,
+            title: target.title,
+            artist: target.artist,
+            artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+            topic: targetTopic,
+          };
+          const distractors = await getDifficultDistractors(target, validPool, 3, usedDistractorKeys);
+          const distractorOptions: RoundOption[] = distractors.map((d, dIdx) => ({
+            id: `opt_${roundNumber}_d${dIdx}_${Math.random().toString(36).substring(2, 7)}`,
+            title: d.title,
+            artist: d.artist,
+            artworkUrl: d.artworkUrl,
+            topic: d.topic,
+          }));
+          const options = fisherYatesShuffle([correctOption, ...distractorOptions]);
+          const correctIndex = options.findIndex((opt) => opt.id === correctOption.id);
+          return {
+            roundNumber,
+            targetTrack: {
+              ...target,
+              artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+              topic: targetTopic,
+            },
+            options,
+            correctIndex: correctIndex >= 0 ? correctIndex : 0,
+            correctOptionId: correctOption.id,
+            correctTrackId: target.id,
+            correctTitle: target.title,
+            topic: targetTopic,
+          };
+        })
+      );
+
+      room.rounds = rounds;
+      room.roundDuration = ROUND_DURATION_SEC;
+    }
+    // 3. GAME MODE: RANDOM
+    else if (room.gameMode === "random") {
+      const randomArtists = ["The Weeknd", "Daft Punk", "Billie Eilish", "Coldplay", "Duki", "Rosalía", "Eminem", "Arctic Monkeys", "Bad Bunny", "Avicii"];
+      const trackPromises = randomArtists.map((a) => searchStrictArtistTracks(a, 6));
+      const results = await Promise.allSettled(trackPromises);
+      const randomPool: SpotifyTrackItem[] = [];
+      for (const r of results) {
+        if (r.status === "fulfilled" && Array.isArray(r.value)) {
+          randomPool.push(...r.value);
+        }
+      }
+      const validPool = randomPool.length >= room.totalRounds ? randomPool : [...randomPool, ...FALLBACK_SPOTIFY_TRACKS];
+      const shuffledTargets = fisherYatesShuffle(validPool).slice(0, room.totalRounds);
+      const verifiedTargets = await processInChunks(shuffledTargets, 5, ensureVerifiedTrackAudio);
+      const usedDistractorKeys = new Set<string>();
+
+      const rounds: RoundData[] = await Promise.all(
+        verifiedTargets.map(async (target, i) => {
+          const targetTopic = getTrackTopic(target);
+          const roundNumber = i + 1;
+          const correctOptId = `opt_${roundNumber}_c_${Math.random().toString(36).substring(2, 7)}`;
+          const correctOption: RoundOption = {
+            id: correctOptId,
+            title: target.title,
+            artist: target.artist,
+            artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+            topic: targetTopic,
+          };
+          const distractors = await getDifficultDistractors(target, validPool, 3, usedDistractorKeys);
+          const distractorOptions: RoundOption[] = distractors.map((d, dIdx) => ({
+            id: `opt_${roundNumber}_d${dIdx}_${Math.random().toString(36).substring(2, 7)}`,
+            title: d.title,
+            artist: d.artist,
+            artworkUrl: d.artworkUrl,
+            topic: d.topic,
+          }));
+          const options = fisherYatesShuffle([correctOption, ...distractorOptions]);
+          const correctIndex = options.findIndex((opt) => opt.id === correctOption.id);
+          return {
+            roundNumber,
+            targetTrack: {
+              ...target,
+              artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+              topic: targetTopic,
+            },
+            options,
+            correctIndex: correctIndex >= 0 ? correctIndex : 0,
+            correctOptionId: correctOption.id,
+            correctTrackId: target.id,
+            correctTitle: target.title,
+            topic: targetTopic,
+          };
+        })
+      );
+
+      room.rounds = rounds;
+      room.roundDuration = ROUND_DURATION_SEC;
+    }
+    // 4. GAME MODE: SURVIVAL
+    else if (room.gameMode === "survival") {
+      room.usedTrackKeys = [];
+      room.initialPlayerCount = room.players.length;
+      room.rounds = await generateSurvivalBatch(room, 12);
+      room.totalRounds = room.rounds.length;
+      room.roundDuration = getSurvivalRoundDuration(0);
+    }
+    // 5. GAME MODE: BLEND / WHO_LISTENS
+    else {
+      const candidateTracks: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
+
+      room.players.forEach((p) => {
+        if (p.injectedTracks && p.injectedTracks.length > 0) {
+          p.injectedTracks.forEach((t) => {
+            candidateTracks.push({
+              track: t,
+              playerId: p.id,
+              playerName: p.name,
+            });
+          });
+        }
+      });
+
+      if (room.playlists && room.playlists.length > 0) {
+        room.playlists.forEach((pl) => {
+          (pl.tracks || []).forEach((t) => {
+            candidateTracks.push({
+              track: t,
+              playerId: pl.addedByPlayerId,
+              playerName: pl.addedByPlayerName,
+            });
+          });
+        });
+      }
+
+      const seenUris = new Set<string>();
+      const validUniquePool: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
+
+      for (const item of candidateTracks) {
+        const key = `${item.track.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${item.track.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+        if (!seenUris.has(key) && !seenUris.has(item.track.id)) {
+          seenUris.add(key);
+          seenUris.add(item.track.id);
+          validUniquePool.push(item);
+        }
+      }
+
+      const playerArtists = Array.from(
+        new Set(room.players.flatMap((p) => p.favoriteArtists).filter((a) => a && a.trim().length > 0))
+      );
+
+      if (validUniquePool.length < room.totalRounds * 2 && playerArtists.length > 0) {
+        const artistResults = await Promise.allSettled(
+          playerArtists.slice(0, 8).map((artist) => searchStrictArtistTracks(artist, 6))
+        );
+        for (const r of artistResults) {
+          if (r.status === "fulfilled" && Array.isArray(r.value)) {
+            r.value.forEach((t) => {
+              const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+              if (!seenUris.has(key) && !seenUris.has(t.id)) {
+                seenUris.add(key);
+                seenUris.add(t.id);
+                validUniquePool.push({ track: t });
+              }
+            });
+          }
+        }
+      }
+
+      if (validUniquePool.length < room.totalRounds) {
+        FALLBACK_SPOTIFY_TRACKS.forEach((t) => {
+          const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+          if (!seenUris.has(key) && !seenUris.has(t.id)) {
+            seenUris.add(key);
+            seenUris.add(t.id);
+            validUniquePool.push({ track: t });
+          }
+        });
+      }
+
+      const randomizedTargets = fisherYatesShuffle(validUniquePool);
+      const roundsToGenerate = Math.min(room.totalRounds, randomizedTargets.length);
+      const targetsSlice = randomizedTargets.slice(0, roundsToGenerate);
+      const poolTracks = validUniquePool.map((u) => u.track);
+      const verifiedTargets = await processInChunks(targetsSlice.map((ts) => ts.track), 5, ensureVerifiedTrackAudio);
+      const usedDistractorKeys = new Set<string>();
+
+      const rounds: RoundData[] = await Promise.all(
+        verifiedTargets.map(async (target, i) => {
+          const item = targetsSlice[i];
+          const targetTopic = getTrackTopic(target);
+          const roundNumber = i + 1;
+
+          const correctOptId = `opt_${roundNumber}_c_${Math.random().toString(36).substring(2, 7)}`;
+          const correctOption: RoundOption = {
+            id: correctOptId,
+            title: target.title,
+            artist: target.artist,
+            artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+            topic: targetTopic,
+          };
+
+          const distractors = await getDifficultDistractors(target, poolTracks, 3, usedDistractorKeys);
+          const distractorOptions: RoundOption[] = distractors.map((d, dIdx) => ({
+            id: `opt_${roundNumber}_d${dIdx}_${Math.random().toString(36).substring(2, 7)}`,
+            title: d.title,
+            artist: d.artist,
+            artworkUrl: d.artworkUrl,
+            topic: d.topic,
+          }));
+
+          const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractorOptions]);
+          const correctIndex = options.findIndex((opt) => opt.id === correctOption.id);
+          const playerSource = item.playerId ? room.players.find((p) => p.id === item.playerId) : undefined;
+
+          return {
+            roundNumber,
+            targetTrack: {
+              ...target,
+              artworkUrl: target.artworkUrl || getFallbackArtwork(target.title, target.artist),
+              topic: targetTopic,
+            },
+            options,
+            correctIndex: correctIndex >= 0 ? correctIndex : 0,
+            correctOptionId: correctOption.id,
+            correctTrackId: target.id,
+            correctTitle: target.title,
+            topic: targetTopic,
+            contributedByPlayerId: item.playerId,
+            contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name,
+            sourceMode: target.sourceMode || playerSource?.injectedModeName,
+          };
+        })
+      );
+
+      room.rounds = rounds;
+      room.roundDuration = ROUND_DURATION_SEC;
+    }
+
     room.currentRound = 1;
     room.status = "countdown";
     room.countdownStartTime = now;
@@ -1777,6 +2090,23 @@ export async function submitPlayerAnswer(
     if (typeof roundIndex === "number" && roundIndex !== room.currentRound) {
       return { success: false, pointsEarned: 0, isCorrect: false, room };
     }
+
+    // Refresh heartbeats and connectivity
+    await updatePlayerHeartbeat(code, playerId);
+    const now = Date.now();
+    const heartbeats = await getPlayerHeartbeats(code);
+
+    room.players.forEach((p) => {
+      if (p.id === playerId) {
+        p.isConnected = true;
+        p.isOnline = true;
+        p.lastSeen = now;
+      } else {
+        const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
+        p.isConnected = (now - hb) <= 18000;
+        p.isOnline = p.isConnected;
+      }
+    });
 
     const player = room.players.find((p) => p.id === playerId);
     if (!player) {
@@ -1905,7 +2235,6 @@ export async function submitPlayerAnswer(
       activeEligiblePlayers.every((p) => p.currentAnswer !== null || Boolean(roundMap[p.id]));
 
     if (allAnswered) {
-      const now = Date.now();
       room.status = "round_reveal";
       room.revealStartTime = now;
       room.revealEndsAt = now + REVEAL_DURATION_MS;
@@ -1921,6 +2250,7 @@ export async function submitPlayerAnswer(
 
 /**
  * Authoritatively advances the room to the next round or finishes the game (withRoomLock).
+ * Prevents fast client clocks from skipping the reveal prematurely.
  */
 export async function advanceRoomRound(
   code: string,
@@ -1936,6 +2266,11 @@ export async function advanceRoomRound(
     }
 
     if (room.currentRound !== expectedRoundIndex) {
+      return { success: true, room };
+    }
+
+    // Stop clients with fast clocks from skipping reveal prematurely
+    if (room.revealEndsAt && Date.now() < room.revealEndsAt - 300) {
       return { success: true, room };
     }
 
@@ -2003,10 +2338,11 @@ export async function advanceRoomRound(
 /**
  * Resets the room back to lobby for another game with the same players.
  */
-export async function resetRoomToLobby(code: string, hostId: string): Promise<boolean> {
+export async function resetRoomToLobby(code: string, hostId: string): Promise<{ success: boolean; room?: RoomState | null; error?: string }> {
   return await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
-    if (!room || room.hostId !== hostId) return false;
+    if (!room) return { success: false, error: "Sala no encontrada." };
+    if (room.hostId !== hostId) return { success: false, error: "Solo el anfitrión puede reiniciar la sala." };
 
     room.status = "lobby";
     room.currentRound = 1;
@@ -2036,7 +2372,7 @@ export async function resetRoomToLobby(code: string, hostId: string): Promise<bo
 
     room.lastActive = Date.now();
     await saveRoom(room);
-    return true;
+    return { success: true, room };
   });
 }
 

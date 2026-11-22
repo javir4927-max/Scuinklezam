@@ -23,6 +23,7 @@ export async function POST(request: Request) {
         success: true,
         room,
         hostId,
+        serverTime: Date.now(),
       },
       { headers: NO_CACHE_HEADERS }
     );
