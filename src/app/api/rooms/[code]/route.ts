@@ -17,6 +17,7 @@ import {
   submitPlayerAnswer,
   advanceRoomRound,
   resetRoomToLobby,
+  rematchRoomGame,
   kickPlayer,
   transferHost,
   renamePlayer,
@@ -394,6 +395,20 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         }
         return NextResponse.json(
           { success: true, room: removeResult.room, serverTime: Date.now() },
+          { headers: NO_CACHE_HEADERS }
+        );
+      }
+
+      case "rematch": {
+        const rematchResult = await rematchRoomGame(code, playerId);
+        if (!rematchResult.success) {
+          return NextResponse.json(
+            { success: false, error: rematchResult.error || "No autorizado o error al reiniciar la partida.", serverTime: Date.now() },
+            { status: rematchResult.error?.includes("anfitrión") ? 403 : 400, headers: NO_CACHE_HEADERS }
+          );
+        }
+        return NextResponse.json(
+          { success: true, room: rematchResult.room, serverTime: Date.now() },
           { headers: NO_CACHE_HEADERS }
         );
       }

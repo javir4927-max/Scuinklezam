@@ -256,6 +256,7 @@ function PlayArenaContent() {
   const { volume: globalVolume, muted: isGlobalMutedState } = useGlobalVolume();
   const [savedTrackIds, setSavedTrackIds] = useState<Set<string>>(new Set());
   const [savingAll, setSavingAll] = useState<boolean>(false);
+  const [isRematching, setIsRematching] = useState<boolean>(false);
 
   // Audio & Timer Refs
   const clockOffsetRef = useRef<number>(0);
@@ -850,6 +851,9 @@ function PlayArenaContent() {
       setSelectedOption(null);
       setSelectedFriend(null);
       setScorePopup(null);
+      lastLoadedTrackRef.current = "";
+      fallbackAttemptsRef.current.clear();
+      setOptionImageErrors({});
     }
 
     // Status changed to Playing or Round changed
@@ -1599,6 +1603,32 @@ function PlayArenaContent() {
       await handleSaveTrack(r.targetTrack);
     }
     setSavingAll(false);
+  };
+
+  // Rematch / Repeat Game instantly with same settings
+  const handleRematch = async () => {
+    if (!roomCode || isRematching) return;
+    setIsRematching(true);
+    try {
+      const res = await fetch(`/api/rooms/${roomCode}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "rematch",
+          playerId,
+        }),
+      });
+      const data = await res.json();
+      if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
+      if (data.success && data.room) {
+        lastRoomVersionRef.current = data.room.version || 0;
+        setRoom(data.room);
+      }
+    } catch (err) {
+      console.error("Error launching rematch:", err);
+    } finally {
+      setIsRematching(false);
+    }
   };
 
   // Reset Room to Lobby (Replay)
@@ -3687,20 +3717,37 @@ function PlayArenaContent() {
 
               {/* Action Buttons */}
               <div className="pt-4 flex flex-wrap items-center justify-center gap-3">
-                {isHost && (
-                  <button
-                    onClick={handleResetRoom}
-                    className="px-6 py-3.5 rounded-2xl bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime hover:opacity-95 text-black font-black text-sm shadow-xl shadow-emerald-500/25 transition cursor-pointer flex items-center gap-2"
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                    <span>Jugar otra vez en la misma sala</span>
-                  </button>
+                {isHost ? (
+                  <>
+                    <button
+                      onClick={handleRematch}
+                      disabled={isRematching}
+                      className="px-6 py-3.5 rounded-2xl bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime hover:opacity-95 text-black font-black text-sm shadow-xl shadow-emerald-500/25 transition cursor-pointer flex items-center gap-2 disabled:opacity-50"
+                    >
+                      <RotateCcw className={`w-4 h-4 ${isRematching ? "animate-spin" : ""}`} />
+                      <span>{isRematching ? "Preparando revancha..." : "Repetir partida"}</span>
+                    </button>
+
+                    <button
+                      onClick={handleResetRoom}
+                      className="px-5 py-3.5 rounded-2xl bg-white/[0.08] hover:bg-white/[0.14] border border-emerald-500/30 text-white font-bold text-xs transition flex items-center gap-2 cursor-pointer"
+                    >
+                      <Users className="w-4 h-4 text-emerald-400" />
+                      <span>Volver a la sala</span>
+                    </button>
+                  </>
+                ) : (
+                  <div className="w-full text-center py-1">
+                    <span className="text-xs text-zinc-400 font-medium">
+                      Esperando a que el anfitrión repita la partida o vuelva a la sala…
+                    </span>
+                  </div>
                 )}
 
                 <button
                   onClick={handleSaveAllTracks}
                   disabled={savingAll}
-                  className="px-5 py-3.5 rounded-2xl bg-white/[0.08] hover:bg-white/[0.14] border border-emerald-500/30 text-white font-bold text-xs transition flex items-center gap-2"
+                  className="px-5 py-3.5 rounded-2xl bg-white/[0.08] hover:bg-white/[0.14] border border-emerald-500/30 text-white font-bold text-xs transition flex items-center gap-2 cursor-pointer"
                 >
                   <Heart className="w-3.5 h-3.5 text-rose-400 fill-current" />
                   <span>{savingAll ? "Guardando..." : "Guardar Canciones en Spotify"}</span>
