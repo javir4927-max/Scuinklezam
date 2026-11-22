@@ -1,26 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSpotifyAppToken, enrichSpotifyTracks } from "@/lib/spotifyServer";
 import { SpotifyTrackItem } from "@/lib/spotifyTypes";
-
-/**
- * Fallback audio resolver using iTunes search API
- */
-async function resolveAudioStream(title: string, artist: string): Promise<string | null> {
-  try {
-    const cleanTitle = title.replace(/\(.*?\)|\[.*?\]/g, "").trim();
-    const query = `${cleanTitle} ${artist}`;
-    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=1`;
-    const res = await fetch(url, { next: { revalidate: 86400 } });
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (data.results && data.results.length > 0) {
-      return data.results[0].previewUrl || null;
-    }
-  } catch {
-    // Fail silently
-  }
-  return null;
-}
+import { resolveAudioStream } from "@/lib/musicService";
 
 export async function POST(request: Request) {
   try {
@@ -162,9 +143,12 @@ export async function POST(request: Request) {
       const trackId = t.id || t.uri?.split(":").pop() || Math.random().toString(36).substring(2, 9);
       let previewUrl = t.audioPreview?.url || null;
 
-      // Parallel resolution fallback via iTunes if Spotify preview is null
+      // Fallback via strict audio resolver if Spotify preview is null
       if (!previewUrl) {
-        previewUrl = await resolveAudioStream(trackTitle, trackArtist);
+        const resolvedAudio = await resolveAudioStream(trackTitle, trackArtist);
+        if (resolvedAudio?.previewUrl) {
+          previewUrl = resolvedAudio.previewUrl;
+        }
       }
 
       const artwork =

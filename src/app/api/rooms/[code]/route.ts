@@ -6,10 +6,12 @@ import { NextResponse } from "next/server";
 import {
   getRoom,
   joinRoom,
+  leaveRoom,
   updatePlayerTaste,
   injectSpotifyTracksToRoom,
   proposeTheme,
   voteTheme,
+  castVote,
   changeRoomSettings,
   startRoomGame,
   submitPlayerAnswer,
@@ -21,8 +23,6 @@ import {
   updatePlayerProfile,
   addPlaylistToRoom,
   removePlaylistFromRoom,
-  checkRoomStateProgression,
-  saveRoom,
 } from "@/lib/roomStore";
 
 export const dynamic = "force-dynamic";
@@ -162,6 +162,20 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         );
       }
 
+      case "leave_room": {
+        if (!playerId) {
+          return NextResponse.json(
+            { success: false, error: "playerId requerido" },
+            { status: 400, headers: NO_CACHE_HEADERS }
+          );
+        }
+        const leaveResult = await leaveRoom(code, playerId);
+        return NextResponse.json(
+          { success: true, room: leaveResult.room },
+          { headers: NO_CACHE_HEADERS }
+        );
+      }
+
       case "cast_vote": {
         const themeId = body.themeId;
         if (!playerId || !themeId) {
@@ -171,24 +185,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
           );
         }
 
-        const player = room.players.find((p) => p.id === playerId);
-        if (player) {
-          player.votedTheme = themeId;
-        }
-
-        if (room.votingCandidates) {
-          room.votingCandidates.forEach((c) => {
-            c.votes = c.votes.filter((id) => id !== playerId);
-            if (c.id === themeId) {
-              c.votes.push(playerId);
-            }
-          });
-        }
-
-        checkRoomStateProgression(room);
-        await saveRoom(room);
+        const voteResult = await castVote(code, playerId, themeId);
         return NextResponse.json(
-          { success: true, room },
+          { success: true, room: voteResult.room },
           { headers: NO_CACHE_HEADERS }
         );
       }
@@ -242,7 +241,8 @@ export async function PATCH(request: Request, { params }: RouteParams) {
           body.timeMs || 5000,
           body.guessedFriendId,
           typeof body.roundIndex === "number" ? body.roundIndex : undefined,
-          typeof body.selectedTitle === "string" ? body.selectedTitle : undefined
+          typeof body.selectedTitle === "string" ? body.selectedTitle : undefined,
+          typeof body.optionId === "string" ? body.optionId : undefined
         );
         const updated = ansResult.room || (await getRoom(code));
         return NextResponse.json(
@@ -416,6 +416,43 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     console.error("Room action error:", error);
     return NextResponse.json(
       { success: false, error: error?.message || "Error procesando acción" },
+      { status: 500, headers: NO_CACHE_HEADERS }
+    );
+  }
+}
+
+export async function POST(request: Request, { params }: RouteParams) {
+  const code = params.code?.toUpperCase();
+  try {
+    let body: any = {};
+    const contentType = request.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      body = await request.json().catch(() => ({}));
+    } else {
+      const text = await request.text().catch(() => "");
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = {};
+      }
+    }
+
+    if (body.action === "leave_room" && body.playerId) {
+      const leaveResult = await leaveRoom(code, body.playerId);
+      return NextResponse.json(
+        { success: true, room: leaveResult.room },
+        { headers: NO_CACHE_HEADERS }
+      );
+    }
+
+    return NextResponse.json(
+      { success: false, error: "Acción POST no reconocida" },
+      { status: 400, headers: NO_CACHE_HEADERS }
+    );
+  } catch (err: any) {
+    console.error("Room POST action error:", err);
+    return NextResponse.json(
+      { success: false, error: err?.message || "Error procesando acción" },
       { status: 500, headers: NO_CACHE_HEADERS }
     );
   }

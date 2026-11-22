@@ -130,24 +130,84 @@ export function matchSongTitleStrict(t1: string, t2: string): boolean {
 }
 
 /**
- * Checks if two artist strings match, taking into account primary artists and collaborations.
+ * Split regex for artist collaborations.
  */
+export const ARTIST_COLLAB_REGEX = /[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)|(\s+with\s+)|(\s+x\s+)|(\s+y\s+)/i;
+
+/**
+ * Common stop words in Spanish & English artist names.
+ */
+export const ARTIST_STOP_WORDS = new Set(["de", "la", "el", "los", "las", "the", "y", "and", "del", "en", "of", "a", "an"]);
+
+/**
+ * Checks if a string contains CJK, Japanese (Hiragana/Katakana), Korean (Hangul), or Cyrillic characters.
+ */
+export function hasNonLatinCharacters(text: string): boolean {
+  if (!text) return false;
+  return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\u0400-\u04ff]/.test(text);
+}
+
+/**
+ * Checks if two artist strings match strictly:
+ * - Normalizes casing, diacritics/accents, punctuation
+ * - Splits collaborations by feat, ft, with, x, y, /, ,
+ * - Requires either the primary expected artist to match credited artist,
+ *   or all significant tokens (length >= 3, excluding stop words de, la, el, los, las, the, y, and)
+ *   to match credited tokens with >= 85% overlap and overall word overlap >= 60%.
+ * - Prevents false positives like "Aurora" matching another singer with "De La Rose".
+ */
+export function isStrictArtistMatch(foundArtist: string, expectedArtist: string): boolean {
+  if (!foundArtist || !expectedArtist) return false;
+  const nFound = deepNormalize(foundArtist);
+  const nExpected = deepNormalize(expectedArtist);
+  if (!nFound || !nExpected) return false;
+  if (nFound === nExpected) return true;
+
+  // Split both by collaboration separators
+  const foundList = foundArtist
+    .split(ARTIST_COLLAB_REGEX)
+    .filter(Boolean)
+    .map((a) => deepNormalize(a))
+    .filter(Boolean);
+
+  const expList = expectedArtist
+    .split(ARTIST_COLLAB_REGEX)
+    .filter(Boolean)
+    .map((a) => deepNormalize(a))
+    .filter(Boolean);
+
+  const pFound = foundList[0] || nFound;
+  const pExpected = expList[0] || nExpected;
+
+  if (pFound === pExpected) return true;
+  if (foundList.includes(pExpected)) return true;
+  if (expList.includes(pFound)) return true;
+
+  const wordsFound = nFound.split(" ").filter(Boolean);
+  const wordsExp = nExpected.split(" ").filter(Boolean);
+  const commonWords = wordsExp.filter((w) => wordsFound.includes(w));
+  const wordOverlap = commonWords.length / Math.max(wordsFound.length, wordsExp.length);
+
+  const sigFound = wordsFound.filter((w) => w.length >= 3 && !ARTIST_STOP_WORDS.has(w));
+  const sigExp = wordsExp.filter((w) => w.length >= 3 && !ARTIST_STOP_WORDS.has(w));
+
+  if (sigFound.length > 0 && sigExp.length > 0) {
+    const commonSig = sigExp.filter((w) => sigFound.includes(w));
+    const sigOverlap = commonSig.length / Math.max(sigFound.length, sigExp.length);
+    if (sigOverlap >= 0.85 && wordOverlap >= 0.6) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function matchArtistNameStrict(a1: string, a2: string): boolean {
-  if (!a1 || !a2) return false;
-  const n1 = deepNormalize(a1);
-  const n2 = deepNormalize(a2);
-  if (n1 === n2) return true;
-
-  // Primary artist before separator
-  const p1 = deepNormalize(a1.split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)|(\s+with\s+)|(\s+x\s+)/i)[0]);
-  const p2 = deepNormalize(a2.split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)|(\s+with\s+)|(\s+x\s+)/i)[0]);
-
-  if (p1 && p2 && (p1 === p2 || p1.includes(p2) || p2.includes(p1))) return true;
-  return (p1 && n2.includes(p1)) || (p2 && n1.includes(p2)) || n1.includes(p2) || n2.includes(p1);
+  return isStrictArtistMatch(a1, a2);
 }
 
 export function matchArtistName(a1: string, a2: string): boolean {
-  return matchArtistNameStrict(a1, a2);
+  return isStrictArtistMatch(a1, a2);
 }
 
 export function matchSongTitle(t1: string, t2: string): boolean {
@@ -449,23 +509,45 @@ const relatedTracksMemoryCache = new Map<string, Array<{ title: string; artist: 
 export async function getDifficultDistractors(
   correctTrack: SpotifyTrackItem,
   roomPool: SpotifyTrackItem[] = [],
-  count = 3
+  count = 3,
+  usedDistractorKeys?: Set<string>
 ): Promise<Array<{ title: string; artist: string; artworkUrl: string; topic: TopicKey }>> {
   const correctTopic = getTrackTopic(correctTrack);
   const correctTitleNorm = deepNormalize(correctTrack.title);
   const seenTitles = new Set<string>([correctTitleNorm]);
   const distractors: Array<{ title: string; artist: string; artworkUrl: string; topic: TopicKey }> = [];
 
-  const mainArtist = (correctTrack.artist || "").split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)|(\s+with\s+)|(\s+x\s+)/i)[0].trim();
+  const isTargetLatin =
+    !hasNonLatinCharacters(correctTrack.title || "") &&
+    !hasNonLatinCharacters(correctTrack.artist || "");
+
+  const mainArtist = (correctTrack.artist || "").split(ARTIST_COLLAB_REGEX)[0].trim();
   const rawAlbum = correctTrack.album?.trim() || "";
-  const isGenericAlbum = !rawAlbum || /single|ep|unknown|deluxe|remix|version/i.test(rawAlbum) || deepNormalize(rawAlbum) === correctTitleNorm;
+  const isGenericAlbum =
+    !rawAlbum ||
+    /single|ep|unknown|deluxe|remix|version/i.test(rawAlbum) ||
+    deepNormalize(rawAlbum) === correctTitleNorm;
   const albumName = isGenericAlbum ? "" : rawAlbum;
 
-  const tryAdd = (item: { title: string; artist: string; artworkUrl: string }) => {
+  const tryAdd = (item: { title: string; artist: string; artworkUrl: string }, allowUsed = false) => {
     if (distractors.length >= count) return false;
     const norm = deepNormalize(item.title);
     if (!norm || seenTitles.has(norm)) return false;
+
+    // Filter out non-Latin scripts if target is Latin
+    if (isTargetLatin && (hasNonLatinCharacters(item.title) || hasNonLatinCharacters(item.artist))) {
+      return false;
+    }
+
+    // Filter out distractors already used in a prior round unless allowUsed is true
+    if (!allowUsed && usedDistractorKeys && usedDistractorKeys.has(norm)) {
+      return false;
+    }
+
     seenTitles.add(norm);
+    if (usedDistractorKeys) {
+      usedDistractorKeys.add(norm);
+    }
     distractors.push({
       title: item.title,
       artist: item.artist,
@@ -476,9 +558,10 @@ export async function getDifficultDistractors(
   };
 
   // --- PRIORIDAD 1: MISMO ÁLBUM ---
+  let albumSongs: Array<{ title: string; artist: string; artworkUrl: string }> | undefined;
   if (albumName && mainArtist) {
     const albumKey = `${deepNormalize(mainArtist)}_${deepNormalize(albumName)}`;
-    let albumSongs = albumTracksMemoryCache.get(albumKey);
+    albumSongs = albumTracksMemoryCache.get(albumKey);
 
     if (!albumSongs) {
       try {
@@ -527,11 +610,12 @@ export async function getDifficultDistractors(
     }
   }
 
-  // --- PRIORIDAD 2: MISMO ARTISTA ---
+  // --- PRIORIDAD 2: MISMO ARTISTA (iTunes attribute=artistTerm & isStrictArtistMatch) ---
+  let artistSongs: Array<{ title: string; artist: string; artworkUrl: string }> | undefined;
   if (distractors.length < count && mainArtist) {
     // 2.a) Check roomPool first
     const sameArtistInPool = roomPool.filter(
-      (t) => t && t.title && matchArtistNameStrict(t.artist, mainArtist) && !seenTitles.has(deepNormalize(t.title))
+      (t) => t && t.title && isStrictArtistMatch(t.artist, mainArtist) && !seenTitles.has(deepNormalize(t.title))
     );
     for (const t of [...sameArtistInPool].sort(() => 0.5 - Math.random())) {
       if (distractors.length >= count) break;
@@ -541,12 +625,12 @@ export async function getDifficultDistractors(
     // 2.b) Query iTunes for more tracks by the same artist
     if (distractors.length < count) {
       const artistKey = deepNormalize(mainArtist);
-      let artistSongs = artistTracksMemoryCache.get(artistKey);
+      artistSongs = artistTracksMemoryCache.get(artistKey);
 
       if (!artistSongs) {
         try {
           const res = await fetch(
-            `https://itunes.apple.com/search?term=${encodeURIComponent(mainArtist)}&entity=song&country=ES&limit=25`,
+            `https://itunes.apple.com/search?term=${encodeURIComponent(mainArtist)}&entity=song&attribute=artistTerm&country=ES&limit=25`,
             {
               headers: { "User-Agent": "Scuinklezam/1.0" },
               signal: AbortSignal.timeout(3500),
@@ -558,7 +642,7 @@ export async function getDifficultDistractors(
               const list: Array<{ title: string; artist: string; artworkUrl: string }> = [];
               for (const item of data.results) {
                 if (!item.trackName) continue;
-                if (matchArtistNameStrict(item.artistName, mainArtist)) {
+                if (isStrictArtistMatch(item.artistName, mainArtist)) {
                   const art = item.artworkUrl100
                     ? item.artworkUrl100.replace("100x100bb", "600x600bb")
                     : getFallbackArtwork(item.trackName, item.artistName || mainArtist);
@@ -589,9 +673,10 @@ export async function getDifficultDistractors(
   }
 
   // --- PRIORIDAD 3: FALLBACK SEGURO (Artistas Relacionados de Deezer / Mismo Tópico) ---
+  let relatedSongs: Array<{ title: string; artist: string; artworkUrl: string }> | undefined;
   if (distractors.length < count && mainArtist) {
     const relKey = deepNormalize(mainArtist);
-    let relatedSongs = relatedTracksMemoryCache.get(relKey);
+    relatedSongs = relatedTracksMemoryCache.get(relKey);
 
     if (!relatedSongs) {
       try {
@@ -618,7 +703,7 @@ export async function getDifficultDistractors(
                 for (const rArtist of relArtists.slice(0, 2)) {
                   try {
                     const itRel = await fetch(
-                      `https://itunes.apple.com/search?term=${encodeURIComponent(rArtist)}&entity=song&country=ES&limit=5`,
+                      `https://itunes.apple.com/search?term=${encodeURIComponent(rArtist)}&entity=song&attribute=artistTerm&country=ES&limit=5`,
                       {
                         headers: { "User-Agent": "Scuinklezam/1.0" },
                         signal: AbortSignal.timeout(2000),
@@ -626,7 +711,7 @@ export async function getDifficultDistractors(
                     ).then((r) => r.json()).catch(() => ({ results: [] }));
 
                     for (const it of itRel.results || []) {
-                      if (it.trackName) {
+                      if (it.trackName && isStrictArtistMatch(it.artistName, rArtist)) {
                         list.push({
                           title: it.trackName,
                           artist: it.artistName || rArtist,
@@ -663,6 +748,23 @@ export async function getDifficultDistractors(
     for (const b of [...backupList].sort(() => 0.5 - Math.random())) {
       if (distractors.length >= count) break;
       tryAdd(b);
+    }
+  }
+
+  // If still under count (e.g. strict usedDistractorKeys exhausted candidate list), allow used in a 2nd pass
+  if (distractors.length < count) {
+    if (artistSongs) {
+      for (const song of artistSongs) {
+        if (distractors.length >= count) break;
+        tryAdd(song, true);
+      }
+    }
+    if (distractors.length < count) {
+      const backupList = COHERENT_TOPIC_POOLS[correctTopic] || COHERENT_TOPIC_POOLS.pop_mainstream;
+      for (const b of backupList) {
+        if (distractors.length >= count) break;
+        tryAdd(b, true);
+      }
     }
   }
 

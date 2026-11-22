@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { searchVerifiedTracks, searchItunesCatalog } from "@/lib/musicService";
 import { RANKED_CATEGORIES } from "@/lib/rankedTypes";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
-import { normalizeSongTitle, getTrackTopic } from "@/lib/songMatching";
+import { normalizeSongTitle, getTrackTopic, isStrictArtistMatch, hasNonLatinCharacters } from "@/lib/songMatching";
 
 export const dynamic = "force-dynamic";
 
@@ -51,11 +51,11 @@ const THEME_ARTIST_POOLS: Record<string, string[]> = {
  */
 async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrackItem[]> {
   const clean = artistName.split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)/i)[0].trim();
-  const lowerArtist = clean.toLowerCase();
+  const isLatin = !hasNonLatinCharacters(clean);
 
-  // 1. Fetch iTunes Search API limit=80 country=ES with cache: 'no-store'
+  // 1. Fetch iTunes Search API limit=80 country=ES with attribute=artistTerm
   const itunesPromise = fetch(
-    `https://itunes.apple.com/search?term=${encodeURIComponent(clean)}&entity=song&country=ES&limit=80`,
+    `https://itunes.apple.com/search?term=${encodeURIComponent(clean)}&entity=song&attribute=artistTerm&country=ES&limit=80`,
     {
       headers: { "User-Agent": "Scuinklezam/1.0" },
       cache: "no-store",
@@ -99,10 +99,10 @@ async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrac
   // Add iTunes tracks
   for (const it of itData?.results || []) {
     if (!it.previewUrl || typeof it.previewUrl !== "string" || !it.previewUrl.startsWith("http")) continue;
-    const itArt = (it.artistName || "").toLowerCase();
-    if (!itArt.includes(lowerArtist) && !lowerArtist.includes(itArt)) continue;
+    if (isLatin && (hasNonLatinCharacters(it.trackName || "") || hasNonLatinCharacters(it.artistName || ""))) continue;
+    if (!isStrictArtistMatch(it.artistName, clean)) continue;
     const itTit = it.trackName || "";
-    if (/karaoke|tribute|cover/i.test(itTit) || /karaoke|tribute/i.test(itArt)) continue;
+    if (/karaoke|tribute|cover/i.test(itTit) || /karaoke|tribute/i.test(it.artistName || "")) continue;
 
     const norm = normalizeSongTitle(itTit);
     if (!norm) continue;
@@ -129,10 +129,10 @@ async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrac
   // Add Deezer tracks
   for (const dz of dzTracks) {
     if (!dz.preview || typeof dz.preview !== "string" || !dz.preview.startsWith("http")) continue;
-    const dzArt = (dz.artist?.name || "").toLowerCase();
-    if (!dzArt.includes(lowerArtist) && !lowerArtist.includes(dzArt)) continue;
+    if (isLatin && (hasNonLatinCharacters(dz.title || "") || hasNonLatinCharacters(dz.artist?.name || ""))) continue;
+    if (!isStrictArtistMatch(dz.artist?.name, clean)) continue;
     const dzTit = dz.title || "";
-    if (/karaoke|tribute|cover/i.test(dzTit) || /karaoke|tribute/i.test(dzArt)) continue;
+    if (/karaoke|tribute|cover/i.test(dzTit) || /karaoke|tribute/i.test(dz.artist?.name || "")) continue;
 
     const norm = normalizeSongTitle(dzTit);
     if (!norm) continue;

@@ -1,6 +1,13 @@
 import { SpotifyTrackItem, FALLBACK_SPOTIFY_TRACKS, getFallbackArtwork } from "./spotifyTypes";
 import { getSpotifyAppToken, getSpotifyUserToken } from "./spotifyServer";
-import { matchArtistNameStrict, matchSongTitleStrict, deepNormalize, getTrackTopic } from "./songMatching";
+import {
+  matchArtistNameStrict,
+  isStrictArtistMatch,
+  matchSongTitleStrict,
+  deepNormalize,
+  getTrackTopic,
+  hasNonLatinCharacters,
+} from "./songMatching";
 
 // Bypass local Windows certificate verification issues for iTunes and Spotify APIs
 if (typeof process !== "undefined" && process.env) {
@@ -46,8 +53,8 @@ export async function resolveAudioStream(
             continue;
           }
 
-          // Strict match: must match both artist AND song title (or >=80% keyword overlap)
-          const artistMatches = matchArtistNameStrict(item.artistName, artist);
+          // Strict match: must match both artist AND song title with high precision
+          const artistMatches = isStrictArtistMatch(item.artistName, artist);
           const titleMatches = matchSongTitleStrict(item.trackName, title);
 
           if (artistMatches && titleMatches) {
@@ -86,7 +93,7 @@ export async function resolveAudioStream(
           }
 
           // Strict match on Deezer as well
-          const artistMatches = matchArtistNameStrict(dItem.artist?.name, artist);
+          const artistMatches = isStrictArtistMatch(dItem.artist?.name, artist);
           const titleMatches = matchSongTitleStrict(dItem.title, title);
 
           if (artistMatches && titleMatches) {

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { fetchSpotifyUserAPI, enrichSpotifyTracks } from "@/lib/spotifyServer";
 import { SpotifyTrackItem } from "@/lib/spotifyTypes";
+import { isStrictArtistMatch, hasNonLatinCharacters } from "@/lib/songMatching";
 
 export const dynamic = "force-dynamic";
 
@@ -154,11 +155,11 @@ export async function POST(request: Request) {
       const artistTracksPromises = topArtists.map(async (artistName) => {
         const collected: any[] = [];
         const cleanName = artistName.trim();
-        const lowerName = cleanName.toLowerCase();
+        const isLatin = !hasNonLatinCharacters(cleanName);
 
-        // 2a. iTunes Search API (country=ES, limit=10)
+        // 2a. iTunes Search API (attribute=artistTerm, country=ES, limit=10)
         try {
-          const itUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(cleanName)}&entity=song&country=ES&limit=10`;
+          const itUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(cleanName)}&entity=song&attribute=artistTerm&country=ES&limit=10`;
           const itRes = await fetch(itUrl, {
             headers: { "User-Agent": "Scuinklezam/1.0" },
             next: { revalidate: 3600 },
@@ -171,8 +172,10 @@ export async function POST(request: Request) {
                 typeof itItem.previewUrl === "string" &&
                 itItem.previewUrl.startsWith("http")
               ) {
-                const itArtist = (itItem.artistName || "").toLowerCase();
-                if (itArtist.includes(lowerName) || lowerName.includes(itArtist)) {
+                if (isLatin && (hasNonLatinCharacters(itItem.trackName || "") || hasNonLatinCharacters(itItem.artistName || ""))) {
+                  continue;
+                }
+                if (isStrictArtistMatch(itItem.artistName, cleanName)) {
                   collected.push({
                     id: `it_${itItem.trackId}`,
                     name: itItem.trackName,
@@ -209,8 +212,10 @@ export async function POST(request: Request) {
             const dData = await dRes.json();
             for (const dItem of dData?.data || []) {
               if (dItem.preview && typeof dItem.preview === "string" && dItem.preview.startsWith("http")) {
-                const dArtist = (dItem.artist?.name || "").toLowerCase();
-                if (dArtist.includes(lowerName) || lowerName.includes(dArtist)) {
+                if (isLatin && (hasNonLatinCharacters(dItem.title || "") || hasNonLatinCharacters(dItem.artist?.name || ""))) {
+                  continue;
+                }
+                if (isStrictArtistMatch(dItem.artist?.name, cleanName)) {
                   collected.push({
                     id: `dz_${dItem.id}`,
                     name: dItem.title,
@@ -244,9 +249,7 @@ export async function POST(request: Request) {
             const items = sData?.tracks?.items || [];
             for (const item of items) {
               const matchesArtist = (item.artists || []).some(
-                (a: any) =>
-                  a.name.toLowerCase().includes(lowerName) ||
-                  lowerName.includes(a.name.toLowerCase())
+                (a: any) => isStrictArtistMatch(a.name, cleanName)
               );
               if (matchesArtist) {
                 collected.push(item);

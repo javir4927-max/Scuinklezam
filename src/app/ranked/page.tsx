@@ -385,7 +385,7 @@ export default function RankedArenaPage() {
 
         let distractors: { title: string; artist: string; artworkUrl: string }[] = [];
 
-        if (activeCategory?.kind === "artist") {
+        if (cat.kind === "artist") {
           // If artist quiz, prefer other songs by this artist with different titles
           const sameArtistTracks = tracks.filter(
             (t) =>
@@ -542,7 +542,7 @@ export default function RankedArenaPage() {
                 categoryName: activeCategory.name,
                 artistName: activeCategory.kind === "artist" ? (activeCategory.query || activeCategory.name) : undefined,
                 score: finalScore,
-                correctCount: isCorrect ? streak + 1 : streak,
+                correctCount: answersHistory.filter((a) => a.isCorrect).length + (isCorrect ? 1 : 0),
                 guestUserId: guestId,
                 guestNickname: user?.nickname || localStorage.getItem("scuinklezam_player_name") || "Jugador Ranked",
               }),
@@ -578,7 +578,7 @@ export default function RankedArenaPage() {
             });
           }
         }
-      }, 1800);
+      }, 2500);
     },
     [gameState, questions, currentIdx, activeCategory, streak, timeLeft, score, user]
   );

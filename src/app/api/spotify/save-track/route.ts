@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { getSpotifyUserToken } from "@/lib/spotifyServer";
 
+export async function POST(request: Request) {
+  return PUT(request);
+}
+
 export async function PUT(request: Request) {
   try {
     const body = await request.json();

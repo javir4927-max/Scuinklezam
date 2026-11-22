@@ -48,6 +48,7 @@ import {
   Pencil,
   Loader2,
   BarChart3,
+  LogOut,
 } from "lucide-react";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
 import type { RoomState, Player, GameMode, GuessType, RoundOption } from "@/lib/roomStore";
@@ -87,16 +88,23 @@ async function copyToClipboard(text: string): Promise<boolean> {
 function normalizeRoundOption(opt: RoundOption | string): RoundOption {
   if (typeof opt === "string") {
     const parts = opt.split(" — ");
+    const title = parts[0] || opt;
+    const artist = parts[1] || "";
     return {
-      title: parts[0] || opt,
-      artist: parts[1] || "",
-      artworkUrl: getFallbackArtwork(parts[0] || opt, parts[1] || ""),
+      id: `${title}-${artist}`.toLowerCase().replace(/[^a-z0-9]/g, "_"),
+      title,
+      artist,
+      artworkUrl: getFallbackArtwork(title, artist),
     };
   }
+  const title = opt?.title || "Canción";
+  const artist = opt?.artist || "";
   return {
-    title: opt?.title || "Canción",
-    artist: opt?.artist || "",
-    artworkUrl: opt?.artworkUrl || getFallbackArtwork(opt?.title || "Canción", opt?.artist || ""),
+    id: opt?.id || `${title}-${artist}`.toLowerCase().replace(/[^a-z0-9]/g, "_"),
+    title,
+    artist,
+    artworkUrl: opt?.artworkUrl || getFallbackArtwork(title, artist),
+    topic: opt?.topic,
   };
 }
 import SpotifyConnectModal from "@/components/SpotifyConnectModal";
@@ -257,6 +265,8 @@ function PlayArenaContent() {
   const activeTimerRoundRef = useRef<number>(1);
   const hasSubmittedRef = useRef<boolean>(false);
   const hasManuallyEditedNameRef = useRef<boolean>(false);
+  const hasLeftRoomRef = useRef<boolean>(false);
+  const roundEnteredAtRef = useRef<number>(performance.now());
   const roomStatusRef = useRef<string>("lobby");
   const nextRoundTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastLoadedTrackRef = useRef<string>("");
@@ -267,6 +277,9 @@ function PlayArenaContent() {
   // Keep tracking refs synchronized with latest room state
   useEffect(() => {
     if (room) {
+      if (room.currentRound !== currentRoundRef.current) {
+        roundEnteredAtRef.current = performance.now();
+      }
       currentRoundRef.current = room.currentRound;
       roomStatusRef.current = room.status;
       if (room.status === "lobby") {
@@ -336,8 +349,10 @@ function PlayArenaContent() {
   // Safe fallback resolver for missing or failing audio previews without desynchronizing rounds
   const handleAudioFallback = async (roundData: any) => {
     const target = roundData?.targetTrack;
-    if (!target?.name) return;
-    const rescueKey = `${target.name}-${target.artist || ""}`;
+    const title = target?.title || target?.name;
+    const artist = target?.artist || "";
+    if (!title) return;
+    const rescueKey = `${title}-${artist}`;
     if (hasRescuedAudioRef.current === rescueKey) {
       setAudioUnavailable(true);
       return;
@@ -346,7 +361,7 @@ function PlayArenaContent() {
 
     try {
       const res = await fetch(
-        `/api/audio/resolve?title=${encodeURIComponent(target.name)}&artist=${encodeURIComponent(target.artist || "")}`
+        `/api/audio/resolve?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist)}`
       );
       if (!res.ok) throw new Error("Resolve failed");
       const data = await res.json();
@@ -644,7 +659,7 @@ function PlayArenaContent() {
             return;
           }
 
-          if (!stillInRoom && currentRoom.status === "lobby") {
+          if (!stillInRoom && currentRoom.status === "lobby" && !hasLeftRoomRef.current) {
             // Player temporarily missing from players list (e.g. Redis replication lag).
             // Do NOT kick: automatically re-send background join PATCH to re-sync
             fetch(`/api/rooms/${roomCode}`, {
@@ -757,6 +772,7 @@ function PlayArenaContent() {
       room.status === "playing" &&
       (prevStatusRef.current !== "playing" || prevRoundRef.current !== room.currentRound)
     ) {
+      roundEnteredAtRef.current = performance.now();
       activeTimerRoundRef.current = room.currentRound;
       hasSubmittedRef.current = false;
       setSelectedOption(null);
@@ -872,7 +888,12 @@ function PlayArenaContent() {
   // 6. Keyboard Shortcuts for Quiz Options [1, 2, 3, 4]
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (room?.status !== "playing" || selectedOption !== null) return;
+      const activeTag = (document.activeElement?.tagName || "").toUpperCase();
+      if (activeTag === "INPUT" || activeTag === "TEXTAREA" || (document.activeElement as HTMLElement)?.isContentEditable) {
+        return;
+      }
+      const me = room?.players.find((p) => p.id === playerId);
+      if (room?.status !== "playing" || selectedOption !== null || hasSubmittedRef.current || me?.isEliminated) return;
       if (["1", "2", "3", "4"].includes(e.key)) {
         const idx = parseInt(e.key, 10) - 1;
         handleAnswer(idx);
@@ -881,9 +902,58 @@ function PlayArenaContent() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [room?.status, selectedOption, roomCode]);
+  }, [room?.status, selectedOption, roomCode, playerId, room?.players]);
+
+  // Beacon for page leave / close
+  useEffect(() => {
+    const handleUnload = () => {
+      if (roomCode && playerId && !hasLeftRoomRef.current) {
+        navigator.sendBeacon?.(
+          `/api/rooms/${roomCode}`,
+          JSON.stringify({ action: "leave_room", playerId })
+        );
+      }
+    };
+
+    window.addEventListener("pagehide", handleUnload);
+    window.addEventListener("beforeunload", handleUnload);
+    return () => {
+      window.removeEventListener("pagehide", handleUnload);
+      window.removeEventListener("beforeunload", handleUnload);
+    };
+  }, [roomCode, playerId]);
 
   // --- ACTIONS ---
+
+  // Leave Room Action
+  const handleLeaveRoom = async () => {
+    hasLeftRoomRef.current = true;
+    const currentCode = roomCode;
+    const myId = playerId;
+
+    audioPlayer.stop();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+    }
+    setRoom(null);
+    setRoomCode("");
+
+    if (currentCode && myId) {
+      try {
+        await fetch(`/api/rooms/${currentCode}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "leave_room", playerId: myId }),
+        });
+      } catch {
+        navigator.sendBeacon?.(
+          `/api/rooms/${currentCode}`,
+          JSON.stringify({ action: "leave_room", playerId: myId })
+        );
+      }
+    }
+  };
 
   // Create Room (0 initial artists by default)
   const handleCreateRoom = async (initialArtist?: string) => {
@@ -1018,6 +1088,9 @@ function PlayArenaContent() {
   const handleAnswer = async (optionIdx: number) => {
     if (!room || room.status !== "playing" || selectedOption !== null || hasSubmittedRef.current) return;
     if (activeTimerRoundRef.current !== room.currentRound) return;
+    // 450ms click shield
+    if (performance.now() - roundEnteredAtRef.current < 450) return;
+
     hasSubmittedRef.current = true;
     setSelectedOption(optionIdx);
 
@@ -1027,17 +1100,21 @@ function PlayArenaContent() {
 
     const rawOpt = currentRound?.options?.[optionIdx];
     const selectedTitle = typeof rawOpt === "string" ? rawOpt : rawOpt?.title;
+    const optionId = (typeof rawOpt === "object" && rawOpt?.id) ? rawOpt.id : undefined;
     const correctTitle = currentRound?.correctTitle || currentRound?.targetTrack?.title || "";
 
-    const isCorrect = selectedTitle && correctTitle
-      ? matchSongTitleStrict(selectedTitle, correctTitle)
-      : optionIdx === currentRound?.correctIndex;
+    const isCorrect = (optionId && currentRound?.correctOptionId && optionId === currentRound.correctOptionId) ||
+      (selectedTitle && correctTitle
+        ? matchSongTitleStrict(selectedTitle, correctTitle)
+        : optionIdx === currentRound?.correctIndex);
 
     // Instant local exponential points calculation (max 100)
     let calculatedPoints = 0;
     if (isCorrect) {
       const elapsedSec = Math.max(0, timeMs / 1000);
-      const basePoints = calculateRoundPoints(true, elapsedSec);
+      const duration = room.roundDuration || (room.gameMode === "survival" ? getSurvivalRoundDuration(room.currentRound - 1) : ROUND_DURATION_SEC);
+      let basePoints = calculateRoundPoints(true, elapsedSec, duration);
+      if (basePoints < 10) basePoints = 10;
       let friendBonus = 0;
       if (
         room.gameMode === "who_listens" &&
@@ -1080,6 +1157,7 @@ function PlayArenaContent() {
           action: "submit_answer",
           playerId,
           optionIndex: optionIdx,
+          optionId,
           roundIndex: room.currentRound,
           selectedTitle: selectedTitle || undefined,
           timeMs,
@@ -1595,6 +1673,17 @@ function PlayArenaContent() {
             <Headphones className="w-3.5 h-3.5 text-[#1DB954]" />
             <span className="hidden sm:inline">Importar Spotify</span>
           </button>
+
+          {room && (
+            <button
+              onClick={handleLeaveRoom}
+              title="Salir de la sala"
+              className="px-3 py-1 rounded-xl bg-red-950/40 hover:bg-red-900/60 border border-red-500/30 text-xs font-bold text-red-300 transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5 text-red-400" />
+              <span className="hidden sm:inline">Salir de la sala</span>
+            </button>
+          )}
         </div>
 
         {/* Player Badge */}
@@ -1810,7 +1899,7 @@ function PlayArenaContent() {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               {/* Left Column (7 cols): Game Modes & Taste Blender */}
               <div className="lg:col-span-7 space-y-6">
-                {/* 7 Game Modes Selector */}
+                {/* 6 Game Modes Selector */}
                 <div className="glass-card rounded-3xl p-6 border border-emerald-500/20 space-y-4">
                   <div className="flex items-center justify-between">
                     <div>
@@ -1822,7 +1911,7 @@ function PlayArenaContent() {
                       </p>
                     </div>
                     <span className="text-xs font-mono text-goblinLime bg-emerald-950 px-2.5 py-1 rounded-lg border border-emerald-500/30">
-                      7 MODOS RANKED
+                      6 MODOS RANKED
                     </span>
                   </div>
 
@@ -2565,10 +2654,17 @@ function PlayArenaContent() {
                         </div>
 
                         <div className="flex items-center gap-2">
-                          <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-semibold">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                            Listo
-                          </span>
+                          {player.isConnected === false ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] text-amber-400 font-semibold bg-amber-950/60 px-1.5 py-0.5 rounded">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                              Desconectado
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-semibold">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                              Listo
+                            </span>
+                          )}
 
                           {isHost && player.id !== playerId && (
                             <div className="flex items-center gap-1 ml-1 pl-1.5 border-l border-emerald-500/20">
@@ -3244,7 +3340,18 @@ function PlayArenaContent() {
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                 {[...room.players]
-                  .sort((a, b) => b.score - a.score)
+                  .sort((a, b) => {
+                    if (room.gameMode === "survival") {
+                      if (!a.isEliminated && b.isEliminated) return -1;
+                      if (a.isEliminated && !b.isEliminated) return 1;
+                      if (a.isEliminated && b.isEliminated) {
+                        const aRound = a.eliminatedAtRound || 0;
+                        const bRound = b.eliminatedAtRound || 0;
+                        if (bRound !== aRound) return bRound - aRound;
+                      }
+                    }
+                    return b.score - a.score;
+                  })
                   .map((p, idx) => {
                     const hasAnswered = p.currentAnswer !== null;
                     const isCurrentMe = p.id === playerId;
@@ -3331,7 +3438,11 @@ function PlayArenaContent() {
                         </div>
 
                         <div className="mt-1 text-[10px] text-zinc-400">
-                          {isPlayerEliminated ? (
+                          {p.isConnected === false ? (
+                            <span className="text-amber-400 font-bold bg-amber-950/80 px-1 py-0.5 rounded text-[9px]">
+                              Desconectado
+                            </span>
+                          ) : isPlayerEliminated ? (
                             <span className="text-zinc-500 italic">Espectador</span>
                           ) : hasAnswered ? (
                             <span className="text-emerald-400 font-bold flex items-center gap-1">
@@ -3368,7 +3479,18 @@ function PlayArenaContent() {
 
               {/* 1st, 2nd, 3rd Podium */}
               {(() => {
-                const ranked = [...room.players].sort((a, b) => b.score - a.score);
+                const ranked = [...room.players].sort((a, b) => {
+                  if (room.gameMode === "survival") {
+                    if (!a.isEliminated && b.isEliminated) return -1;
+                    if (a.isEliminated && !b.isEliminated) return 1;
+                    if (a.isEliminated && b.isEliminated) {
+                      const aRound = a.eliminatedAtRound || 0;
+                      const bRound = b.eliminatedAtRound || 0;
+                      if (bRound !== aRound) return bRound - aRound;
+                    }
+                  }
+                  return b.score - a.score;
+                });
                 const first = ranked[0];
                 const second = ranked[1];
                 const third = ranked[2];
