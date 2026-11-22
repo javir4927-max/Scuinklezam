@@ -744,6 +744,313 @@ export async function buildRoundsForTheme(
   return rounds;
 }
 
+export interface PlayerCandidateTrack {
+  track: SpotifyTrackItem;
+  playerId?: string;
+  playerName?: string;
+  sourceMode?: string;
+}
+
+function getTrackKey(t: SpotifyTrackItem): string {
+  const normTitle = (t?.title || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const normArtist = (t?.artist || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return `${normTitle}_${normArtist}`;
+}
+
+/**
+ * Builds isolated, balanced candidate buckets per player in the room.
+ * Ensures fair manual artist track fetching per player, fair deduplication, and exclusion filtering.
+ */
+export async function buildPlayerTrackBuckets(
+  room: RoomState,
+  excludedKeys: Set<string>
+): Promise<{
+  buckets: Map<string, PlayerCandidateTrack[]>;
+  allPoolTracks: SpotifyTrackItem[];
+}> {
+  const buckets = new Map<string, PlayerCandidateTrack[]>();
+  room.players.forEach((p) => {
+    buckets.set(p.id, []);
+  });
+
+  // 1. Injected tracks and custom playlists per player
+  room.players.forEach((p) => {
+    const pBucket = buckets.get(p.id)!;
+    const seenPKeys = new Set<string>();
+
+    const addTrack = (t: SpotifyTrackItem, src: string) => {
+      if (!t || !t.previewUrl || !t.previewUrl.startsWith("http") || !t.artworkUrl) return;
+      const k = getTrackKey(t);
+      const id = t.id || k;
+      if (seenPKeys.has(k) || seenPKeys.has(id)) return;
+      seenPKeys.add(k);
+      seenPKeys.add(id);
+      pBucket.push({
+        track: t,
+        playerId: p.id,
+        playerName: p.name,
+        sourceMode: t.sourceMode || src,
+      });
+    };
+
+    if (p.injectedTracks && p.injectedTracks.length > 0) {
+      p.injectedTracks.forEach((t) => addTrack(t, p.injectedModeName || "Spotify"));
+    }
+
+    if (room.playlists && room.playlists.length > 0) {
+      room.playlists.forEach((pl) => {
+        if (pl.addedByPlayerId === p.id && pl.tracks && pl.tracks.length > 0) {
+          pl.tracks.forEach((t) => addTrack(t, pl.name || "Playlist"));
+        }
+      });
+    }
+  });
+
+  // 2. Fix de artistas manuales por jugador (en paralelo por cada jugador si bucket < 12)
+  await Promise.all(
+    room.players.map(async (p) => {
+      const pBucket = buckets.get(p.id) || [];
+      const artists = (p.favoriteArtists || []).filter((a) => a && a.trim().length > 0);
+      if (artists.length === 0) return;
+
+      const unexcludedCount = pBucket.filter((item) => {
+        const k = getTrackKey(item.track);
+        return !excludedKeys.has(item.track.id) && !excludedKeys.has(k);
+      }).length;
+
+      if (unexcludedCount < 12) {
+        const searchPromises = artists.slice(0, 6).map((artist) => searchStrictArtistTracks(artist, 6));
+        const results = await Promise.allSettled(searchPromises);
+
+        const seenPKeys = new Set<string>();
+        pBucket.forEach((item) => {
+          seenPKeys.add(getTrackKey(item.track));
+          if (item.track.id) seenPKeys.add(item.track.id);
+        });
+
+        for (const res of results) {
+          if (res.status === "fulfilled" && Array.isArray(res.value)) {
+            for (const t of res.value) {
+              if (t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl) {
+                const k = getTrackKey(t);
+                const id = t.id || k;
+                if (!seenPKeys.has(k) && !seenPKeys.has(id)) {
+                  seenPKeys.add(k);
+                  seenPKeys.add(id);
+                  pBucket.push({
+                    track: t,
+                    playerId: p.id,
+                    playerName: p.name,
+                    sourceMode: "Artistas favoritos",
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+    })
+  );
+
+  // 3. Deduplicación justa entre jugadores
+  const trackOwners = new Map<string, Array<{ playerId: string; item: PlayerCandidateTrack }>>();
+  buckets.forEach((tracks, playerId) => {
+    tracks.forEach((item) => {
+      const k = getTrackKey(item.track);
+      if (!trackOwners.has(k)) {
+        trackOwners.set(k, []);
+      }
+      trackOwners.get(k)!.push({ playerId, item });
+    });
+  });
+
+  const chosenPlayerPerTrackKey = new Map<string, string>();
+  trackOwners.forEach((owners, key) => {
+    if (owners.length === 1) {
+      chosenPlayerPerTrackKey.set(key, owners[0].playerId);
+    } else {
+      const randomIdx = Math.floor(Math.random() * owners.length);
+      chosenPlayerPerTrackKey.set(key, owners[randomIdx].playerId);
+    }
+  });
+
+  buckets.forEach((tracks, playerId) => {
+    const deduplicated = tracks.filter((item) => {
+      const k = getTrackKey(item.track);
+      return chosenPlayerPerTrackKey.get(k) === playerId;
+    });
+    buckets.set(playerId, deduplicated);
+  });
+
+  // 4. Filtrado por excludedKeys
+  let totalTracksBeforeExclusion = 0;
+  let totalAvailableWithExclusions = 0;
+  const tempFilteredBuckets = new Map<string, PlayerCandidateTrack[]>();
+
+  buckets.forEach((tracks, playerId) => {
+    totalTracksBeforeExclusion += tracks.length;
+    const unexcluded = tracks.filter((item) => {
+      const k = getTrackKey(item.track);
+      return !excludedKeys.has(item.track.id) && !excludedKeys.has(k);
+    });
+    tempFilteredBuckets.set(playerId, unexcluded);
+    totalAvailableWithExclusions += unexcluded.length;
+  });
+
+  if (totalTracksBeforeExclusion > 0 && totalAvailableWithExclusions === 0) {
+    // TODAS las cubetas quedaron vacías por excludedKeys: reciclamos
+    excludedKeys.clear();
+  } else {
+    buckets.forEach((tracks, playerId) => {
+      const unexcluded = tempFilteredBuckets.get(playerId) || [];
+      const alreadyPlayed = tracks.filter((item) => {
+        const k = getTrackKey(item.track);
+        return excludedKeys.has(item.track.id) || excludedKeys.has(k);
+      });
+
+      if (unexcluded.length >= 4) {
+        buckets.set(playerId, unexcluded);
+      } else {
+        buckets.set(playerId, [...unexcluded, ...fisherYatesShuffle(alreadyPlayed)]);
+      }
+    });
+  }
+
+  // 5. Baraja internamente cada cubeta
+  buckets.forEach((tracks, playerId) => {
+    buckets.set(playerId, fisherYatesShuffle(tracks));
+  });
+
+  // 6. Gather allPoolTracks
+  const allPoolTracksMap = new Map<string, SpotifyTrackItem>();
+  buckets.forEach((tracks) => {
+    tracks.forEach((item) => {
+      const k = getTrackKey(item.track);
+      if (!allPoolTracksMap.has(k)) {
+        allPoolTracksMap.set(k, item.track);
+      }
+    });
+  });
+
+  // Fallback si la sala entera no tenía ninguna canción cargada por ningún jugador
+  if (allPoolTracksMap.size === 0) {
+    const fallbackArtists = ["Quevedo", "Bad Bunny", "Duki", "Aitana", "Saiko", "Feid"];
+    const fallbackResults = await Promise.allSettled(
+      fallbackArtists.map((artist) => searchStrictArtistTracks(artist, 6))
+    );
+    for (const res of fallbackResults) {
+      if (res.status === "fulfilled" && Array.isArray(res.value)) {
+        for (const t of res.value) {
+          if (t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl) {
+            allPoolTracksMap.set(getTrackKey(t), t);
+          }
+        }
+      }
+    }
+    for (const fb of FALLBACK_SPOTIFY_TRACKS) {
+      allPoolTracksMap.set(getTrackKey(fb), fb);
+    }
+
+    const fallbackList = Array.from(allPoolTracksMap.values());
+    if (room.players.length > 0) {
+      let pIdx = 0;
+      for (const t of fallbackList) {
+        const p = room.players[pIdx % room.players.length];
+        const pBucket = buckets.get(p.id) || [];
+        pBucket.push({
+          track: t,
+          playerId: p.id,
+          playerName: p.name,
+          sourceMode: "Éxitos recomendados",
+        });
+        buckets.set(p.id, pBucket);
+        pIdx++;
+      }
+      buckets.forEach((tracks, playerId) => {
+        buckets.set(playerId, fisherYatesShuffle(tracks));
+      });
+    }
+  }
+
+  const allPoolTracks = Array.from(allPoolTracksMap.values());
+  return { buckets, allPoolTracks };
+}
+
+/**
+ * Interleaves songs fairly in round-robin shuffled cycles.
+ * Prevents streaks between cycles.
+ */
+export function interleavePlayerBucketsFairly(
+  buckets: Map<string, PlayerCandidateTrack[]>,
+  lastPlayerId?: string
+): PlayerCandidateTrack[] {
+  const queues = new Map<string, PlayerCandidateTrack[]>();
+  buckets.forEach((tracks, playerId) => {
+    queues.set(playerId, [...tracks]);
+  });
+
+  const result: PlayerCandidateTrack[] = [];
+  let previousPlayerId: string | undefined = lastPlayerId;
+
+  while (true) {
+    const activePlayerIds = Array.from(queues.keys()).filter(
+      (pid) => (queues.get(pid)?.length || 0) > 0
+    );
+    if (activePlayerIds.length === 0) break;
+
+    const cycleIds = fisherYatesShuffle(activePlayerIds);
+
+    // Anti-streak rule between cycles:
+    // If >= 2 players available and cycleIds[0] === previousPlayerId,
+    // swap cycleIds[0] with another player in cycleIds[1..n]
+    if (cycleIds.length >= 2 && cycleIds[0] === previousPlayerId) {
+      const swapIndex = 1 + Math.floor(Math.random() * (cycleIds.length - 1));
+      const temp = cycleIds[0];
+      cycleIds[0] = cycleIds[swapIndex];
+      cycleIds[swapIndex] = temp;
+    }
+
+    for (const pid of cycleIds) {
+      const q = queues.get(pid);
+      if (q && q.length > 0) {
+        const item = q.shift()!;
+        result.push(item);
+        previousPlayerId = pid;
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Post-verification smoother that eliminates adjacent tracks by the same player.
+ */
+export function smoothVerifiedOrder<T extends { playerId?: string }>(
+  items: T[],
+  lastPlayerId?: string
+): T[] {
+  const result = [...items];
+  let prevId = lastPlayerId;
+
+  for (let i = 0; i < result.length; i++) {
+    const currentId = result[i].playerId;
+    if (currentId && prevId && currentId === prevId) {
+      const swapIdx = result.findIndex(
+        (item, idx) => idx > i && item.playerId && item.playerId !== prevId
+      );
+      if (swapIdx !== -1) {
+        const temp = result[i];
+        result[i] = result[swapIdx];
+        result[swapIdx] = temp;
+      }
+    }
+    prevId = result[i].playerId;
+  }
+
+  return result;
+}
+
 /**
  * Generates an infinite batch of coherent, audio-verified rounds for Survival mode.
  * Excludes already played tracks (using room.usedTrackKeys).
@@ -754,75 +1061,26 @@ export async function generateSurvivalBatch(room: RoomState, count: number = 10)
   const usedDistractorKeys = new Set<string>();
   const startRoundNumber = room.rounds.length + 1;
 
-  // 1. Gather candidates from player injected tracks, custom playlists, and favorites
-  const candidatePool: SpotifyTrackItem[] = [];
+  const lastRound = room.rounds[room.rounds.length - 1];
+  const lastPlayerId = lastRound?.contributedByPlayerId;
 
-  room.players.forEach((p) => {
-    if (p.injectedTracks && p.injectedTracks.length > 0) {
-      candidatePool.push(...p.injectedTracks);
-    }
-  });
+  const { buckets, allPoolTracks } = await buildPlayerTrackBuckets(room, usedKeys);
+  const interleaved = interleavePlayerBucketsFairly(buckets, lastPlayerId);
 
-  if (room.playlists && room.playlists.length > 0) {
-    room.playlists.forEach((pl) => {
-      if (pl.tracks && pl.tracks.length > 0) {
-        candidatePool.push(...pl.tracks);
-      }
-    });
-  }
+  const poolTracks = allPoolTracks.length >= count * 2
+    ? allPoolTracks
+    : [...allPoolTracks, ...FALLBACK_SPOTIFY_TRACKS];
 
-  const playerArtists = Array.from(
-    new Set(room.players.flatMap((p) => p.favoriteArtists).filter((a) => a && a.trim().length > 0))
+  const verifiedTargetObjects = await collectVerifiedTargetObjects(
+    interleaved,
+    count,
+    poolTracks
   );
+  const smoothedTargets = smoothVerifiedOrder(verifiedTargetObjects, lastPlayerId);
 
-  // If candidatePool has few unused tracks, search iTunes for player artists in parallel
-  const unusedFromPool = candidatePool.filter((t) => {
-    const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-    return !usedKeys.has(key);
-  });
-
-  if (unusedFromPool.length < count * 2) {
-    const searchArtists = playerArtists.length > 0
-      ? playerArtists.slice(0, 6)
-      : ["Quevedo", "Bad Bunny", "Duki", "Aitana", "Saiko", "Feid"];
-
-    const searchResults = await Promise.allSettled(
-      searchArtists.map((artist) => searchStrictArtistTracks(artist, 8))
-    );
-    for (const res of searchResults) {
-      if (res.status === "fulfilled" && Array.isArray(res.value)) {
-        candidatePool.push(...res.value);
-      }
-    }
-  }
-
-  if (candidatePool.length < count * 2) {
-    candidatePool.push(...FALLBACK_SPOTIFY_TRACKS);
-  }
-
-  // Filter valid audio tracks
-  const availableTracks = candidatePool.filter((t) => {
-    if (!t || !t.previewUrl || !t.previewUrl.startsWith("http") || !t.artworkUrl) return false;
-    const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-    return !usedKeys.has(key);
-  });
-
-  // If pool exhausted, reset used keys to cycle gracefully
-  if (availableTracks.length < count) {
-    usedKeys.clear();
-    for (const t of candidatePool) {
-      if (t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl) {
-        availableTracks.push(t);
-      }
-    }
-  }
-
-  const shuffledCandidates = fisherYatesShuffle(availableTracks);
-  const verifiedTargets = await collectVerifiedTargets(shuffledCandidates, count, candidatePool);
-
-  // Parallel distractor generation
   const newRounds: RoundData[] = await Promise.all(
-    verifiedTargets.map(async (target, i) => {
+    smoothedTargets.map(async (item, i) => {
+      const target = item.track;
       const targetTopic = getTrackTopic(target);
       const roundNumber = startRoundNumber + i;
 
@@ -835,7 +1093,12 @@ export async function generateSurvivalBatch(room: RoomState, count: number = 10)
         topic: targetTopic,
       };
 
-      const distractors = await getDifficultDistractors(target, candidatePool, 3, usedDistractorKeys);
+      const distractors = await getDifficultDistractors(
+        target,
+        poolTracks,
+        3,
+        usedDistractorKeys
+      );
       const distractorOptions: RoundOption[] = distractors.map((d, dIdx) => ({
         id: `opt_${roundNumber}_d${dIdx}_${Math.random().toString(36).substring(2, 7)}`,
         title: d.title,
@@ -847,8 +1110,11 @@ export async function generateSurvivalBatch(room: RoomState, count: number = 10)
       const options: RoundOption[] = fisherYatesShuffle([correctOption, ...distractorOptions]);
       const correctIndex = options.findIndex((opt) => opt.id === correctOption.id);
 
-      const key = `${target.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${target.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+      const key = getTrackKey(target);
       usedKeys.add(key);
+      if (target.id) usedKeys.add(target.id);
+
+      const playerSource = item.playerId ? room.players.find((p) => p.id === item.playerId) : undefined;
 
       return {
         roundNumber,
@@ -863,6 +1129,9 @@ export async function generateSurvivalBatch(room: RoomState, count: number = 10)
         correctTrackId: target.id,
         correctTitle: target.title,
         topic: targetTopic,
+        contributedByPlayerId: item.playerId,
+        contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name || "Scuinklezam",
+        sourceMode: item.sourceMode || target.sourceMode || playerSource?.injectedModeName || "Spotify",
       };
     })
   );
@@ -2027,88 +2296,23 @@ export async function startRoomGame(
     }
     // 5. GAME MODE: BLEND / WHO_LISTENS
     else {
-      const candidateTracks: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
+      const { buckets, allPoolTracks } = await buildPlayerTrackBuckets(room, new Set());
+      const interleaved = interleavePlayerBucketsFairly(buckets);
 
-      room.players.forEach((p) => {
-        if (p.injectedTracks && p.injectedTracks.length > 0) {
-          p.injectedTracks.forEach((t) => {
-            candidateTracks.push({
-              track: t,
-              playerId: p.id,
-              playerName: p.name,
-            });
-          });
-        }
-      });
+      const poolTracks = allPoolTracks.length >= room.totalRounds
+        ? allPoolTracks
+        : [...allPoolTracks, ...FALLBACK_SPOTIFY_TRACKS];
 
-      if (room.playlists && room.playlists.length > 0) {
-        room.playlists.forEach((pl) => {
-          (pl.tracks || []).forEach((t) => {
-            candidateTracks.push({
-              track: t,
-              playerId: pl.addedByPlayerId,
-              playerName: pl.addedByPlayerName,
-            });
-          });
-        });
-      }
-
-      const seenUris = new Set<string>();
-      const validUniquePool: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
-
-      for (const item of candidateTracks) {
-        const key = `${item.track.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${item.track.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-        if (!seenUris.has(key) && !seenUris.has(item.track.id)) {
-          seenUris.add(key);
-          seenUris.add(item.track.id);
-          validUniquePool.push(item);
-        }
-      }
-
-      const playerArtists = Array.from(
-        new Set(room.players.flatMap((p) => p.favoriteArtists).filter((a) => a && a.trim().length > 0))
-      );
-
-      if (validUniquePool.length < room.totalRounds * 2 && playerArtists.length > 0) {
-        const artistResults = await Promise.allSettled(
-          playerArtists.slice(0, 8).map((artist) => searchStrictArtistTracks(artist, 6))
-        );
-        for (const r of artistResults) {
-          if (r.status === "fulfilled" && Array.isArray(r.value)) {
-            r.value.forEach((t) => {
-              const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-              if (!seenUris.has(key) && !seenUris.has(t.id)) {
-                seenUris.add(key);
-                seenUris.add(t.id);
-                validUniquePool.push({ track: t });
-              }
-            });
-          }
-        }
-      }
-
-      if (validUniquePool.length < room.totalRounds) {
-        FALLBACK_SPOTIFY_TRACKS.forEach((t) => {
-          const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-          if (!seenUris.has(key) && !seenUris.has(t.id)) {
-            seenUris.add(key);
-            seenUris.add(t.id);
-            validUniquePool.push({ track: t });
-          }
-        });
-      }
-
-      const randomizedTargets = fisherYatesShuffle(validUniquePool);
-      const poolTracks = validUniquePool.map((u) => u.track);
       const verifiedTargetObjects = await collectVerifiedTargetObjects(
-        randomizedTargets,
+        interleaved,
         room.totalRounds,
         poolTracks
       );
+      const smoothedTargets = smoothVerifiedOrder(verifiedTargetObjects);
       const usedDistractorKeys = new Set<string>();
 
       const rounds: RoundData[] = await Promise.all(
-        verifiedTargetObjects.map(async (item, i) => {
+        smoothedTargets.map(async (item, i) => {
           const target = item.track;
           const targetTopic = getTrackTopic(target);
           const roundNumber = i + 1;
@@ -2149,8 +2353,8 @@ export async function startRoomGame(
             correctTitle: target.title,
             topic: targetTopic,
             contributedByPlayerId: item.playerId,
-            contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name,
-            sourceMode: target.sourceMode || playerSource?.injectedModeName,
+            contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name || "Scuinklezam",
+            sourceMode: item.sourceMode || target.sourceMode || playerSource?.injectedModeName || "Spotify",
           };
         })
       );
@@ -2687,103 +2891,23 @@ export async function rematchRoomGame(
       room.roundDuration = getSurvivalRoundDuration(0);
     } else {
       // Default: BLEND / WHO_LISTENS
-      const candidateTracks: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
+      const { buckets, allPoolTracks } = await buildPlayerTrackBuckets(room, playedTrackKeys);
+      const interleaved = interleavePlayerBucketsFairly(buckets);
 
-      room.players.forEach((p) => {
-        if (p.injectedTracks && p.injectedTracks.length > 0) {
-          p.injectedTracks.forEach((t) => {
-            candidateTracks.push({
-              track: t,
-              playerId: p.id,
-              playerName: p.name,
-            });
-          });
-        }
-      });
+      const poolTracks = allPoolTracks.length >= room.totalRounds
+        ? allPoolTracks
+        : [...allPoolTracks, ...FALLBACK_SPOTIFY_TRACKS];
 
-      if (room.playlists && room.playlists.length > 0) {
-        room.playlists.forEach((pl) => {
-          (pl.tracks || []).forEach((t) => {
-            candidateTracks.push({
-              track: t,
-              playerId: pl.addedByPlayerId,
-              playerName: pl.addedByPlayerName,
-            });
-          });
-        });
-      }
-
-      const seenUris = new Set<string>();
-      const validUniquePool: Array<{ track: SpotifyTrackItem; playerId?: string; playerName?: string }> = [];
-
-      for (const item of candidateTracks) {
-        const key = `${item.track.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${item.track.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-        if (!seenUris.has(key) && !seenUris.has(item.track.id)) {
-          seenUris.add(key);
-          seenUris.add(item.track.id);
-          validUniquePool.push(item);
-        }
-      }
-
-      const playerArtists = Array.from(
-        new Set(room.players.flatMap((p) => p.favoriteArtists).filter((a) => a && a.trim().length > 0))
-      );
-
-      if (validUniquePool.length < room.totalRounds * 2 && playerArtists.length > 0) {
-        const artistResults = await Promise.allSettled(
-          playerArtists.slice(0, 8).map((artist) => searchStrictArtistTracks(artist, 6))
-        );
-        for (const r of artistResults) {
-          if (r.status === "fulfilled" && Array.isArray(r.value)) {
-            r.value.forEach((t) => {
-              const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-              if (!seenUris.has(key) && !seenUris.has(t.id)) {
-                seenUris.add(key);
-                seenUris.add(t.id);
-                validUniquePool.push({ track: t });
-              }
-            });
-          }
-        }
-      }
-
-      if (validUniquePool.length < room.totalRounds) {
-        FALLBACK_SPOTIFY_TRACKS.forEach((t) => {
-          const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-          if (!seenUris.has(key) && !seenUris.has(t.id)) {
-            seenUris.add(key);
-            seenUris.add(t.id);
-            validUniquePool.push({ track: t });
-          }
-        });
-      }
-
-      const unplayed = validUniquePool.filter((item) => {
-        const t = item.track;
-        const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-        return !playedTrackKeys.has(t.id) && !playedTrackKeys.has(key);
-      });
-      const alreadyPlayed = validUniquePool.filter((item) => {
-        const t = item.track;
-        const key = `${t.title.toLowerCase().replace(/[^a-z0-9]/g, "")}_${t.artist.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-        return playedTrackKeys.has(t.id) || playedTrackKeys.has(key);
-      });
-
-      const prioritizedCandidates = [
-        ...fisherYatesShuffle(unplayed),
-        ...fisherYatesShuffle(alreadyPlayed),
-      ];
-
-      const poolTracks = validUniquePool.map((u) => u.track);
       const verifiedTargetObjects = await collectVerifiedTargetObjects(
-        prioritizedCandidates,
+        interleaved,
         room.totalRounds,
         poolTracks
       );
+      const smoothedTargets = smoothVerifiedOrder(verifiedTargetObjects);
       const usedDistractorKeys = new Set<string>();
 
       const rounds: RoundData[] = await Promise.all(
-        verifiedTargetObjects.map(async (item, i) => {
+        smoothedTargets.map(async (item, i) => {
           const target = item.track;
           const targetTopic = getTrackTopic(target);
           const roundNumber = i + 1;
@@ -2824,8 +2948,8 @@ export async function rematchRoomGame(
             correctTitle: target.title,
             topic: targetTopic,
             contributedByPlayerId: item.playerId,
-            contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name,
-            sourceMode: target.sourceMode || playerSource?.injectedModeName,
+            contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name || "Scuinklezam",
+            sourceMode: item.sourceMode || target.sourceMode || playerSource?.injectedModeName || "Spotify",
           };
         })
       );
