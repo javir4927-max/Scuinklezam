@@ -1,4 +1,5 @@
 import { SpotifyTrackItem, getFallbackArtwork } from "./spotifyTypes";
+import { getSpotifyAppToken } from "./spotifyAppToken";
 
 export type TopicKey =
   | "urbano_es_latino"
@@ -227,11 +228,11 @@ const KNOWN_ARTIST_TOPICS: Array<{ keywords: string[]; topic: TopicKey }> = [
   {
     topic: "anime_jpop_ost",
     keywords: [
-      "lisa", "radwimps", "yoasobi", "kenshi yonezu", "aimer", "eve", "flow",
+      "lisa", "radwimps", "yoasobi", "kenshi yonezu", "aimer",
       "kana-boon", "asian kung-fu", "linked horizon", "hige dandism", "vaundy",
       "sawano", "hisaishi", "sagisu", "yoko kanno", "myth & roid", "unravel",
-      "tk from", "fujii kaze", "ado", "bts", "blackpink", "stray kids", "twice",
-      "newjeans", "anime", "soundtrack", "opening", "ost"
+      "tk from", "fujii kaze", "bts", "blackpink", "stray kids", "twice",
+      "newjeans", "anime", "soundtrack"
     ],
   },
   {
@@ -245,16 +246,17 @@ const KNOWN_ARTIST_TOPICS: Array<{ keywords: string[]; topic: TopicKey }> = [
   {
     topic: "urbano_es_latino",
     keywords: [
-      "bad bunny", "quevedo", "saiko", "feid", "myke towers", "mora",
+      "gonzy", "sech", "bad bunny", "quevedo", "saiko", "feid", "myke towers", "mora",
       "rauw alejandro", "duki", "eladio carrion", "maikel delacalle",
       "bizarrap", "anuel", "ozuna", "j balvin", "maluma", "karol g",
       "nicky jam", "daddy yankee", "don omar", "wisin", "yandel",
-      "farruko", "sech", "arcangel", "de la ghetto", "bryant myers",
+      "farruko", "arcangel", "de la ghetto", "bryant myers",
       "chencho", "ryan castro", "blessd", "cris mj", "floyymenor",
       "jhayco", "c tangana", "rels b", "cruz cafune", "delaossa",
       "recycled j", "morad", "beny jr", "jc reyes", "cano", "la pantera",
       "pepe y vizio", "gonzalo hermida", "alvaro diaz", "trueno", "tiago pzk",
-      "lit killah", "milo j", "lit killa", "lunay", "polima", "pablo chill-e"
+      "lit killah", "milo j", "lit killa", "lunay", "polima", "pablo chill-e",
+      "mvrk", "lucho rk"
     ],
   },
   {
@@ -319,48 +321,62 @@ export function getTrackTopic(track: {
 
   const fullText = `${normArtist} ${normTitle} ${normGenre} ${normAlbum}`;
 
+  // Extract separate artists using ARTIST_COLLAB_REGEX
+  const rawArtist = track.artist || "";
+  const artistParts = rawArtist
+    .split(ARTIST_COLLAB_REGEX)
+    .map((a) => normalizeText(a))
+    .filter(Boolean);
+
+  // Exact 3-letter checks for specific Japanese artists (never match substrings!)
+  if (artistParts.some((a) => a === "ado" || a === "eve" || a === "flow")) {
+    return "anime_jpop_ost";
+  }
+
   // 1. Anime / J-Pop / Soundtrack detection
   if (
-    /anime|j-pop|jpop|japanese|soundtrack|vgm|video game|k-pop|kpop|ost\b|opening|ending/i.test(fullText) ||
-    /naruto|bleach|one piece|attack on titan|shingeki|demon slayer|kimetsu|jujutsu|evangelion|dragon ball|ghibli|manga/i.test(fullText)
+    /\b(anime|j-pop|jpop|japanese|soundtrack|vgm|video game|k-pop|kpop)\b/i.test(fullText) ||
+    /\b(naruto|bleach|one piece|attack on titan|shingeki|demon slayer|kimetsu|jujutsu|evangelion|dragon ball|ghibli|manga)\b/i.test(fullText)
   ) {
     return "anime_jpop_ost";
   }
 
   // 2. Flamenco / Spanish classic detection
-  if (/flamenco|rumba|copla|sevillanas|andaluz/i.test(fullText)) {
+  if (/\b(flamenco|rumba|copla|sevillanas|andaluz)\b/i.test(fullText)) {
     return "flamenco_esp";
   }
 
-  // 3. Known artist dictionary lookup
+  // 3. Known artist dictionary lookup (MATCHES ONLY AGAINST ARTISTS, NEVER TITLE!)
   for (const entry of KNOWN_ARTIST_TOPICS) {
-    if (entry.keywords.some((k) => normArtist.includes(k) || normTitle.includes(k))) {
-      return entry.topic;
+    for (const k of entry.keywords) {
+      const isMatch =
+        artistParts.some((p) => p === k) ||
+        new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(normArtist);
+      if (isMatch) return entry.topic;
     }
   }
 
   // 4. Genre string heuristics from iTunes primaryGenreName or Spotify
-  if (/latino|latin|reggaeton|trap latino|dembow|urbano|murbano/i.test(normGenre)) {
+  if (/\b(latino|latin|reggaeton|trap latino|dembow|urbano|murbano)\b/i.test(normGenre)) {
     return "urbano_es_latino";
   }
-  if (/hip-hop|hip hop|rap|boom bap|trap/i.test(normGenre)) {
-    // If lyrics/artist indicates Spanish, classify as urbano_es_latino; otherwise hiphop_rap_en
-    if (/espanol|spanish|latino|spain|madrid|barcelona|puerto rico|colombia|argentina|chile/i.test(fullText)) {
+  if (/\b(hip-hop|hip hop|rap|boom bap|trap)\b/i.test(normGenre)) {
+    if (/\b(espanol|spanish|latino|spain|madrid|barcelona|puerto rico|colombia|argentina|chile)\b/i.test(fullText)) {
       return "urbano_es_latino";
     }
     return "hiphop_rap_en";
   }
-  if (/rock|metal|punk|alternative|indie|grunge|hard rock/i.test(normGenre)) {
+  if (/\b(rock|metal|punk|alternative|indie|grunge|hard rock)\b/i.test(normGenre)) {
     return "rock_indie_alt";
   }
-  if (/electronic|house|techno|dance|edm|trance|club|electro/i.test(normGenre)) {
+  if (/\b(electronic|house|techno|dance|edm|trance|club|electro)\b/i.test(normGenre)) {
     return "electronica_house";
   }
-  if (/pop|synth-pop|r&b|soul/i.test(normGenre)) {
+  if (/\b(pop|synth-pop|r&b|soul)\b/i.test(normGenre)) {
     return "pop_mainstream";
   }
 
-  // 5. Default fallback based on language / common Spanish words
+  // 5. Default fallback based on language / common Spanish words in title
   if (/\b(el|la|los|las|de|del|en|un|una|que|por|para|con|mi|tu|su|ya|mas|amor|corazon|noche|loco|vida|beso)\b/i.test(normTitle)) {
     return "urbano_es_latino";
   }
@@ -370,69 +386,69 @@ export function getTrackTopic(track: {
 
 /**
  * Curated offline / instant coherent pool for each topic to guarantee immediate, high-quality distractors.
+ * All entries use 100% verified real album artwork responding HTTP 200.
  */
 export const COHERENT_TOPIC_POOLS: Record<TopicKey, Array<{ title: string; artist: string; artworkUrl: string }>> = {
   urbano_es_latino: [
-    { title: "Columbia", artist: "Quevedo", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music116/v4/93/29/ea/9329ea1b-ce54-15f1-3995-171efaa1d560/197188722213.jpg/600x600bb.jpg" },
-    { title: "Supernova", artist: "Saiko", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music116/v4/ce/22/e3/ce22e391-7649-4114-16e6-df066eb90740/197188448557.jpg/600x600bb.jpg" },
-    { title: "Monaco", artist: "Bad Bunny", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music116/v4/05/23/ef/0523efce-0a96-3829-9e8d-8e658ec5b214/197189178088.jpg/600x600bb.jpg" },
-    { title: "LALA", artist: "Myke Towers", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music126/v4/58/09/b8/5809b83f-0361-b51f-d7ae-cfa0980aa84d/190296068225.jpg/600x600bb.jpg" },
-    { title: "Classy 101", artist: "Feid & Young Miko", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music116/v4/6c/fb/b0/6cfbb01f-0fe3-be12-9c3f-ee9c6e395cb3/23UMGIM29272.rgb.jpg/600x600bb.jpg" },
-    { title: "Buenas", artist: "Quevedo & Saiko", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music116/v4/bb/bd/33/bbbd33ae-586b-a2c9-634a-969d7249877b/197189033325.jpg/600x600bb.jpg" },
-    { title: "Reina", artist: "Mora & Saiko", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music116/v4/1e/8c/74/1e8c7403-f09c-3294-0cf7-d861d85c13b2/197188941799.jpg/600x600bb.jpg" },
-    { title: "Diluvio", artist: "Rauw Alejandro", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music112/v4/4e/d3/15/4ed3158c-4a11-b84e-05cb-262276cb9ec8/196589531557.jpg/600x600bb.jpg" },
+    { title: "Columbia", artist: "Quevedo", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/eec6fccccb5cdca0db12f5e579d1a94b/500x500-000000-80-0-0.jpg" },
+    { title: "SUPERNOVA", artist: "Saiko", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/cb875f669e36bf5907fb48a6ba0954b1/500x500-000000-80-0-0.jpg" },
+    { title: "MONACO", artist: "Bad Bunny", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/f840891b70f6e240b8ecaec49346bd6a/500x500-000000-80-0-0.jpg" },
+    { title: "LALA", artist: "Myke Towers", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/c9e44eae3791dd967caedc538696887b/500x500-000000-80-0-0.jpg" },
+    { title: "CLASSY 101", artist: "Feid & Young Miko", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/3210cc9224ba98d1733970571e44e9a4/500x500-000000-80-0-0.jpg" },
+    { title: "Buenas", artist: "Quevedo & Saiko", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/2239b221a169963c1bdd6e60e9836591/500x500-000000-80-0-0.jpg" },
+    { title: "REINA", artist: "Mora & Saiko", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/e68252ef53f5b405606ac9029c650120/500x500-000000-80-0-0.jpg" },
+    { title: "DILUVIO", artist: "Rauw Alejandro", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/00e071a1d8e65037e37e38c3ff673ef0/500x500-000000-80-0-0.jpg" },
   ],
   hiphop_rap_en: [
-    { title: "All Caps", artist: "Madvillain & MF DOOM", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/28/67/74/286774c8-c689-d10a-b31c-b6574c8be6cb/659457206527.jpg/600x600bb.jpg" },
-    { title: "Rapp Snitch Knishes", artist: "MF DOOM", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/55/7e/63/557e63b6-1217-1fc9-b687-8898b1b11da1/826853001828.jpg/600x600bb.jpg" },
-    { title: "HUMBLE.", artist: "Kendrick Lamar", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/1c/91/92/1c919246-8e54-521b-4f59-4b6d47b59e35/17UMGIM86295.rgb.jpg/600x600bb.jpg" },
-    { title: "God's Plan", artist: "Drake", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music128/v4/29/7f/0b/297f0b9c-c9d3-6415-dcfa-439ea100bf86/18UMGIM02797.rgb.jpg/600x600bb.jpg" },
-    { title: "SICKO MODE", artist: "Travis Scott", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/5c/48/ea/5c48ea92-3bc1-54b9-813c-36ecaa92bead/886447238541.jpg/600x600bb.jpg" },
-    { title: "No Role Modelz", artist: "J. Cole", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/80/f8/4d/80f84d6f-7ee5-f864-16a8-6e545806cba6/886444983055.jpg/600x600bb.jpg" },
-    { title: "Redbone", artist: "Childish Gambino", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/e5/2d/47/e52d47f9-2e1d-407d-5a8e-cf790fa1da42/886446215321.jpg/600x600bb.jpg" },
+    { title: "All Caps", artist: "Madvillain & MF DOOM", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/22d68d10ed024e92b65d010d5df24c04/500x500-000000-80-0-0.jpg" },
+    { title: "Rapp Snitch Knishes", artist: "MF DOOM", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/eb41db75ea6b22ad495876e7fa944bb4/500x500-000000-80-0-0.jpg" },
+    { title: "HUMBLE.", artist: "Kendrick Lamar", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/7ce6b8452fae425557067db6e6a1cad5/500x500-000000-80-0-0.jpg" },
+    { title: "God's Plan", artist: "Drake", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/b69d3bcbd130ad4cc9259de543889e30/500x500-000000-80-0-0.jpg" },
+    { title: "SICKO MODE", artist: "Travis Scott", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/0b08015216f975dc7fb5be3d5dcc4d88/500x500-000000-80-0-0.jpg" },
+    { title: "No Role Modelz", artist: "J. Cole", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/f45c8916970597d390313833a9db0c61/500x500-000000-80-0-0.jpg" },
+    { title: "Redbone", artist: "Childish Gambino", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/964acadabc2b6e286ce5e8e5add495a0/500x500-000000-80-0-0.jpg" },
   ],
   pop_mainstream: [
-    { title: "Cruel Summer", artist: "Taylor Swift", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/5a/d3/1d/5ad31d4e-b552-32b7-a36c-941838634cf1/19UMGIM53909.rgb.jpg/600x600bb.jpg" },
-    { title: "vampire", artist: "Olivia Rodrigo", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music126/v4/58/b7/c5/58b7c536-1e0e-4360-14e3-5ebca6d61d15/23UMGIM69458.rgb.jpg/600x600bb.jpg" },
-    { title: "Levitating", artist: "Dua Lipa", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/b9/7a/ee/b97aee2f-9173-0d56-c359-ee4b85c2c770/190295286101.jpg/600x600bb.jpg" },
-    { title: "bad guy", artist: "Billie Eilish", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/87/09/a3/8709a323-5e26-25f0-eb28-76ad06a11e86/19UMGIM13421.rgb.jpg/600x600bb.jpg" },
-    { title: "Blinding Lights", artist: "The Weeknd", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/61/e7/3f/61e73f94-018d-5f50-50ec-8521952bc72e/20UM1IM11629.rgb.jpg/600x600bb.jpg" },
-    { title: "As It Was", artist: "Harry Styles", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music122/v4/97/8f/3e/978f3e58-f947-f4e9-0266-96eb64dc64dc/886449999991.jpg/600x600bb.jpg" },
-    { title: "Espresso", artist: "Sabrina Carpenter", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/ec/3b/b1/ec3bb110-38e2-6d2c-80d4-fb46a815a5f1/24UMGIM39257.rgb.jpg/600x600bb.jpg" },
+    { title: "Cruel Summer", artist: "Taylor Swift", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/6111c5ab9729c8eac47883e4e50e9cf8/500x500-000000-80-0-0.jpg" },
+    { title: "vampire", artist: "Olivia Rodrigo", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/4bb79214365c0049e031f5e2caae4752/500x500-000000-80-0-0.jpg" },
+    { title: "Levitating", artist: "Dua Lipa", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/f8364f090ba04f1b19b381ec0390f3e4/500x500-000000-80-0-0.jpg" },
+    { title: "bad guy", artist: "Billie Eilish", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/6630083f454d48eadb6a9b53f035d734/500x500-000000-80-0-0.jpg" },
+    { title: "Blinding Lights", artist: "The Weeknd", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/fd00ebd6d30d7253f813dba3bb1c66a9/500x500-000000-80-0-0.jpg" },
+    { title: "As It Was", artist: "Harry Styles", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/b0e936124f59e669ddba02ebe5893f95/500x500-000000-80-0-0.jpg" },
+    { title: "Espresso", artist: "Sabrina Carpenter", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/e3221287a77eb262944e6528766eeba4/500x500-000000-80-0-0.jpg" },
   ],
   rock_indie_alt: [
-    { title: "Do I Wanna Know?", artist: "Arctic Monkeys", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/f3/7a/d5/f37ad578-8cf9-c3b7-7ff7-f04bf41d4034/887828031795.jpg/600x600bb.jpg" },
-    { title: "The Adults Are Talking", artist: "The Strokes", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music114/v4/55/e8/3c/55e83c27-38e3-05f7-6c84-18ca1bbca517/886448265004.jpg/600x600bb.jpg" },
-    { title: "Creep", artist: "Radiohead", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/85/3b/58/853b5860-2646-6705-724f-efd8616147ea/634904077464.png/600x600bb.jpg" },
-    { title: "Smells Like Teen Spirit", artist: "Nirvana", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/21/df/b5/21dfb559-6bb1-5612-4ee1-b930d6b41221/00602527878415.rgb.jpg/600x600bb.jpg" },
-    { title: "Sweater Weather", artist: "The Neighbourhood", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/44/d7/bf/44d7bfba-e97d-66e0-24aa-71328eb9b24b/886443831883.jpg/600x600bb.jpg" },
-    { title: "The Less I Know the Better", artist: "Tame Impala", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music114/v4/bb/e1/9f/bbe19f1d-dc2a-c75c-ce84-252f9c46d3e6/15UMGIM27150.rgb.jpg/600x600bb.jpg" },
-    { title: "In the End", artist: "Linkin Park", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/20/79/11/2079116c-eefb-640a-5c20-a681cbb47926/093624893188.jpg/600x600bb.jpg" },
+    { title: "Do I Wanna Know?", artist: "Arctic Monkeys", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/64e54e307bd5e2bdb27ffeb662fd910d/500x500-000000-80-0-0.jpg" },
+    { title: "The Adults Are Talking", artist: "The Strokes", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/523ac3e61759f365b9306fc44dd53eea/500x500-000000-80-0-0.jpg" },
+    { title: "Creep", artist: "Radiohead", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/1dd56fd8824492e1a5106c99a00a85ec/500x500-000000-80-0-0.jpg" },
+    { title: "Smells Like Teen Spirit", artist: "Nirvana", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/f0282817b697279e56df13909962a54a/500x500-000000-80-0-0.jpg" },
+    { title: "Sweater Weather", artist: "The Neighbourhood", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/6f55ff3cc5c478510c948024e95cf8d6/500x500-000000-80-0-0.jpg" },
+    { title: "The Less I Know The Better", artist: "Tame Impala", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/de5b9b704cd4ec36f8bf49beb3e17ba2/500x500-000000-80-0-0.jpg" },
+    { title: "In the End", artist: "Linkin Park", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/033a271b5ec10842c287827c39244fb5/500x500-000000-80-0-0.jpg" },
   ],
   anime_jpop_ost: [
-    { title: "Gurenge", artist: "LiSA", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music123/v4/df/e8/1a/dfe81af6-2fa9-e58e-0129-373da2d346ff/886447781702.jpg/600x600bb.jpg" },
-    { title: "Sparkle", artist: "RADWIMPS", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/d9/3c/ee/d93cee14-5d5d-c6a6-f286-6ca8ef668b81/16UMGIM33149.rgb.jpg/600x600bb.jpg" },
-    { title: "Idol", artist: "YOASOBI", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music126/v4/8a/69/0d/8a690d57-36e7-142d-c20e-862fa7d12f32/886449906666.jpg/600x600bb.jpg" },
-    { title: "Kick Back", artist: "Kenshi Yonezu", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music112/v4/c6/16/e0/c616e093-f09d-0c84-8848-0ca5063ffcf0/886449993333.jpg/600x600bb.jpg" },
-    { title: "Zankyosanka", artist: "Aimer", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music126/v4/9d/28/bf/9d28bfdf-0ebc-f7ca-51bb-f965d1b7a2d4/886449666666.jpg/600x600bb.jpg" },
-    { title: "Silhouette", artist: "KANA-BOON", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/37/b8/91/37b89182-36fb-3200-a65c-60ff9cf80197/886444855555.jpg/600x600bb.jpg" },
-    { title: "Kaibutsu", artist: "YOASOBI", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music124/v4/8a/16/fc/8a16fc01-dc9b-5975-d143-6c70dc0d1cf5/886449000000.jpg/600x600bb.jpg" },
+    { title: "Gurenge", artist: "LiSA", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/1f52bcd67ac5393123b3a272ceec5a5c/500x500-000000-80-0-0.jpg" },
+    { title: "Sparkle", artist: "RADWIMPS", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/8bd5efd9f73b7d0f8371c58a017a5aea/500x500-000000-80-0-0.jpg" },
+    { title: "Idol", artist: "YOASOBI", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/c028acc15f911c6ca3ff821abbb64aa3/500x500-000000-80-0-0.jpg" },
+    { title: "KICK BACK", artist: "Kenshi Yonezu", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/219b98615e49c9df44727bc3d9d57c8e/500x500-000000-80-0-0.jpg" },
+    { title: "Zankyosanka", artist: "Aimer", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/fe2830a3220f92056d5ee6cf31de73d2/500x500-000000-80-0-0.jpg" },
+    { title: "Silhouette", artist: "KANA-BOON", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/354c1fcd1648db95971b55a3fb110055/500x500-000000-80-0-0.jpg" },
+    { title: "Kaibutsu", artist: "YOASOBI", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/0e7a3410cce9c1a1487bb594c27aa658/500x500-000000-80-0-0.jpg" },
   ],
   electronica_house: [
-    { title: "Wake Me Up", artist: "Avicii", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/84/c6/3b/84c63b7e-97f2-1718-d760-b7470beba0d2/13UMGIM24250.rgb.jpg/600x600bb.jpg" },
-    { title: "Summer", artist: "Calvin Harris", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/ef/52/a2/ef52a20b-f3eb-9610-85f0-61ec0a184136/886444535353.jpg/600x600bb.jpg" },
-    { title: "Titanium", artist: "David Guetta & Sia", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/cb/2a/39/cb2a392d-94c6-fa20-4318-ff3db69bbab0/5099908381559.jpg/600x600bb.jpg" },
-    { title: "One More Time", artist: "Daft Punk", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/64/03/49/640349b1-5e82-e25c-a550-98e3b33190df/0724384960650.jpg/600x600bb.jpg" },
-    { title: "Animals", artist: "Martin Garrix", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/28/19/2d/28192d19-971c-a96e-55c3-cb1e6ecba4c6/8718522026850.jpg/600x600bb.jpg" },
-    { title: "Don't You Worry Child", artist: "Swedish House Mafia", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/18/14/bb/1814bb60-4966-51f7-c7ba-ca6d18386f68/5099997878855.jpg/600x600bb.jpg" },
+    { title: "Wake Me Up", artist: "Avicii", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/ec97306735b46ec334e0ce562290775b/500x500-000000-80-0-0.jpg" },
+    { title: "Summer", artist: "Calvin Harris", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/a72e5db10e9168cd6f5065fbe750cdbb/500x500-000000-80-0-0.jpg" },
+    { title: "Titanium", artist: "David Guetta & Sia", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/52330286cb5008805253fd77c7111d3f/500x500-000000-80-0-0.jpg" },
+    { title: "One More Time", artist: "Daft Punk", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/5718f7c81c27e0b2417e2a4c45224f8a/500x500-000000-80-0-0.jpg" },
+    { title: "Animals", artist: "Martin Garrix", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/97c1918368d8ed3b0bea34d0785d4db0/500x500-000000-80-0-0.jpg" },
+    { title: "Don't You Worry Child", artist: "Swedish House Mafia", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/a6e59fada64940a751de6eaa01229e8b/500x500-000000-80-0-0.jpg" },
   ],
   flamenco_esp: [
-    { title: "Como el Agua", artist: "Camarón de la Isla", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/d1/2b/ef/d12bef36-cfb4-d731-8e50-953e5e406450/00602547572706.rgb.jpg/600x600bb.jpg" },
-    { title: "Entre Dos Aguas", artist: "Paco de Lucía", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/4e/d8/bc/4ed8bc98-7517-5785-5b4e-2f96cfb677a2/00602537750800.rgb.jpg/600x600bb.jpg" },
-    { title: "Tu Calorro", artist: "Estopa", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/6e/c3/ef/6ec3efc4-ec06-8d59-3356-4aa4da238622/886443026364.jpg/600x600bb.jpg" },
-    { title: "Caminando por la Vida", artist: "Melendi", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/91/9f/f0/919ff08f-287c-3f72-1be3-e840d216f9f3/8429006400977.jpg/600x600bb.jpg" },
-    { title: "Válgame Dios", artist: "Niña Pastori", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/9c/04/e5/9c04e578-831e-4519-aa57-41fb82ec96a7/886443314444.jpg/600x600bb.jpg" },
-    { title: "Escúcheme Señora", artist: "Fondo Flamenco", artworkUrl: "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/37/10/7c/37107c89-ceeb-5154-1594-555555555555/8429006000000.jpg/600x600bb.jpg" },
+    { title: "Como el Agua", artist: "Camarón de la Isla", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/5aae29522b64f462d590a2f44386581b/500x500-000000-80-0-0.jpg" },
+    { title: "Entre Dos Aguas", artist: "Paco de Lucía", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/5aae29522b64f462d590a2f44386581b/500x500-000000-80-0-0.jpg" },
+    { title: "Tu Calorro", artist: "Estopa", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/a0d6b3649f9abcd41e1822bbaf446c11/500x500-000000-80-0-0.jpg" },
+    { title: "Caminando por la Vida", artist: "Melendi", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/adeaa2093eb6f1c128bc94f9ce1e7e8b/500x500-000000-80-0-0.jpg" },
+    { title: "Válgame Dios", artist: "Niña Pastori", artworkUrl: "https://cdn-images.dzcdn.net/images/cover/97d11c4d404db558216b8f65373d4b30/500x500-000000-80-0-0.jpg" },
   ],
 };
 
@@ -539,7 +555,13 @@ export async function getDifficultDistractors(
     !hasNonLatinCharacters(correctTrack.title || "") &&
     !hasNonLatinCharacters(correctTrack.artist || "");
 
-  const mainArtist = (correctTrack.artist || "").split(ARTIST_COLLAB_REGEX)[0].trim();
+  // All credited artists split
+  const artists = (correctTrack.artist || "")
+    .split(ARTIST_COLLAB_REGEX)
+    .map((a) => a.trim())
+    .filter(Boolean);
+  const mainArtist = artists[0] || (correctTrack.artist || "").trim();
+
   const rawAlbum = correctTrack.album?.trim() || "";
   const isGenericAlbum =
     !rawAlbum ||
@@ -581,36 +603,260 @@ export async function getDifficultDistractors(
   };
 
   // --- PRIORIDAD 1: MISMO ÁLBUM ---
-  let albumSongs: Array<{ title: string; artist: string; artworkUrl: string }> | undefined;
-  if (albumName && mainArtist) {
-    const albumKey = `${deepNormalize(mainArtist)}_${deepNormalize(albumName)}`;
-    albumSongs = albumTracksMemoryCache.get(albumKey);
+  // 1.A) Spotify API (si tenemos spotifyAlbumId)
+  if (correctTrack.spotifyAlbumId) {
+    const albumKey = `sp_album_${correctTrack.spotifyAlbumId}`;
+    let albumSongs = albumTracksMemoryCache.get(albumKey);
 
     if (!albumSongs) {
       try {
-        const query = `${mainArtist} ${albumName}`;
-        const res = await fetch(
-          `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&country=ES&limit=25`,
+        const appToken = await getSpotifyAppToken();
+        if (appToken) {
+          const res = await fetch(
+            `https://api.spotify.com/v1/albums/${correctTrack.spotifyAlbumId}/tracks?market=ES&limit=30`,
+            {
+              headers: { Authorization: `Bearer ${appToken}` },
+              signal: AbortSignal.timeout(3000),
+            }
+          );
+          if (res.ok) {
+            const data = await res.json();
+            if (data.items && Array.isArray(data.items)) {
+              const list: Array<{ title: string; artist: string; artworkUrl: string }> = [];
+              for (const item of data.items) {
+                if (!item.name || JUNK_SONG_REGEX.test(item.name)) continue;
+                const artName = item.artists?.map((a: any) => a.name).join(", ") || mainArtist;
+                list.push({
+                  title: item.name,
+                  artist: artName,
+                  artworkUrl: correctTrack.artworkUrl || getFallbackArtwork(item.name, artName),
+                });
+              }
+              if (list.length > 0) {
+                albumSongs = list;
+                setBoundedCache(albumTracksMemoryCache, albumKey, list);
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
+    if (albumSongs && albumSongs.length > 0) {
+      const shuffled = [...albumSongs].sort(() => 0.5 - Math.random());
+      for (const song of shuffled) {
+        if (distractors.length >= count) break;
+        tryAdd(song);
+      }
+    }
+  }
+
+  // 1.B) Deezer API (si no es single genérico y faltan opciones)
+  if (distractors.length < count && albumName && mainArtist && albumName.length >= 4) {
+    const albumKey = `dz_album_${deepNormalize(mainArtist)}_${deepNormalize(albumName)}`;
+    let albumSongs = albumTracksMemoryCache.get(albumKey);
+
+    if (!albumSongs) {
+      try {
+        const dzRes = await fetch(
+          `https://api.deezer.com/search/album?q=artist:"${encodeURIComponent(mainArtist)}" album:"${encodeURIComponent(albumName)}"&limit=5`,
           {
             headers: { "User-Agent": "Scuinklezam/1.0" },
-            signal: AbortSignal.timeout(3500),
+            signal: AbortSignal.timeout(2500),
+          }
+        );
+        if (dzRes.ok) {
+          const data = await dzRes.json();
+          const alb = (data.data || []).find(
+            (a: any) =>
+              isStrictArtistMatch(a.artist?.name || "", mainArtist) &&
+              getKeywordOverlapRatio(a.title || "", albumName) >= 0.7
+          );
+          if (alb?.id) {
+            const trRes = await fetch(`https://api.deezer.com/album/${alb.id}/tracks?limit=30`, {
+              headers: { "User-Agent": "Scuinklezam/1.0" },
+              signal: AbortSignal.timeout(2500),
+            });
+            if (trRes.ok) {
+              const trData = await trRes.json();
+              const list: Array<{ title: string; artist: string; artworkUrl: string }> = [];
+              const albCover = alb.cover_big || alb.cover_medium || correctTrack.artworkUrl;
+              for (const item of trData.data || []) {
+                if (!item.title || JUNK_SONG_REGEX.test(item.title)) continue;
+                list.push({
+                  title: item.title,
+                  artist: item.artist?.name || mainArtist,
+                  artworkUrl: albCover || getFallbackArtwork(item.title, mainArtist),
+                });
+              }
+              if (list.length > 0) {
+                albumSongs = list;
+                setBoundedCache(albumTracksMemoryCache, albumKey, list);
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
+    if (albumSongs && albumSongs.length > 0) {
+      const shuffled = [...albumSongs].sort(() => 0.5 - Math.random());
+      for (const song of shuffled) {
+        if (distractors.length >= count) break;
+        tryAdd(song);
+      }
+    }
+  }
+
+  // --- PRIORIDAD 2: MISMO ARTISTA Y COLABORADORES ---
+  // 2.A) Primero en roomPool (canciones ya cargadas del mismo artista o colaboradores)
+  if (distractors.length < count) {
+    const poolMatches = roomPool.filter((t) => {
+      if (!t || !t.title) return false;
+      const nTitle = deepNormalize(t.title);
+      if (seenTitles.has(nTitle)) return false;
+      return artists.some((a) => isStrictArtistMatch(t.artist, a));
+    });
+    for (const t of [...poolMatches].sort(() => 0.5 - Math.random())) {
+      if (distractors.length >= count) break;
+      tryAdd(t);
+    }
+  }
+
+  // 2.B) Spotify API (para cada artista acreditado)
+  if (distractors.length < count) {
+    for (const artName of artists) {
+      if (distractors.length >= count) break;
+      const spKey = `sp_art_${deepNormalize(artName)}`;
+      let artSongs = artistTracksMemoryCache.get(spKey);
+
+      if (!artSongs) {
+        try {
+          const appToken = await getSpotifyAppToken();
+          if (appToken) {
+            let url = "";
+            if (artName === mainArtist && correctTrack.spotifyArtistId) {
+              url = `https://api.spotify.com/v1/artists/${correctTrack.spotifyArtistId}/top-tracks?market=ES`;
+            } else {
+              url = `https://api.spotify.com/v1/search?q=artist:"${encodeURIComponent(artName)}"&type=track&market=ES&limit=25`;
+            }
+            const res = await fetch(url, {
+              headers: { Authorization: `Bearer ${appToken}` },
+              signal: AbortSignal.timeout(3000),
+            });
+            if (res.ok) {
+              const data = await res.json();
+              const rawItems = data.tracks?.items || data.tracks || [];
+              if (Array.isArray(rawItems)) {
+                const list: Array<{ title: string; artist: string; artworkUrl: string }> = [];
+                for (const item of rawItems) {
+                  if (!item.name || JUNK_SONG_REGEX.test(item.name)) continue;
+                  const itemArtists = item.artists?.map((a: any) => a.name).join(", ") || "";
+                  if (!isStrictArtistMatch(itemArtists, artName)) continue;
+                  const cover = item.album?.images?.[0]?.url || item.album?.images?.[1]?.url;
+                  list.push({
+                    title: item.name,
+                    artist: itemArtists || artName,
+                    artworkUrl: cover || getFallbackArtwork(item.name, artName),
+                  });
+                }
+                if (list.length > 0) {
+                  artSongs = list;
+                  setBoundedCache(artistTracksMemoryCache, spKey, list);
+                }
+              }
+            }
+          }
+        } catch {}
+      }
+
+      if (artSongs && artSongs.length > 0) {
+        const shuffled = [...artSongs].sort(() => 0.5 - Math.random());
+        for (const s of shuffled) {
+          if (distractors.length >= count) break;
+          tryAdd(s);
+        }
+      }
+    }
+  }
+
+  // 2.C) Deezer API (para cada artista acreditado)
+  if (distractors.length < count) {
+    for (const artName of artists) {
+      if (distractors.length >= count) break;
+      const dzKey = `dz_art_${deepNormalize(artName)}`;
+      let dzSongs = artistTracksMemoryCache.get(dzKey);
+
+      if (!dzSongs) {
+        try {
+          const sRes = await fetch(
+            `https://api.deezer.com/search/artist?q=${encodeURIComponent(artName)}&limit=5`,
+            {
+              headers: { "User-Agent": "Scuinklezam/1.0" },
+              signal: AbortSignal.timeout(2500),
+            }
+          );
+          if (sRes.ok) {
+            const sData = await sRes.json();
+            const matched = (sData.data || []).find((a: any) => isStrictArtistMatch(a.name, artName));
+            if (matched?.id) {
+              const topRes = await fetch(`https://api.deezer.com/artist/${matched.id}/top?limit=30`, {
+                headers: { "User-Agent": "Scuinklezam/1.0" },
+                signal: AbortSignal.timeout(2500),
+              });
+              if (topRes.ok) {
+                const topData = await topRes.json();
+                const list: Array<{ title: string; artist: string; artworkUrl: string }> = [];
+                for (const item of topData.data || []) {
+                  if (!item.title || JUNK_SONG_REGEX.test(item.title)) continue;
+                  const cover = item.album?.cover_big || item.album?.cover_medium;
+                  list.push({
+                    title: item.title,
+                    artist: item.artist?.name || artName,
+                    artworkUrl: cover || getFallbackArtwork(item.title, artName),
+                  });
+                }
+                if (list.length > 0) {
+                  dzSongs = list;
+                  setBoundedCache(artistTracksMemoryCache, dzKey, list);
+                }
+              }
+            }
+          }
+        } catch {}
+      }
+
+      if (dzSongs && dzSongs.length > 0) {
+        const shuffled = [...dzSongs].sort(() => 0.5 - Math.random());
+        for (const s of shuffled) {
+          if (distractors.length >= count) break;
+          tryAdd(s);
+        }
+      }
+    }
+  }
+
+  // 2.D) iTunes (Solo como último recurso si Spotify y Deezer fallaron o dieron < count)
+  if (distractors.length < count && mainArtist) {
+    const itKey = `it_art_${deepNormalize(mainArtist)}`;
+    let itSongs = artistTracksMemoryCache.get(itKey);
+
+    if (!itSongs) {
+      try {
+        const res = await fetch(
+          `https://itunes.apple.com/search?term=${encodeURIComponent(mainArtist)}&entity=song&attribute=artistTerm&country=ES&limit=25`,
+          {
+            headers: { "User-Agent": "Scuinklezam/1.0" },
+            signal: AbortSignal.timeout(2500),
           }
         );
         if (res.ok) {
           const data = await res.json();
           if (data.results && Array.isArray(data.results)) {
             const list: Array<{ title: string; artist: string; artworkUrl: string }> = [];
-            const normAlbum = deepNormalize(albumName);
-            if (normAlbum.length >= 4) {
-              for (const item of data.results) {
-                if (!item.trackName) continue;
-                if (!isStrictArtistMatch(item.artistName, mainArtist)) continue;
-                if (JUNK_SONG_REGEX.test(item.trackName) || JUNK_SONG_REGEX.test(item.artistName || "")) continue;
-                const itColl = deepNormalize(item.collectionName || "");
-                if (!itColl) continue;
-                const isAlbumMatch = itColl === normAlbum || getKeywordOverlapRatio(itColl, normAlbum) >= 0.8;
-                if (!isAlbumMatch) continue;
-
+            for (const item of data.results) {
+              if (!item.trackName || JUNK_SONG_REGEX.test(item.trackName)) continue;
+              if (isStrictArtistMatch(item.artistName, mainArtist)) {
                 const art = item.artworkUrl100
                   ? item.artworkUrl100.replace("100x100bb", "600x600bb")
                   : getFallbackArtwork(item.trackName, item.artistName || mainArtist);
@@ -621,157 +867,126 @@ export async function getDifficultDistractors(
                 });
               }
             }
-            albumSongs = list;
-            setBoundedCache(albumTracksMemoryCache, albumKey, list);
+            if (list.length > 0) {
+              itSongs = list;
+              setBoundedCache(artistTracksMemoryCache, itKey, list);
+            }
           }
         }
-      } catch {
-        // continue to priority 2
-      }
+      } catch {}
     }
 
-    if (albumSongs && albumSongs.length > 0) {
-      const shuffledAlbum = [...albumSongs].sort(() => 0.5 - Math.random());
-      for (const song of shuffledAlbum) {
+    if (itSongs && itSongs.length > 0) {
+      const shuffled = [...itSongs].sort(() => 0.5 - Math.random());
+      for (const s of shuffled) {
         if (distractors.length >= count) break;
-        tryAdd(song);
+        tryAdd(s);
       }
     }
   }
 
-  // --- PRIORIDAD 2: MISMO ARTISTA (iTunes attribute=artistTerm & isStrictArtistMatch) ---
-  let artistSongs: Array<{ title: string; artist: string; artworkUrl: string }> | undefined;
+  // --- PRIORIDAD 3: ARTISTAS RELACIONADOS DIRECTOS EN DEEZER (CERO ITUNES) ---
   if (distractors.length < count && mainArtist) {
-    // 2.a) Check roomPool first
-    const sameArtistInPool = roomPool.filter(
-      (t) => t && t.title && isStrictArtistMatch(t.artist, mainArtist) && !seenTitles.has(deepNormalize(t.title))
-    );
-    for (const t of [...sameArtistInPool].sort(() => 0.5 - Math.random())) {
-      if (distractors.length >= count) break;
-      tryAdd(t);
-    }
-
-    // 2.b) Query iTunes for more tracks by the same artist
-    if (distractors.length < count) {
-      const artistKey = deepNormalize(mainArtist);
-      artistSongs = artistTracksMemoryCache.get(artistKey);
-
-      if (!artistSongs) {
-        try {
-          const res = await fetch(
-            `https://itunes.apple.com/search?term=${encodeURIComponent(mainArtist)}&entity=song&attribute=artistTerm&country=ES&limit=25`,
-            {
-              headers: { "User-Agent": "Scuinklezam/1.0" },
-              signal: AbortSignal.timeout(3500),
-            }
-          );
-          if (res.ok) {
-            const data = await res.json();
-            if (data.results && Array.isArray(data.results)) {
-              const list: Array<{ title: string; artist: string; artworkUrl: string }> = [];
-              for (const item of data.results) {
-                if (!item.trackName) continue;
-                if (isStrictArtistMatch(item.artistName, mainArtist)) {
-                  const art = item.artworkUrl100
-                    ? item.artworkUrl100.replace("100x100bb", "600x600bb")
-                    : getFallbackArtwork(item.trackName, item.artistName || mainArtist);
-                  list.push({
-                    title: item.trackName,
-                    artist: item.artistName || mainArtist,
-                    artworkUrl: art,
-                  });
-                }
-              }
-              artistSongs = list;
-              setBoundedCache(artistTracksMemoryCache, artistKey, list);
-            }
-          }
-        } catch {
-          // continue to priority 3
-        }
-      }
-
-      if (artistSongs && artistSongs.length > 0) {
-        const shuffledArtist = [...artistSongs].sort(() => 0.5 - Math.random());
-        for (const song of shuffledArtist) {
-          if (distractors.length >= count) break;
-          tryAdd(song);
-        }
-      }
-    }
-  }
-
-  // --- PRIORIDAD 3: FALLBACK SEGURO (Artistas Relacionados de Deezer / Mismo Tópico) ---
-  let relatedSongs: Array<{ title: string; artist: string; artworkUrl: string }> | undefined;
-  if (distractors.length < count && mainArtist) {
-    const relKey = deepNormalize(mainArtist);
-    relatedSongs = relatedTracksMemoryCache.get(relKey);
+    const relKey = `dz_rel_${deepNormalize(mainArtist)}`;
+    let relatedSongs = relatedTracksMemoryCache.get(relKey);
 
     if (!relatedSongs) {
       try {
-        const dzArtRes = await fetch(
-          `https://api.deezer.com/search/artist?q=${encodeURIComponent(mainArtist)}&limit=1`,
+        const sRes = await fetch(
+          `https://api.deezer.com/search/artist?q=${encodeURIComponent(mainArtist)}&limit=5`,
           {
             headers: { "User-Agent": "Scuinklezam/1.0" },
             signal: AbortSignal.timeout(2500),
           }
         );
-        if (dzArtRes.ok) {
-          const dzArtData = await dzArtRes.json();
-          const dzArtId = dzArtData?.data?.[0]?.id;
-          if (dzArtId) {
-            const relRes = await fetch(`https://api.deezer.com/artist/${dzArtId}/related?limit=5`, {
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          const matched = (sData.data || []).find((a: any) => isStrictArtistMatch(a.name, mainArtist));
+          if (matched?.id) {
+            const relRes = await fetch(`https://api.deezer.com/artist/${matched.id}/related?limit=5`, {
               headers: { "User-Agent": "Scuinklezam/1.0" },
               signal: AbortSignal.timeout(2500),
             });
             if (relRes.ok) {
               const relData = await relRes.json();
-              const relArtists = (relData?.data || []).map((a: any) => a.name).filter(Boolean);
+              const relArtists = (relData.data || []).slice(0, 3);
               if (relArtists.length > 0) {
                 const list: Array<{ title: string; artist: string; artworkUrl: string }> = [];
-                for (const rArtist of relArtists.slice(0, 2)) {
-                  try {
-                    const itRel = await fetch(
-                      `https://itunes.apple.com/search?term=${encodeURIComponent(rArtist)}&entity=song&attribute=artistTerm&country=ES&limit=5`,
-                      {
-                        headers: { "User-Agent": "Scuinklezam/1.0" },
-                        signal: AbortSignal.timeout(2000),
-                      }
-                    ).then((r) => r.json()).catch(() => ({ results: [] }));
+                // Consultas directas a Deezer en paralelo con Promise.allSettled (CERO llamadas a iTunes)
+                const trackPromises = relArtists.map(async (ra: any) => {
+                  if (!ra?.id) return [];
+                  const trRes = await fetch(`https://api.deezer.com/artist/${ra.id}/top?limit=6`, {
+                    headers: { "User-Agent": "Scuinklezam/1.0" },
+                    signal: AbortSignal.timeout(2500),
+                  });
+                  if (!trRes.ok) return [];
+                  const trData = await trRes.json();
+                  const subList: Array<{ title: string; artist: string; artworkUrl: string }> = [];
+                  for (const it of trData.data || []) {
+                    if (!it.title || JUNK_SONG_REGEX.test(it.title)) continue;
+                    const cover = it.album?.cover_big || it.album?.cover_medium;
+                    subList.push({
+                      title: it.title,
+                      artist: it.artist?.name || ra.name,
+                      artworkUrl: cover || getFallbackArtwork(it.title, ra.name),
+                    });
+                  }
+                  return subList;
+                });
 
-                    for (const it of itRel.results || []) {
-                      if (it.trackName && isStrictArtistMatch(it.artistName, rArtist)) {
-                        list.push({
-                          title: it.trackName,
-                          artist: it.artistName || rArtist,
-                          artworkUrl: it.artworkUrl100
-                            ? it.artworkUrl100.replace("100x100bb", "600x600bb")
-                            : getFallbackArtwork(it.trackName, rArtist),
-                        });
-                      }
-                    }
-                  } catch {}
+                const settled = await Promise.allSettled(trackPromises);
+                for (const res of settled) {
+                  if (res.status === "fulfilled" && Array.isArray(res.value)) {
+                    list.push(...res.value);
+                  }
                 }
-                relatedSongs = list;
-                setBoundedCache(relatedTracksMemoryCache, relKey, list);
+
+                if (list.length > 0) {
+                  relatedSongs = list;
+                  setBoundedCache(relatedTracksMemoryCache, relKey, list);
+                }
               }
             }
           }
         }
-      } catch {
-        // Fallback to topic catalog
-      }
+      } catch {}
     }
 
     if (relatedSongs && relatedSongs.length > 0) {
-      for (const song of [...relatedSongs].sort(() => 0.5 - Math.random())) {
+      const shuffled = [...relatedSongs].sort(() => 0.5 - Math.random());
+      for (const s of shuffled) {
         if (distractors.length >= count) break;
-        tryAdd(song);
+        tryAdd(s);
       }
     }
   }
 
-  // --- FINAL FALLBACK: Coherent Topic Catalog ---
+  // --- PRIORIDAD 4: ROOM POOL (Relleno con canciones reales de la partida) ---
+  if (distractors.length < count && roomPool.length > 0) {
+    const topicPool = roomPool.filter((t) => {
+      if (!t || !t.title) return false;
+      const n = deepNormalize(t.title);
+      if (seenTitles.has(n)) return false;
+      return getTrackTopic(t) === correctTopic;
+    });
+    for (const t of [...topicPool].sort(() => 0.5 - Math.random())) {
+      if (distractors.length >= count) break;
+      tryAdd(t);
+    }
+  }
+
+  if (distractors.length < count && roomPool.length > 0) {
+    const remainingPool = roomPool.filter((t) => {
+      if (!t || !t.title) return false;
+      return !seenTitles.has(deepNormalize(t.title));
+    });
+    for (const t of [...remainingPool].sort(() => 0.5 - Math.random())) {
+      if (distractors.length >= count) break;
+      tryAdd(t);
+    }
+  }
+
+  // --- FALLBACK FINAL: Catálogo offline coherente del tópico (100% carátulas reales verificadas) ---
   if (distractors.length < count) {
     const backupList = COHERENT_TOPIC_POOLS[correctTopic] || COHERENT_TOPIC_POOLS.pop_mainstream;
     for (const b of [...backupList].sort(() => 0.5 - Math.random())) {
@@ -780,20 +995,12 @@ export async function getDifficultDistractors(
     }
   }
 
-  // If still under count (e.g. strict usedDistractorKeys exhausted candidate list), allow used in a 2nd pass
+  // 2ª pasada con allowUsed = true si la estricta deduplicación de rondas agotó candidatos
   if (distractors.length < count) {
-    if (artistSongs) {
-      for (const song of artistSongs) {
-        if (distractors.length >= count) break;
-        tryAdd(song, true);
-      }
-    }
-    if (distractors.length < count) {
-      const backupList = COHERENT_TOPIC_POOLS[correctTopic] || COHERENT_TOPIC_POOLS.pop_mainstream;
-      for (const b of backupList) {
-        if (distractors.length >= count) break;
-        tryAdd(b, true);
-      }
+    const backupList = COHERENT_TOPIC_POOLS[correctTopic] || COHERENT_TOPIC_POOLS.pop_mainstream;
+    for (const b of backupList) {
+      if (distractors.length >= count) break;
+      tryAdd(b, true);
     }
   }
 

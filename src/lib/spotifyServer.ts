@@ -199,6 +199,8 @@ export async function enrichSpotifyTracks(
           sourceMode: sourceMode || t.sourceMode,
           genre: detectedGenre,
           topic: getTrackTopic({ title: t.name, artist: artists, genre: detectedGenre }),
+          spotifyAlbumId: t.album?.id || undefined,
+          spotifyArtistId: t.artists?.[0]?.id || undefined,
         } as SpotifyTrackItem;
       })
     );

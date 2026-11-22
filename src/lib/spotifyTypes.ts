@@ -12,6 +12,8 @@ export interface SpotifyTrackItem {
   sourceMode?: string;
   topic?: string;
   genre?: string;
+  spotifyAlbumId?: string;
+  spotifyArtistId?: string;
 }
 
 export interface SpotifyUserProfile {

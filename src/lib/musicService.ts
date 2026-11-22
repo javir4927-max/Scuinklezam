@@ -240,6 +240,8 @@ export async function searchSpotifyCatalog(query: string, limit = 20): Promise<S
             durationMs: t.duration_ms || 30000,
             genre: detectedGenre,
             topic: getTrackTopic({ title: t.name, artist: artists, genre: detectedGenre }),
+            spotifyAlbumId: t.album?.id || undefined,
+            spotifyArtistId: t.artists?.[0]?.id || undefined,
           } as SpotifyTrackItem;
         })
       );
