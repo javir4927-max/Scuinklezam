@@ -15,23 +15,34 @@ const NO_CACHE_HEADERS = {
 };
 
 /**
- * Extracts a 22-character Spotify playlist ID from URLs, URIs, or raw strings.
+ * Extracts a Spotify playlist or album ID and entity type from URLs, URIs, or raw strings.
  */
-function extractPlaylistId(input: string): string | null {
+interface SpotifyEntityInfo {
+  id: string;
+  type: "playlist" | "album";
+}
+
+function extractSpotifyEntity(input: string): SpotifyEntityInfo | null {
   if (!input) return null;
   const clean = input.trim();
 
-  // URL format: open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=...
-  const urlMatch = clean.match(/playlist\/([a-zA-Z0-9]+)/i);
-  if (urlMatch && urlMatch[1]) return urlMatch[1];
+  // Album check
+  const albumUrlMatch = clean.match(/album\/([a-zA-Z0-9]+)/i);
+  if (albumUrlMatch && albumUrlMatch[1]) return { id: albumUrlMatch[1], type: "album" };
 
-  // URI format: spotify:playlist:37i9dQZF1DXcBWIGoYBM5M
-  const uriMatch = clean.match(/spotify:playlist:([a-zA-Z0-9]+)/i);
-  if (uriMatch && uriMatch[1]) return uriMatch[1];
+  const albumUriMatch = clean.match(/spotify:album:([a-zA-Z0-9]+)/i);
+  if (albumUriMatch && albumUriMatch[1]) return { id: albumUriMatch[1], type: "album" };
 
-  // Direct ID check (typically 22 alphanumeric characters)
+  // Playlist check
+  const playlistUrlMatch = clean.match(/playlist\/([a-zA-Z0-9]+)/i);
+  if (playlistUrlMatch && playlistUrlMatch[1]) return { id: playlistUrlMatch[1], type: "playlist" };
+
+  const playlistUriMatch = clean.match(/spotify:playlist:([a-zA-Z0-9]+)/i);
+  if (playlistUriMatch && playlistUriMatch[1]) return { id: playlistUriMatch[1], type: "playlist" };
+
+  // Direct ID check (typically 22 alphanumeric characters) - defaults to playlist
   if (/^[a-zA-Z0-9]{22}$/.test(clean)) {
-    return clean;
+    return { id: clean, type: "playlist" };
   }
 
   return null;
@@ -41,20 +52,21 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
     const rawInput = body.url || body.playlistUrl || body.id || "";
-    const playlistId = extractPlaylistId(rawInput);
+    const entity = extractSpotifyEntity(rawInput);
 
-    if (!playlistId) {
+    if (!entity) {
       return NextResponse.json(
         {
           success: false,
-          error: "Introduce un enlace de playlist de Spotify válido (ej. https://open.spotify.com/playlist/...)",
+          error: "Introduce un enlace de playlist o álbum de Spotify válido (ej. https://open.spotify.com/playlist/... o https://open.spotify.com/album/...)",
         },
         { status: 400, headers: NO_CACHE_HEADERS }
       );
     }
 
-    let playlistName = "Playlist de Spotify";
-    let playlistImage = "";
+    const { id: entityId, type: entityType } = entity;
+    let entityName = entityType === "album" ? "Álbum de Spotify" : "Playlist de Spotify";
+    let entityImage = "";
     let resolvedTracks: SpotifyTrackItem[] = [];
 
     // 1. Try official Spotify API (via User Token or App Token)
@@ -62,7 +74,8 @@ export async function POST(request: Request) {
 
     if (token) {
       try {
-        const res = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}`, {
+        const apiPath = entityType === "album" ? `albums/${entityId}` : `playlists/${entityId}`;
+        const res = await fetch(`https://api.spotify.com/v1/${apiPath}`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -71,12 +84,22 @@ export async function POST(request: Request) {
 
         if (res.ok) {
           const data = await res.json();
-          playlistName = data.name || playlistName;
-          playlistImage = data.images?.[0]?.url || "";
+          entityName = data.name || entityName;
+          entityImage = data.images?.[0]?.url || "";
 
-          const rawTracks = (data.tracks?.items || [])
-            .map((item: any) => item.track)
-            .filter((t: any) => t && t.id && t.name);
+          let rawTracks: any[] = [];
+          if (entityType === "album") {
+            rawTracks = (data.tracks?.items || [])
+              .filter((t: any) => t && t.id && t.name)
+              .map((t: any) => ({
+                ...t,
+                album: { name: data.name, images: data.images },
+              }));
+          } else {
+            rawTracks = (data.tracks?.items || [])
+              .map((item: any) => item.track)
+              .filter((t: any) => t && t.id && t.name);
+          }
 
           if (rawTracks.length > 0) {
             const enriched = await enrichSpotifyTracks(rawTracks.slice(0, 35));
@@ -86,7 +109,7 @@ export async function POST(request: Request) {
           }
         }
       } catch (err) {
-        console.warn("[/api/spotify/playlist] Spotify API fetch failed, trying public embed fallback:", err);
+        console.warn(`[/api/spotify/playlist] Spotify API fetch failed for ${entityType}, trying public embed fallback:`, err);
       }
     }
 
@@ -96,20 +119,20 @@ export async function POST(request: Request) {
         // First try oEmbed for authoritative title and thumbnail
         try {
           const oembedRes = await fetch(
-            `https://open.spotify.com/oembed?url=https://open.spotify.com/playlist/${playlistId}`,
+            `https://open.spotify.com/oembed?url=https://open.spotify.com/${entityType}/${entityId}`,
             { next: { revalidate: 3600 } }
           );
           if (oembedRes.ok) {
             const oembedData = await oembedRes.json();
-            if (oembedData.title) playlistName = oembedData.title;
-            if (oembedData.thumbnail_url) playlistImage = oembedData.thumbnail_url;
+            if (oembedData.title) entityName = oembedData.title;
+            if (oembedData.thumbnail_url) entityImage = oembedData.thumbnail_url;
           }
         } catch {
           // ignore oEmbed errors
         }
 
         // Public embed page
-        const embedUrl = `https://open.spotify.com/embed/playlist/${playlistId}`;
+        const embedUrl = `https://open.spotify.com/embed/${entityType}/${entityId}`;
         const embedRes = await fetch(embedUrl, {
           headers: {
             "User-Agent":
@@ -127,18 +150,19 @@ export async function POST(request: Request) {
 
           if (nextDataMatch) {
             const nextJson = JSON.parse(nextDataMatch[1]);
-            const entity = nextJson?.props?.pageProps?.state?.data?.entity;
+            const entityData = nextJson?.props?.pageProps?.state?.data?.entity;
 
-            if (entity) {
-              playlistName = entity.name || entity.title || playlistName;
-              if (!playlistImage) {
-                playlistImage =
-                  entity.visualIdentity?.image?.[0]?.url ||
-                  entity.album?.images?.[0]?.url ||
+            if (entityData) {
+              entityName = entityData.name || entityData.title || entityName;
+              if (!entityImage) {
+                entityImage =
+                  entityData.visualIdentity?.image?.[0]?.url ||
+                  entityData.album?.images?.[0]?.url ||
+                  entityData.images?.[0]?.url ||
                   "";
               }
 
-              const rawTrackList = entity.trackList || [];
+              const rawTrackList = entityData.trackList || [];
               const candidates = rawTrackList.slice(0, 30);
 
               // Process candidates in parallel batches of 6 for speed and responsiveness
@@ -148,7 +172,7 @@ export async function POST(request: Request) {
                 const chunkResults = await Promise.all(
                   chunk.map(async (item: any) => {
                     const trackTitle = item.title || "Canción";
-                    const trackArtist = item.subtitle || "Artista";
+                    const trackArtist = item.subtitle || (entityType === "album" ? entityData.subtitle || "Artista" : "Artista");
                     const trackId =
                       item.id ||
                       item.uri?.split(":").pop() ||
@@ -157,8 +181,10 @@ export async function POST(request: Request) {
 
                     // Spotify album art if present on track item and distinct from playlist cover
                     let candidateArtwork =
-                      item.album?.images?.[0]?.url && item.album.images[0].url !== playlistImage
+                      item.album?.images?.[0]?.url && item.album.images[0].url !== entityImage
                         ? item.album.images[0].url
+                        : entityType === "album" && entityImage
+                        ? entityImage
                         : "";
 
                     // If missing audio preview OR missing original album artwork, resolve via iTunes
@@ -174,8 +200,8 @@ export async function POST(request: Request) {
                       }
                     }
 
-                    // Strict fallback: NEVER assign playlistImage to a song's artwork
-                    if (!candidateArtwork || candidateArtwork === playlistImage) {
+                    // Strict fallback
+                    if (!candidateArtwork || (candidateArtwork === entityImage && entityType !== "album")) {
                       candidateArtwork = getFallbackArtwork(trackTitle, trackArtist);
                     }
 
@@ -185,7 +211,7 @@ export async function POST(request: Request) {
                         uri: item.uri || `spotify:track:${trackId}`,
                         title: trackTitle,
                         artist: trackArtist,
-                        album: item.album?.name || playlistName,
+                        album: item.album?.name || (entityType === "album" ? entityName : "Spotify"),
                         artworkUrl: candidateArtwork,
                         spotifyUrl: `https://open.spotify.com/track/${trackId}`,
                         previewUrl,
@@ -213,23 +239,24 @@ export async function POST(request: Request) {
         {
           success: false,
           error:
-            "No se pudieron encontrar canciones con vista previa de audio en esta playlist. Comprueba que el enlace sea público.",
+            `No se pudieron encontrar canciones con vista previa de audio en este ${entityType === "album" ? "álbum" : "enlace"}. Comprueba que sea público.`,
         },
         { status: 422, headers: NO_CACHE_HEADERS }
       );
     }
 
     // Default image if missing
-    if (!playlistImage && resolvedTracks[0]?.artworkUrl) {
-      playlistImage = resolvedTracks[0].artworkUrl;
+    if (!entityImage && resolvedTracks[0]?.artworkUrl) {
+      entityImage = resolvedTracks[0].artworkUrl;
     }
 
     return NextResponse.json(
       {
         success: true,
-        id: playlistId,
-        name: playlistName,
-        imageUrl: playlistImage,
+        id: entityId,
+        type: entityType,
+        name: entityName,
+        imageUrl: entityImage,
         trackCount: resolvedTracks.length,
         tracks: resolvedTracks,
       },
@@ -240,7 +267,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         success: false,
-        error: error?.message || "Error al procesar la playlist de Spotify",
+        error: error?.message || "Error al procesar el enlace de Spotify",
       },
       { status: 500, headers: NO_CACHE_HEADERS }
     );

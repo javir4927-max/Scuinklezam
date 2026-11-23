@@ -723,7 +723,7 @@ export async function getDifficultDistractors(
     if (!albumSongs) {
       try {
         const dzRes = await fetch(
-          `https://api.deezer.com/search/album?q=artist:"${encodeURIComponent(mainArtist)}" album:"${encodeURIComponent(albumName)}"&limit=5`,
+          `https://api.deezer.com/search/album?q=${encodeURIComponent(`artist:"${mainArtist}" album:"${albumName}"`)}&limit=5`,
           {
             headers: { "User-Agent": "Scuinklezam/1.0" },
             signal: AbortSignal.timeout(2500),
@@ -802,7 +802,7 @@ export async function getDifficultDistractors(
             if (artName === mainArtist && correctTrack.spotifyArtistId) {
               url = `https://api.spotify.com/v1/artists/${correctTrack.spotifyArtistId}/top-tracks?market=ES`;
             } else {
-              url = `https://api.spotify.com/v1/search?q=artist:"${encodeURIComponent(artName)}"&type=track&market=ES&limit=25`;
+              url = `https://api.spotify.com/v1/search?q=${encodeURIComponent(`artist:"${artName}"`)}&type=track&market=ES&limit=25`;
             }
             const res = await fetch(url, {
               headers: { Authorization: `Bearer ${appToken}` },

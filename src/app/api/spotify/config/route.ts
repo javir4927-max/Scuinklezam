@@ -18,6 +18,12 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json(
+      { success: false, error: "La configuración no se puede modificar en producción." },
+      { status: 403 }
+    );
+  }
   try {
     const body = await request.json();
     const clientId = (body.clientId || "").trim();

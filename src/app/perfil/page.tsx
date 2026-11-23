@@ -28,6 +28,7 @@ import UserAuthModal from "@/components/UserAuthModal";
 import SpotifyConnectModal from "@/components/SpotifyConnectModal";
 import SpotifyStatsDetailModal from "@/components/SpotifyStatsDetailModal";
 import SpotifyStatsWrappedModal from "@/components/SpotifyStatsWrappedModal";
+import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
 
 interface ProfileStats {
   totalPlays: number;
@@ -47,6 +48,7 @@ interface ProfileStats {
 }
 
 export default function ProfilePage() {
+  const { refreshSession } = useSpotifyAuth();
   const [loading, setLoading] = useState(true);
   const [authenticated, setAuthenticated] = useState(false);
   const [user, setUser] = useState<any>(null);
@@ -139,6 +141,12 @@ export default function ProfilePage() {
       const data = await res.json();
       if (data.success) {
         setSaveSuccess(true);
+        try {
+          await refreshSession();
+        } catch {}
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new Event("scuinklezam_profile_updated"));
+        }
         setTimeout(() => {
           setSaveSuccess(false);
           setIsCustomizingOpen(false);

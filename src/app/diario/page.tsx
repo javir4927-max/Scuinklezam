@@ -21,6 +21,8 @@ import {
 } from "lucide-react";
 import { audioPlayer } from "@/lib/audioPlayer";
 import { calculateRoundPoints, ROUND_DURATION_SEC } from "@/lib/scoring";
+import { playCorrectSound, playWrongSound } from "@/lib/soundEffects";
+import Navbar from "@/components/Navbar";
 import type { DailyRound, DailyRoundOption } from "@/app/api/daily/route";
 
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -96,6 +98,9 @@ export default function DiarioPage() {
   const advanceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const roundStartTimeRef = useRef<number>(0);
   const isAnsweredRef = useRef<boolean>(false);
+  const scoreRef = useRef<number>(0);
+  const resultsRef = useRef<boolean[]>([]);
+  const answersRef = useRef<CompletedDailyState["answers"]>([]);
 
   // 1. Initial Load: Fetch /api/daily
   useEffect(() => {
@@ -114,6 +119,9 @@ export default function DiarioPage() {
           // Check if already completed today via server
           if (data.userDailyState?.completedToday && data.userDailyState?.todayResult) {
             const tr = data.userDailyState.todayResult;
+            scoreRef.current = tr.score || 0;
+            resultsRef.current = tr.results || [];
+            answersRef.current = tr.answers || [];
             setScore(tr.score || 0);
             setResults(tr.results || []);
             setRecordedAnswers(tr.answers || []);
@@ -127,6 +135,9 @@ export default function DiarioPage() {
           if (localSaved) {
             try {
               const parsed: CompletedDailyState = JSON.parse(localSaved);
+              scoreRef.current = parsed.score || 0;
+              resultsRef.current = parsed.results || [];
+              answersRef.current = parsed.answers || [];
               setScore(parsed.score);
               setResults(parsed.results);
               setRecordedAnswers(parsed.answers);
@@ -210,13 +221,16 @@ export default function DiarioPage() {
     if (isAnsweredRef.current) return;
     isAnsweredRef.current = true;
 
+    playWrongSound();
     const round = rounds[roundIdx];
     setSelectedOptionId("__timeout__");
     setGameState("reveal");
-    setResults((prev) => [...prev, false]);
 
-    setRecordedAnswers((prev) => [
-      ...prev,
+    resultsRef.current = [...resultsRef.current, false];
+    setResults([...resultsRef.current]);
+
+    answersRef.current = [
+      ...answersRef.current,
       {
         title: round.correctTitle,
         artist: round.correctArtist,
@@ -225,7 +239,8 @@ export default function DiarioPage() {
         isCorrect: false,
         points: 0,
       },
-    ]);
+    ];
+    setRecordedAnswers([...answersRef.current]);
 
     advanceTimerRef.current = setTimeout(() => {
       startRound(roundIdx + 1);
@@ -242,16 +257,21 @@ export default function DiarioPage() {
 
     const elapsed = Math.max(0.1, (Date.now() - roundStartTimeRef.current) / 1000);
     const roundPoints = calculateRoundPoints(opt.isCorrect, elapsed, ROUND_DURATION_SEC);
-
     const round = rounds[currentRoundIdx];
 
     if (opt.isCorrect) {
-      setScore((prev) => prev + roundPoints);
+      playCorrectSound();
+      scoreRef.current += roundPoints;
+    } else {
+      playWrongSound();
     }
+    setScore(scoreRef.current);
 
-    setResults((prev) => [...prev, opt.isCorrect]);
-    setRecordedAnswers((prev) => [
-      ...prev,
+    resultsRef.current = [...resultsRef.current, opt.isCorrect];
+    setResults([...resultsRef.current]);
+
+    answersRef.current = [
+      ...answersRef.current,
       {
         title: round.correctTitle,
         artist: round.correctArtist,
@@ -260,7 +280,8 @@ export default function DiarioPage() {
         isCorrect: opt.isCorrect,
         points: roundPoints,
       },
-    ]);
+    ];
+    setRecordedAnswers([...answersRef.current]);
 
     advanceTimerRef.current = setTimeout(() => {
       startRound(currentRoundIdx + 1);
@@ -290,9 +311,13 @@ export default function DiarioPage() {
     audioPlayer.stop();
     setGameState("summary");
 
-    const finalResults = results;
-    const finalAnswers = recordedAnswers;
-    const finalScore = score;
+    const finalResults = resultsRef.current;
+    const finalAnswers = answersRef.current;
+    const finalScore = scoreRef.current;
+
+    setScore(finalScore);
+    setResults(finalResults);
+    setRecordedAnswers(finalAnswers);
 
     try {
       const res = await fetch("/api/daily", {
@@ -362,11 +387,14 @@ https://scuinklezam.vercel.app/diario`;
 
   if (loading) {
     return (
-      <div className="min-h-[80vh] flex flex-col items-center justify-center p-4">
-        <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center animate-spin">
-          <CalendarCheck className="w-6 h-6 text-emerald-400" />
+      <div className="min-h-screen bg-[#050B07] text-white flex flex-col">
+        <Navbar activeRoute="diario" />
+        <div className="flex-1 min-h-[60vh] flex flex-col items-center justify-center p-4">
+          <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center animate-spin">
+            <CalendarCheck className="w-6 h-6 text-emerald-400" />
+          </div>
+          <p className="mt-4 text-sm font-bold text-zinc-400">Cargando Reto Diario...</p>
         </div>
-        <p className="mt-4 text-sm font-bold text-zinc-400">Cargando Reto Diario...</p>
       </div>
     );
   }
@@ -374,61 +402,66 @@ https://scuinklezam.vercel.app/diario`;
   const currentRound = rounds[currentRoundIdx];
 
   return (
-    <div className="min-h-screen bg-[#050B07] text-white pt-6 pb-20 px-4 sm:px-6">
-      <div className="max-w-2xl mx-auto space-y-6">
-        {/* Navigation Bar Back Link */}
-        <div className="flex items-center justify-between">
-          <Link
-            href="/ranked"
-            className="inline-flex items-center gap-1.5 text-xs font-bold text-zinc-400 hover:text-white transition px-3 py-1.5 rounded-xl bg-white/[0.04] border border-white/10"
-          >
-            ← Volver a Ranked
-          </Link>
+    <div className="min-h-screen bg-[#050B07] text-white flex flex-col">
+      <Navbar activeRoute="diario" />
+      <div className="flex-1 pt-6 pb-24 md:pb-12 px-4 sm:px-6">
+        <div className="max-w-2xl mx-auto space-y-6">
+          {/* Navigation Bar Back Link */}
+          <div className="flex items-center justify-between">
+            <Link
+              href="/ranked"
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-zinc-400 hover:text-white transition px-3 py-1.5 rounded-xl bg-white/[0.04] border border-white/10"
+            >
+              ← Volver a Ranked
+            </Link>
 
-          <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-black bg-amber-500/15 border border-amber-500/30 text-amber-300">
-              <Flame className="w-3.5 h-3.5 text-amber-400 fill-current" />
-              <span>{userStreak} {userStreak === 1 ? "día" : "días"}</span>
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-black bg-amber-500/15 border border-amber-500/30 text-amber-300">
+                <Flame className="w-3.5 h-3.5 text-amber-400 fill-current" />
+                <span>{userStreak} {userStreak === 1 ? "día" : "días"}</span>
+              </span>
+            </div>
           </div>
-        </div>
 
-        {/* 1. STATE: READY SCREEN (Start Playing) */}
-        {gameState === "ready" && (
-          <div className="p-6 sm:p-10 rounded-3xl bg-gradient-to-b from-[#0B1710] to-[#060D08] border border-emerald-500/20 shadow-2xl text-center space-y-6 animate-fadeIn">
-            <div className="inline-flex p-3 rounded-2xl bg-emerald-500/20 text-goblinLime border border-emerald-400/30 shadow-lg shadow-emerald-500/10">
-              <CalendarCheck className="w-8 h-8" />
-            </div>
+          {/* 1. STATE: READY SCREEN (Start Playing) */}
+          {gameState === "ready" && (
+            <div className="p-6 sm:p-10 rounded-3xl bg-gradient-to-b from-[#0B1710] to-[#060D08] border border-emerald-500/20 shadow-2xl text-center space-y-6 animate-fadeIn">
+              <div className="inline-flex p-3 rounded-2xl bg-emerald-500/20 text-goblinLime border border-emerald-400/30 shadow-lg shadow-emerald-500/10">
+                <CalendarCheck className="w-8 h-8" />
+              </div>
 
-            <div>
-              <div className="text-xs font-black uppercase tracking-widest text-emerald-400">
-                Edición #{dayNumber} · {dateKey}
+              <div>
+                <div className="text-xs font-black uppercase tracking-widest text-emerald-400">
+                  Edición #{dayNumber} · {dateKey}
+                </div>
+                <h1 className="text-2xl sm:text-3xl font-black text-white mt-1">
+                  Scuinklezam Diario
+                </h1>
+                <p className="text-sm text-zinc-400 mt-2 max-w-md mx-auto">
+                  5 canciones del día para todo el mundo. 20 segundos cada una. Adivina el temazo lo antes posible y mantén viva tu racha.
+                </p>
               </div>
-              <h1 className="text-2xl sm:text-3xl font-black text-white mt-1">
-                Scuinklezam Diario
-              </h1>
-              <p className="text-sm text-zinc-400 mt-2 max-w-md mx-auto">
-                5 canciones del día para todo el mundo. 20 segundos cada una. Adivina el temazo lo antes posible y mantén viva tu racha.
-              </p>
-            </div>
 
-            <div className="grid grid-cols-3 gap-3 max-w-sm mx-auto text-center">
-              <div className="p-3 rounded-2xl bg-black/40 border border-emerald-500/10">
-                <div className="text-lg font-black text-white">5</div>
-                <div className="text-[11px] text-zinc-400">Canciones</div>
+              <div className="grid grid-cols-3 gap-3 max-w-sm mx-auto text-center">
+                <div className="p-3 rounded-2xl bg-black/40 border border-emerald-500/10">
+                  <div className="text-lg font-black text-white">5</div>
+                  <div className="text-[11px] text-zinc-400">Canciones</div>
+                </div>
+                <div className="p-3 rounded-2xl bg-black/40 border border-emerald-500/10">
+                  <div className="text-lg font-black text-goblinLime">500</div>
+                  <div className="text-[11px] text-zinc-400">Pts Máx</div>
+                </div>
+                <div className="p-3 rounded-2xl bg-black/40 border border-emerald-500/10">
+                  <div className="text-lg font-black text-amber-400">1 Intento</div>
+                  <div className="text-[11px] text-zinc-400">Por día</div>
+                </div>
               </div>
-              <div className="p-3 rounded-2xl bg-black/40 border border-emerald-500/10">
-                <div className="text-lg font-black text-goblinLime">500</div>
-                <div className="text-[11px] text-zinc-400">Pts Máx</div>
-              </div>
-              <div className="p-3 rounded-2xl bg-black/40 border border-emerald-500/10">
-                <div className="text-lg font-black text-amber-400">1 Intento</div>
-                <div className="text-[11px] text-zinc-400">Por día</div>
-              </div>
-            </div>
 
-            <button
-              onClick={() => startRound(0)}
+              <button
+                onClick={() => {
+                  audioPlayer.unlock();
+                  startRound(0);
+                }}
               className="w-full sm:w-auto px-8 py-3.5 rounded-2xl bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime hover:opacity-95 text-black font-black text-base shadow-xl shadow-emerald-500/25 transition cursor-pointer inline-flex items-center justify-center gap-2"
             >
               <Play className="w-5 h-5 fill-current" />
@@ -739,5 +772,6 @@ https://scuinklezam.vercel.app/diario`;
         )}
       </div>
     </div>
+  </div>
   );
 }

@@ -131,14 +131,14 @@ export default function ArtistSection({ onOpenMiniQuiz, onSelectArtist, onSelect
 
       {/* Row 1 Artist Marquee */}
       <div className="mt-10 overflow-hidden">
-        <div className="flex animate-marquee hover:[animation-play-state:paused]">
+        <div className="flex animate-marquee-left hover:[animation-play-state:paused]">
           {renderArtistItems(ARTISTS_ROW_1, "row1")}
         </div>
       </div>
 
       {/* Row 2 Artist Marquee */}
       <div className="mt-4 overflow-hidden">
-        <div className="flex animate-marquee-reverse hover:[animation-play-state:paused]">
+        <div className="flex animate-marquee-right hover:[animation-play-state:paused]">
           {renderArtistItems(ARTISTS_ROW_2, "row2")}
         </div>
       </div>

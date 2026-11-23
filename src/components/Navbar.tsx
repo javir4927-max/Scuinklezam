@@ -42,18 +42,56 @@ export default function Navbar({
   const [spotifyWrappedModalOpen, setSpotifyWrappedModalOpen] = useState(false);
   const [globalLeaderboardOpen, setGlobalLeaderboardOpen] = useState(false);
   const [isDevUser, setIsDevUser] = useState(false);
+  const [emailUser, setEmailUser] = useState<{ id: string; email: string; nickname: string; avatarUrl?: string } | null>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
   const { isConnected: realConnected, user: realUser, logout } = useSpotifyAuth();
+
+  const loadEmailUser = async () => {
+    try {
+      const res = await fetch("/api/auth/user/me");
+      const data = await res.json();
+      if (data.authenticated && data.user) {
+        setEmailUser(data.user);
+      } else {
+        setEmailUser(null);
+      }
+    } catch {
+      setEmailUser(null);
+    }
+  };
 
   useEffect(() => {
     if (typeof window !== "undefined" && window.location.search.includes("dev_user=1")) {
       setIsDevUser(true);
     }
+    loadEmailUser();
+
+    const handleProfileUpdate = () => {
+      loadEmailUser();
+    };
+    window.addEventListener("scuinklezam_profile_updated", handleProfileUpdate);
+    return () => window.removeEventListener("scuinklezam_profile_updated", handleProfileUpdate);
   }, []);
 
-  const isConnected = realConnected || isDevUser;
-  const user = realUser || (isDevUser ? ({ id: "test_dev", displayName: "Javier Tester", images: [] } as any) : null);
+  const isConnected = realConnected || isDevUser || Boolean(emailUser);
+  const user = realUser || (isDevUser ? ({ id: "test_dev", displayName: "Javier Tester", images: [] } as any) : null) || (emailUser ? ({
+    id: emailUser.id,
+    displayName: emailUser.nickname || emailUser.email.split("@")[0],
+    email: emailUser.email,
+    avatarUrl: emailUser.avatarUrl,
+    images: emailUser.avatarUrl ? [{ url: emailUser.avatarUrl }] : [],
+  } as any) : null);
+
+  const handleUserLogout = async () => {
+    if (emailUser) {
+      try {
+        await fetch("/api/auth/user/logout", { method: "POST" });
+      } catch {}
+      setEmailUser(null);
+    }
+    logout();
+  };
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -248,7 +286,7 @@ export default function Navbar({
                       <button
                         onClick={() => {
                           setUserMenuOpen(false);
-                          logout();
+                          handleUserLogout();
                         }}
                         className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-red-400 hover:text-red-300 hover:bg-red-950/40 flex items-center gap-2.5 transition cursor-pointer"
                       >

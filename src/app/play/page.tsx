@@ -789,6 +789,43 @@ function PlayArenaContent() {
     }
   }, [spotifyAuthUser, roomCode, playerId, room, playerName]);
 
+  // Synchronize player customization (custom avatar, rank frame, equipped title) with current room
+  useEffect(() => {
+    if (!roomCode || !playerId || !room || room.status !== "lobby") return;
+    const me = room.players.find((p) => p.id === playerId);
+    if (!me) return;
+
+    const targetAvatar = userCustomization.avatarUrl || spotifyAuthUser?.avatarUrl || undefined;
+    const targetRank = userCustomization.rankTier || undefined;
+    const targetTitle = userCustomization.equippedTitle || undefined;
+
+    const needsSync =
+      (targetAvatar && me.avatarUrl !== targetAvatar) ||
+      (targetRank && me.rankTier !== targetRank) ||
+      (targetTitle && me.equippedTitle !== targetTitle);
+
+    if (needsSync) {
+      fetch(`/api/rooms/${roomCode}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_player_profile",
+          playerId,
+          avatarUrl: targetAvatar,
+          rankTier: targetRank,
+          equippedTitle: targetTitle,
+        }),
+      })
+        .then(async (r) => {
+          if (r.ok) {
+            const d = await r.json();
+            if (d.success && d.room) setRoom(d.room);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [roomCode, playerId, room?.players, room?.status, userCustomization, spotifyAuthUser?.avatarUrl]);
+
   // Handler for Injecting Spotify Tracks & Stats into current Room
   const handleInjectSpotifyTracks = async (
     tracks: SpotifyTrackItem[],
@@ -1247,6 +1284,10 @@ function PlayArenaContent() {
         clearTimeout(stallTimerRef.current);
         stallTimerRef.current = null;
       }
+      if (introCutTimerRef.current) {
+        clearTimeout(introCutTimerRef.current);
+        introCutTimerRef.current = null;
+      }
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current.src = "";
@@ -1515,20 +1556,27 @@ function PlayArenaContent() {
     // Instant local exponential points calculation (max 100)
     let calculatedPoints = 0;
     if (isCorrect) {
-      const elapsedSec = Math.max(0, timeMs / 1000);
-      const duration = room.roundDuration || (room.gameMode === "survival" ? getSurvivalRoundDuration(room.currentRound - 1) : ROUND_DURATION_SEC);
-      let basePoints = calculateRoundPoints(true, elapsedSec, duration);
-      if (basePoints < 10) basePoints = 10;
-      let friendBonus = 0;
-      if (
-        room.gameMode === "who_listens" &&
-        selectedFriend &&
-        currentRound?.contributedByPlayerId &&
-        selectedFriend === currentRound.contributedByPlayerId
-      ) {
-        friendBonus = 50;
+      if (room.gameMode === "buzzer") {
+        calculatedPoints = 100;
+      } else {
+        const elapsedSec = Math.max(0, timeMs / 1000);
+        const duration = room.roundDuration || (room.gameMode === "survival" ? getSurvivalRoundDuration(room.currentRound - 1) : ROUND_DURATION_SEC);
+        let basePoints = calculateRoundPoints(true, elapsedSec, duration);
+        if (basePoints < 10) basePoints = 10;
+        if (room.gameMode === "survival" && room.currentRound >= 10) {
+          basePoints = Math.round(basePoints * 1.5);
+        }
+        let friendBonus = 0;
+        if (
+          room.gameMode === "who_listens" &&
+          selectedFriend &&
+          currentRound?.contributedByPlayerId &&
+          selectedFriend === currentRound.contributedByPlayerId
+        ) {
+          friendBonus = 50;
+        }
+        calculatedPoints = basePoints + friendBonus;
       }
-      calculatedPoints = basePoints + friendBonus;
     }
 
     // Set floating score popup immediately for instant 60fps arcade feel
@@ -2101,10 +2149,10 @@ function PlayArenaContent() {
           }
           setShowAudioUnlockButton(false);
 
-          if (room?.gameMode === "intro_flash" && room?.status === "playing") {
+          if (room?.gameMode === "intro_flash" && roomStatusRef.current === "playing") {
             if (introCutTimerRef.current) clearTimeout(introCutTimerRef.current);
             introCutTimerRef.current = setTimeout(() => {
-              if (audioRef.current && room?.status === "playing") {
+              if (audioRef.current && roomStatusRef.current === "playing") {
                 audioRef.current.pause();
                 setIntroFinished(true);
               }
@@ -2389,7 +2437,7 @@ function PlayArenaContent() {
                       </p>
                     </div>
                     <span className="text-xs font-mono text-goblinLime bg-emerald-950 px-2.5 py-1 rounded-lg border border-emerald-500/30">
-                      6 MODOS RANKED
+                      {GAME_MODES.length} MODOS RANKED
                     </span>
                   </div>
 

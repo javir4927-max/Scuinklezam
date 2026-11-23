@@ -8,6 +8,7 @@ import {
   SpotifyArtistItem,
   SpotifyPlaylistItem,
 } from "@/lib/spotifyTypes";
+import { getUserCustomization } from "@/lib/userAuth";
 
 export const dynamic = "force-dynamic";
 
@@ -50,12 +51,15 @@ export async function GET() {
     const playlistsData = playlistsRes.res?.ok ? await playlistsRes.res.json() : { items: [] };
 
     // 1. User Profile
+    const custom = await getUserCustomization(`spotify_${profileData.id}`);
+    const resolvedAvatar = custom?.customAvatarUrl || profileData.images?.[0]?.url || "";
+
     const user: SpotifyUserProfile = {
       id: profileData.id,
       displayName: profileData.display_name || profileData.id,
       email: profileData.email,
-      avatarUrl: profileData.images?.[0]?.url || "",
-      imageUrl: profileData.images?.[0]?.url || "",
+      avatarUrl: resolvedAvatar,
+      imageUrl: resolvedAvatar,
       product: profileData.product || "free",
       isPremium: profileData.product === "premium",
     };

@@ -230,6 +230,10 @@ export async function submitRankedScore(
         member: userId,
       });
 
+      // 2.5 Query existing global record to prevent downgrading global personal best
+      const prevGlobal = await redis.zscore("scuinklezam:ranked:global", userId);
+      const effectiveGlobalBest = Math.max(Number(prevGlobal || 0), bestScore);
+
       // 3. Save user profile metadata for leaderboard display
       await redis.set(
         `scuinklezam:user_profile:${userId}`,
@@ -237,7 +241,7 @@ export async function submitRankedScore(
           userId,
           nickname,
           avatarUrl,
-          bestScore,
+          bestScore: effectiveGlobalBest,
           lastPlayed: Date.now(),
         })
       );
@@ -264,11 +268,13 @@ export async function submitRankedScore(
       );
       await redis.ltrim(`scuinklezam:user_history:${userId}`, 0, 19);
 
-      // 7. Global score leaderboard
-      await redis.zadd(`scuinklezam:ranked:global`, {
-        score: bestScore,
-        member: userId,
-      });
+      // 7. Global score leaderboard (only if higher than previous global record)
+      if (prevGlobal === null || prevGlobal === undefined || bestScore > Number(prevGlobal)) {
+        await redis.zadd(`scuinklezam:ranked:global`, {
+          score: bestScore,
+          member: userId,
+        });
+      }
     } catch (err) {
       console.warn("[submitRankedScore] Redis update error:", err);
     }

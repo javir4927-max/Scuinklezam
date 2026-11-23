@@ -34,6 +34,7 @@ export default function GlobalLeaderboardModal({
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [userEntry, setUserEntry] = useState<LeaderboardEntry | null>(null);
   const [profileStats, setProfileStats] = useState<any>(null);
+  const [effectiveCurrentUserId, setEffectiveCurrentUserId] = useState<string>("");
 
   useEffect(() => {
     if (!isOpen) return;
@@ -43,21 +44,25 @@ export default function GlobalLeaderboardModal({
 
     const fetchData = async () => {
       try {
-        const userId = user?.id || "";
-        const [leaderboardRes, profileRes] = await Promise.all([
-          fetch(
-            `/api/ranked/leaderboard?category=global${
-              userId ? `&userId=${encodeURIComponent(userId)}` : ""
-            }`
-          )
-            .then((r) => r.json())
-            .catch(() => ({ entries: [] })),
-          fetch("/api/user/profile")
-            .then((r) => r.json())
-            .catch(() => ({ stats: null })),
-        ]);
+        const rawUserId = user?.id || "";
+        const fallbackPrefixed = rawUserId ? (rawUserId.startsWith("spotify_") ? rawUserId : `spotify_${rawUserId}`) : "";
+
+        const profileRes = await fetch("/api/user/profile")
+          .then((r) => r.json())
+          .catch(() => ({ stats: null, user: null }));
+
+        const effectiveUserId = profileRes?.user?.id || fallbackPrefixed;
+
+        const leaderboardRes = await fetch(
+          `/api/ranked/leaderboard?category=global${
+            effectiveUserId ? `&userId=${encodeURIComponent(effectiveUserId)}` : ""
+          }`
+        )
+          .then((r) => r.json())
+          .catch(() => ({ entries: [] }));
 
         if (isMounted) {
+          setEffectiveCurrentUserId(effectiveUserId);
           if (leaderboardRes?.success && Array.isArray(leaderboardRes.entries)) {
             setEntries(leaderboardRes.entries);
             setUserEntry(leaderboardRes.userEntry || null);
@@ -86,12 +91,12 @@ export default function GlobalLeaderboardModal({
 
   if (!isOpen) return null;
 
-  // Calculate current score & tier progress
-  const effectiveScore =
-    userEntry?.score ||
-    profileStats?.personalBests?.global ||
-    profileStats?.averageScore ||
-    0;
+  // Calculate current score & tier progress using real best score
+  const effectiveScore = Math.max(
+    userEntry?.score || 0,
+    profileStats?.bestScore || 0,
+    profileStats?.personalBests?.global || 0
+  );
 
   const currentTier: RankedTier = calculateTier(effectiveScore);
 
@@ -243,7 +248,10 @@ export default function GlobalLeaderboardModal({
             ) : (
               <div className="divide-y divide-emerald-500/10 border border-emerald-500/20 rounded-2xl overflow-hidden bg-black/40">
                 {entries.map((entry, idx) => {
-                  const isMe = user?.id && entry.userId === user.id;
+                  const isMe = Boolean(
+                    (effectiveCurrentUserId && entry.userId === effectiveCurrentUserId) ||
+                    (user?.id && (entry.userId === user.id || entry.userId === `spotify_${user.id}`))
+                  );
 
                   return (
                     <div
