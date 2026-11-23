@@ -1232,7 +1232,7 @@ export default function RankedArenaPage() {
                       </div>
                     </div>
 
-                    {/* Action Button: Continuar (if quizzesPlayed > 0) or Jugar (if 0) */}
+                    {/* Action Button: Jugar */}
                     <div className="pt-2 w-full">
                       <button
                         type="button"
@@ -1254,7 +1254,7 @@ export default function RankedArenaPage() {
                         className="w-full h-12 md:w-auto px-8 rounded-full bg-gradient-to-r from-emerald-500 via-emerald-600 to-lime-400 hover:opacity-95 text-black font-black text-base shadow-lg shadow-emerald-900/40 transition hover:scale-105 active:scale-95 flex items-center justify-center gap-2.5 cursor-pointer"
                       >
                         <Play className="w-4 h-4 fill-current" />
-                        <span>{artistSheetData.userStats.quizzesPlayed > 0 ? "Continuar" : "Jugar"}</span>
+                        <span>Jugar</span>
                       </button>
                     </div>
                   </div>

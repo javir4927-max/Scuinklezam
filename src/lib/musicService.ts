@@ -3,6 +3,7 @@ import { getSpotifyAppToken, getSpotifyUserToken } from "./spotifyServer";
 import {
   matchArtistNameStrict,
   isStrictArtistMatch,
+  isDottedAcronym,
   matchSongTitleStrict,
   deepNormalize,
   getTrackTopic,
@@ -402,15 +403,50 @@ export async function searchStrictArtistTracks(
     const data = await res.json();
     if (!data.results || !Array.isArray(data.results)) return [];
 
+    // Filter valid candidate results
+    const candidateResults = data.results.filter((item: any) => {
+      if (!item.trackName || !item.previewUrl) return false;
+      if (!isStrictArtistMatch(item.artistName || "", cleanArtist)) return false;
+      if (JUNK_REGEX.test(item.trackName) || JUNK_REGEX.test(item.artistName || "")) return false;
+      if (isLatin && (hasNonLatinCharacters(item.trackName) || hasNonLatinCharacters(item.artistName || ""))) return false;
+      return true;
+    });
+
+    // Count solo tracks per artistId to detect dominant real artist
+    const soloCountByArtistId = new Map<number | string, number>();
+    for (const item of candidateResults) {
+      const isSolo =
+        deepNormalize(item.artistName || "") === deepNormalize(cleanArtist) &&
+        isDottedAcronym(item.artistName || "") === isDottedAcronym(cleanArtist);
+      if (isSolo && item.artistId) {
+        soloCountByArtistId.set(item.artistId, (soloCountByArtistId.get(item.artistId) || 0) + 1);
+      }
+    }
+
+    let dominantArtistId: any = null;
+    let maxSolo = -1;
+    soloCountByArtistId.forEach((count, id) => {
+      if (count > maxSolo) {
+        maxSolo = count;
+        dominantArtistId = id;
+      }
+    });
+
+    const minoritySoloIds = new Set<any>();
+    if (soloCountByArtistId.size > 1) {
+      soloCountByArtistId.forEach((count, id) => {
+        if (id !== dominantArtistId) {
+          minoritySoloIds.add(id);
+        }
+      });
+    }
+
     const tracks: SpotifyTrackItem[] = [];
     const seenTitles = new Set<string>();
 
-    for (let i = 0; i < data.results.length; i++) {
-      const item = data.results[i];
-      if (!item.trackName || !item.previewUrl) continue;
-      if (!isStrictArtistMatch(item.artistName || "", cleanArtist)) continue;
-      if (JUNK_REGEX.test(item.trackName) || JUNK_REGEX.test(item.artistName || "")) continue;
-      if (isLatin && (hasNonLatinCharacters(item.trackName) || hasNonLatinCharacters(item.artistName || ""))) continue;
+    for (let i = 0; i < candidateResults.length; i++) {
+      const item = candidateResults[i];
+      if (item.artistId && minoritySoloIds.has(item.artistId)) continue;
 
       const normTitle = deepNormalize(item.trackName);
       if (!normTitle || seenTitles.has(normTitle)) continue;

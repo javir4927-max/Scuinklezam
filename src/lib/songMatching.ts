@@ -157,9 +157,19 @@ export function hasNonLatinCharacters(text: string): boolean {
 }
 
 /**
+ * Detects artist names written with letters separated by dots without spaces (e.g. M.V.R.K, M.V.R.K., C.R.O, B.o.B).
+ * Does not match names with space after dot like "J. Cole", "Dr. Dre", "Beny Jr.", "St. Vincent".
+ */
+export function isDottedAcronym(name: string): boolean {
+  if (!name) return false;
+  return /[a-zA-Z]\.[a-zA-Z]/.test(name.trim());
+}
+
+/**
  * Checks if two artist strings match strictly:
  * - Normalizes casing, diacritics/accents, punctuation
  * - Splits collaborations by feat, ft, with, x, y, /, ,
+ * - Rejects matches between dotted acronyms (e.g. M.V.R.K) and plain names (e.g. mvrk)
  * - Requires either the primary expected artist to match credited artist,
  *   or all significant tokens (length >= 3, excluding stop words de, la, el, los, las, the, y, and)
  *   to match credited tokens with >= 85% overlap and overall word overlap >= 60%.
@@ -174,56 +184,91 @@ const ARTIST_ALIASES: Record<string, string[]> = {
 
 export function isStrictArtistMatch(foundArtist: string, expectedArtist: string): boolean {
   if (!foundArtist || !expectedArtist) return false;
+
+  // Split both by collaboration separators keeping raw trimmed strings
+  const rawFoundList = foundArtist
+    .split(ARTIST_COLLAB_REGEX)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const rawExpList = expectedArtist
+    .split(ARTIST_COLLAB_REGEX)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // Quick single-artist check: if one is a dotted acronym and the other is not, reject immediately
+  if (
+    rawFoundList.length === 1 &&
+    rawExpList.length === 1 &&
+    isDottedAcronym(rawFoundList[0]) !== isDottedAcronym(rawExpList[0])
+  ) {
+    return false;
+  }
+
   const nFound = deepNormalize(foundArtist);
   const nExpected = deepNormalize(expectedArtist);
   if (!nFound || !nExpected) return false;
-  if (nFound === nExpected) return true;
-  if (nFound.replace(/\s+/g, "") === nExpected.replace(/\s+/g, "")) return true;
 
   if (ARTIST_ALIASES[nFound]?.includes(nExpected) || ARTIST_ALIASES[nExpected]?.includes(nFound)) {
     return true;
   }
 
-  // Split both by collaboration separators
-  const foundList = foundArtist
-    .split(ARTIST_COLLAB_REGEX)
-    .filter(Boolean)
-    .map((a) => deepNormalize(a))
-    .filter(Boolean);
+  // If full string matches, require consistent dotted acronym status
+  if (nFound === nExpected || nFound.replace(/\s+/g, "") === nExpected.replace(/\s+/g, "")) {
+    if (isDottedAcronym(foundArtist) !== isDottedAcronym(expectedArtist)) {
+      return false;
+    }
+    return true;
+  }
 
-  const expList = expectedArtist
-    .split(ARTIST_COLLAB_REGEX)
-    .filter(Boolean)
-    .map((a) => deepNormalize(a))
-    .filter(Boolean);
+  // Prepared normalized lists mapped alongside raw items
+  const foundItems = rawFoundList
+    .map((raw) => ({ raw, norm: deepNormalize(raw) }))
+    .filter((item) => Boolean(item.norm));
 
-  const pFound = foundList[0] || nFound;
-  const pExpected = expList[0] || nExpected;
+  const expItems = rawExpList
+    .map((raw) => ({ raw, norm: deepNormalize(raw) }))
+    .filter((item) => Boolean(item.norm));
 
-  if (pFound === pExpected) return true;
-  if (foundList.includes(pExpected)) return true;
-  if (expList.includes(pFound)) return true;
+  if (foundItems.length === 0 || expItems.length === 0) {
+    return false;
+  }
 
   const strip = (s: string) => s.replace(/\s+/g, "");
-  for (const f of foundList) {
-    for (const e of expList) {
-      if (f === e || strip(f) === strip(e)) return true;
+
+  // Pairwise match requiring identical isDottedAcronym status
+  for (const f of foundItems) {
+    for (const e of expItems) {
+      if (isDottedAcronym(f.raw) !== isDottedAcronym(e.raw)) {
+        continue;
+      }
+      if (f.norm === e.norm || strip(f.norm) === strip(e.norm)) {
+        return true;
+      }
+      if (ARTIST_ALIASES[f.norm]?.includes(e.norm) || ARTIST_ALIASES[e.norm]?.includes(f.norm)) {
+        return true;
+      }
     }
   }
 
-  const wordsFound = nFound.split(" ").filter(Boolean);
-  const wordsExp = nExpected.split(" ").filter(Boolean);
-  const commonWords = wordsExp.filter((w) => wordsFound.includes(w));
-  const wordOverlap = commonWords.length / Math.max(wordsFound.length, wordsExp.length);
+  // Token overlap check (for multi-word names), requiring matching dotted status on primary artists
+  const pFound = foundItems[0];
+  const pExpected = expItems[0];
+  if (pFound && pExpected && isDottedAcronym(pFound.raw) === isDottedAcronym(pExpected.raw)) {
+    const wordsFound = nFound.split(" ").filter(Boolean);
+    const wordsExp = nExpected.split(" ").filter(Boolean);
+    const commonWords = wordsExp.filter((w) => wordsFound.includes(w));
+    const wordOverlap = commonWords.length / Math.max(wordsFound.length, wordsExp.length);
 
-  const sigFound = wordsFound.filter((w) => w.length >= 3 && !ARTIST_STOP_WORDS.has(w));
-  const sigExp = wordsExp.filter((w) => w.length >= 3 && !ARTIST_STOP_WORDS.has(w));
+    const sigFound = wordsFound.filter((w) => w.length >= 3 && !ARTIST_STOP_WORDS.has(w));
+    const sigExp = wordsExp.filter((w) => w.length >= 3 && !ARTIST_STOP_WORDS.has(w));
 
-  if (sigFound.length > 0 && sigExp.length > 0) {
-    const commonSig = sigExp.filter((w) => sigFound.includes(w));
-    const sigOverlap = commonSig.length / Math.max(sigFound.length, sigExp.length);
-    if (sigOverlap >= 0.85 && wordOverlap >= 0.6) {
-      return true;
+    if (sigFound.length > 0 && sigExp.length > 0) {
+      const commonSig = sigExp.filter((w) => sigFound.includes(w));
+      const sigOverlap = commonSig.length / Math.max(sigFound.length, sigExp.length);
+      if (sigOverlap >= 0.85 && wordOverlap >= 0.6) {
+        return true;
+      }
     }
   }
 
