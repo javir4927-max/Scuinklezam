@@ -30,7 +30,10 @@ export type GameMode =
   | "vote"
   | "random"
   | "who_listens"
-  | "survival";
+  | "survival"
+  | "speed_chaos"
+  | "buzzer"
+  | "intro_flash";
 
 export type GuessType = "song" | "artist" | "both";
 
@@ -74,6 +77,9 @@ export interface Player {
   currentAnswer: PlayerAnswerRecord | null;
   answersByRound?: Record<number, PlayerAnswerRecord>;
   votedTheme: string | null;
+  avatarUrl?: string;
+  rankTier?: string;
+  equippedTitle?: string;
 }
 
 export interface VotingCandidate {
@@ -112,6 +118,10 @@ export interface RoundData {
   contributedByPlayerId?: string;
   contributedByPlayerName?: string;
   sourceMode?: string;
+  playbackRate?: number;
+  speedEffect?: "sped_up" | "slowed";
+  buzzerWinnerId?: string;
+  buzzerWinnerName?: string;
 }
 
 export interface RoomPlaylist {
@@ -132,6 +142,7 @@ export interface RoomState {
   status: "lobby" | "countdown" | "voting" | "playing" | "round_reveal" | "finished";
   gameMode: GameMode;
   guessType: GuessType;
+  blindMode?: boolean;
   totalRounds: number;
   currentRound: number;
   roundDuration?: number;
@@ -1270,7 +1281,8 @@ export async function createRoom(
   hostName: string,
   hostId: string,
   roomName?: string,
-  initialArtists?: string[]
+  initialArtists?: string[],
+  hostCustomization?: { avatarUrl?: string; rankTier?: string; equippedTitle?: string }
 ): Promise<RoomState> {
   let code = generateRoomCode();
   let existing = await getRawRoom(code);
@@ -1296,6 +1308,9 @@ export async function createRoom(
         ? initialArtists.slice(0, 3)
         : [],
     spotifyConnected: false,
+    avatarUrl: hostCustomization?.avatarUrl,
+    rankTier: hostCustomization?.rankTier,
+    equippedTitle: hostCustomization?.equippedTitle,
     score: 0,
     streak: 0,
     maxStreak: 0,
@@ -1317,6 +1332,7 @@ export async function createRoom(
     status: "lobby",
     gameMode: "blend",
     guessType: "song",
+    blindMode: false,
     totalRounds: 10,
     currentRound: 1,
     roundDuration: ROUND_DURATION_SEC,
@@ -1616,6 +1632,9 @@ export async function joinRoom(
     avatarColor?: string;
     favoriteArtists?: string[];
     spotifyConnected?: boolean;
+    avatarUrl?: string;
+    rankTier?: string;
+    equippedTitle?: string;
   }
 ): Promise<{ success: boolean; room?: RoomState; error?: string }> {
   return await withRoomLock(code, async () => {
@@ -1641,6 +1660,9 @@ export async function joinRoom(
       room.players[existingIndex].isOnline = true;
       room.players[existingIndex].isConnected = true;
       room.players[existingIndex].lastSeen = Date.now();
+      if (playerData.avatarUrl !== undefined) room.players[existingIndex].avatarUrl = playerData.avatarUrl;
+      if (playerData.rankTier !== undefined) room.players[existingIndex].rankTier = playerData.rankTier;
+      if (playerData.equippedTitle !== undefined) room.players[existingIndex].equippedTitle = playerData.equippedTitle;
       if (playerData.favoriteArtists && playerData.favoriteArtists.length > 0) {
         room.players[existingIndex].favoriteArtists = playerData.favoriteArtists.slice(0, 5);
       }
@@ -1661,6 +1683,9 @@ export async function joinRoom(
         lastSeen: Date.now(),
         favoriteArtists: playerData.favoriteArtists ? playerData.favoriteArtists.slice(0, 5) : [],
         spotifyConnected: Boolean(playerData.spotifyConnected),
+        avatarUrl: playerData.avatarUrl,
+        rankTier: playerData.rankTier,
+        equippedTitle: playerData.equippedTitle,
         score: 0,
         streak: 0,
         maxStreak: 0,
@@ -1854,7 +1879,13 @@ export async function renamePlayer(
 export async function updatePlayerProfile(
   code: string,
   playerId: string,
-  profile: { name?: string; avatarColor?: string }
+  profile: {
+    name?: string;
+    avatarColor?: string;
+    avatarUrl?: string;
+    rankTier?: string;
+    equippedTitle?: string;
+  }
 ): Promise<{ success: boolean; room?: RoomState; error?: string }> {
   return await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
@@ -1874,6 +1905,15 @@ export async function updatePlayerProfile(
 
     if (profile.avatarColor && /^#[0-9A-Fa-f]{6}$/.test(profile.avatarColor)) {
       player.avatarColor = profile.avatarColor;
+    }
+    if (profile.avatarUrl !== undefined) {
+      player.avatarUrl = profile.avatarUrl;
+    }
+    if (profile.rankTier !== undefined) {
+      player.rankTier = profile.rankTier;
+    }
+    if (profile.equippedTitle !== undefined) {
+      player.equippedTitle = profile.equippedTitle;
     }
 
     room.lastActive = Date.now();
@@ -2071,6 +2111,7 @@ export async function changeRoomSettings(
     guessType?: GuessType;
     totalRounds?: number;
     name?: string;
+    blindMode?: boolean;
   }
 ): Promise<{ success: boolean; room?: RoomState | null; error?: string }> {
   return await withRoomLock(code, async () => {
@@ -2082,6 +2123,7 @@ export async function changeRoomSettings(
     if (settings.guessType) room.guessType = settings.guessType;
     if (settings.totalRounds) room.totalRounds = settings.totalRounds;
     if (settings.name) room.name = settings.name.trim();
+    if (typeof settings.blindMode === "boolean") room.blindMode = settings.blindMode;
 
     room.lastActive = Date.now();
     await saveRoom(room);
@@ -2298,7 +2340,7 @@ export async function startRoomGame(
       room.totalRounds = room.rounds.length;
       room.roundDuration = getSurvivalRoundDuration(0);
     }
-    // 5. GAME MODE: BLEND / WHO_LISTENS
+    // 5. GAME MODE: BLEND / WHO_LISTENS / SPEED_CHAOS / BUZZER / INTRO_FLASH
     else {
       const { buckets, allPoolTracks } = await buildPlayerTrackBuckets(room, new Set());
       const interleaved = interleavePlayerBucketsFairly(buckets);
@@ -2343,6 +2385,15 @@ export async function startRoomGame(
           const correctIndex = options.findIndex((opt) => opt.id === correctOption.id);
           const playerSource = item.playerId ? room.players.find((p) => p.id === item.playerId) : undefined;
 
+          // Speed Chaos Mode: assign playbackRate 1.4 or 0.72
+          let playbackRate: number | undefined;
+          let speedEffect: "sped_up" | "slowed" | undefined;
+          if (room.gameMode === "speed_chaos") {
+            const isSpedUp = Math.random() < 0.5;
+            playbackRate = isSpedUp ? 1.4 : 0.72;
+            speedEffect = isSpedUp ? "sped_up" : "slowed";
+          }
+
           return {
             roundNumber,
             targetTrack: {
@@ -2359,12 +2410,18 @@ export async function startRoomGame(
             contributedByPlayerId: item.playerId,
             contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name || "Scuinklezam",
             sourceMode: item.sourceMode || target.sourceMode || playerSource?.injectedModeName || "Spotify",
+            playbackRate,
+            speedEffect,
           };
         })
       );
 
       room.rounds = rounds;
-      room.roundDuration = ROUND_DURATION_SEC;
+      if (room.gameMode === "intro_flash") {
+        room.roundDuration = 12;
+      } else {
+        room.roundDuration = ROUND_DURATION_SEC;
+      }
     }
 
     room.currentRound = 1;
@@ -2483,7 +2540,24 @@ export async function submitPlayerAnswer(
       room.roundDuration ||
       (room.gameMode === "survival" ? getSurvivalRoundDuration(room.currentRound - 1) : ROUND_DURATION_SEC);
 
-    if (isCorrect) {
+    if (room.gameMode === "buzzer") {
+      if (isCorrect) {
+        if (round.buzzerWinnerId) {
+          // Another player already won this buzzer round
+          points = 0;
+        } else {
+          points = 100;
+          round.buzzerWinnerId = player.id;
+          round.buzzerWinnerName = player.name;
+          player.score += points;
+          player.streak += 1;
+          player.maxStreak = Math.max(player.maxStreak || 0, player.streak);
+        }
+      } else {
+        points = 0;
+        player.streak = 0;
+      }
+    } else if (isCorrect) {
       const elapsedSec = Math.max(0, timeMs / 1000);
       let basePoints = calculateRoundPoints(true, elapsedSec, duration);
       // Guarantee pointsEarned >= 10 on correct answer
@@ -2558,7 +2632,9 @@ export async function submitPlayerAnswer(
       activeEligiblePlayers.length > 0 &&
       activeEligiblePlayers.every((p) => p.currentAnswer !== null || Boolean(roundMap[p.id]));
 
-    if (allAnswered) {
+    const isBuzzerWon = room.gameMode === "buzzer" && isCorrect && round.buzzerWinnerId === player.id;
+
+    if (isBuzzerWon || allAnswered) {
       room.status = "round_reveal";
       room.revealStartTime = now;
       room.revealEndsAt = now + REVEAL_DURATION_MS;
@@ -2898,7 +2974,7 @@ export async function rematchRoomGame(
       room.totalRounds = room.rounds.length;
       room.roundDuration = getSurvivalRoundDuration(0);
     } else {
-      // Default: BLEND / WHO_LISTENS
+      // Default: BLEND / WHO_LISTENS / SPEED_CHAOS / BUZZER / INTRO_FLASH
       const { buckets, allPoolTracks } = await buildPlayerTrackBuckets(room, playedTrackKeys);
       const interleaved = interleavePlayerBucketsFairly(buckets);
 
@@ -2942,6 +3018,15 @@ export async function rematchRoomGame(
           const correctIndex = options.findIndex((opt) => opt.id === correctOption.id);
           const playerSource = item.playerId ? room.players.find((p) => p.id === item.playerId) : undefined;
 
+          // Speed Chaos Mode: assign playbackRate 1.4 or 0.72
+          let playbackRate: number | undefined;
+          let speedEffect: "sped_up" | "slowed" | undefined;
+          if (room.gameMode === "speed_chaos") {
+            const isSpedUp = Math.random() < 0.5;
+            playbackRate = isSpedUp ? 1.4 : 0.72;
+            speedEffect = isSpedUp ? "sped_up" : "slowed";
+          }
+
           return {
             roundNumber,
             targetTrack: {
@@ -2958,12 +3043,18 @@ export async function rematchRoomGame(
             contributedByPlayerId: item.playerId,
             contributedByPlayerName: item.playerName || target.sourcePlayerName || playerSource?.name || "Scuinklezam",
             sourceMode: item.sourceMode || target.sourceMode || playerSource?.injectedModeName || "Spotify",
+            playbackRate,
+            speedEffect,
           };
         })
       );
 
       room.rounds = rounds;
-      room.roundDuration = ROUND_DURATION_SEC;
+      if (room.gameMode === "intro_flash") {
+        room.roundDuration = 12;
+      } else {
+        room.roundDuration = ROUND_DURATION_SEC;
+      }
     }
 
     // 4. Reset room status directly to countdown

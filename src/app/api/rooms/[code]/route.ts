@@ -81,6 +81,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
           avatarColor: body.avatarColor,
           favoriteArtists: body.favoriteArtists,
           spotifyConnected: body.spotifyConnected,
+          avatarUrl: body.avatarUrl,
+          rankTier: body.rankTier,
+          equippedTitle: body.equippedTitle,
         });
 
         if (!joinResult.success) {
@@ -211,6 +214,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
           guessType: body.guessType,
           totalRounds: body.totalRounds,
           name: body.name,
+          blindMode: body.blindMode,
         });
         if (!settingsResult.success) {
           return NextResponse.json(
@@ -346,6 +350,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         const updateResult = await updatePlayerProfile(code, playerId, {
           name: typeof body.name === "string" ? body.name : undefined,
           avatarColor: typeof body.avatarColor === "string" ? body.avatarColor : undefined,
+          avatarUrl: typeof body.avatarUrl === "string" ? body.avatarUrl : undefined,
+          rankTier: typeof body.rankTier === "string" ? body.rankTier : undefined,
+          equippedTitle: typeof body.equippedTitle === "string" ? body.equippedTitle : undefined,
         });
         if (!updateResult.success) {
           return NextResponse.json(

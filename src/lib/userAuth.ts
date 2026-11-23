@@ -19,6 +19,12 @@ export interface UserSession {
   nickname: string;
   avatarUrl: string;
   provider?: "email" | "spotify";
+  equippedTitle?: string | null;
+}
+
+export interface UserCustomization {
+  customAvatarUrl?: string | null;
+  equippedTitle?: string | null;
 }
 
 // In-memory fallback if Redis is unreachable
@@ -27,6 +33,8 @@ declare global {
   var __scuinklezamUsers: Map<string, UserAccount> | undefined;
   // eslint-disable-next-line no-var
   var __scuinklezamSessions: Map<string, string> | undefined;
+  // eslint-disable-next-line no-var
+  var __scuinklezamCustomizations: Map<string, UserCustomization> | undefined;
 }
 
 if (!global.__scuinklezamUsers) {
@@ -35,9 +43,43 @@ if (!global.__scuinklezamUsers) {
 if (!global.__scuinklezamSessions) {
   global.__scuinklezamSessions = new Map<string, string>();
 }
+if (!global.__scuinklezamCustomizations) {
+  global.__scuinklezamCustomizations = new Map<string, UserCustomization>();
+}
 
 const memoryUsers = global.__scuinklezamUsers;
 const memorySessions = global.__scuinklezamSessions;
+const memoryCustomizations = global.__scuinklezamCustomizations;
+
+export async function getUserCustomization(userId: string): Promise<UserCustomization> {
+  if (memoryCustomizations.has(userId)) {
+    return memoryCustomizations.get(userId)!;
+  }
+  if (redis) {
+    try {
+      const raw = await redis.get<string | UserCustomization>(`scuinklezam:user_custom:${userId}`);
+      if (raw) {
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        memoryCustomizations.set(userId, parsed);
+        return parsed;
+      }
+    } catch (err) {
+      console.warn("[getUserCustomization] Redis get error:", err);
+    }
+  }
+  return {};
+}
+
+export async function setUserCustomization(userId: string, data: UserCustomization): Promise<void> {
+  memoryCustomizations.set(userId, data);
+  if (redis) {
+    try {
+      await redis.set(`scuinklezam:user_custom:${userId}`, JSON.stringify(data));
+    } catch (err) {
+      console.warn("[setUserCustomization] Redis set error:", err);
+    }
+  }
+}
 
 function hashPassword(password: string, salt: string): string {
   return crypto.pbkdf2Sync(password, salt, 1000, 64, "sha512").toString("hex");
@@ -216,12 +258,14 @@ export async function getSessionUser(): Promise<UserSession | null> {
     if (userId) {
       const user = await getUserById(userId);
       if (user) {
+        const custom = await getUserCustomization(user.id);
         return {
           id: user.id,
           email: user.email,
           nickname: user.nickname,
-          avatarUrl: user.avatarUrl,
+          avatarUrl: custom.customAvatarUrl || user.avatarUrl,
           provider: "email",
+          equippedTitle: custom.equippedTitle || null,
         };
       }
     }
@@ -242,12 +286,14 @@ export async function getSessionUser(): Promise<UserSession | null> {
       ? `spotify_${spotifyId}`
       : `spotify_${cleanName.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
 
+    const custom = await getUserCustomization(cleanId);
     return {
       id: cleanId,
       email: `${cleanId}@spotify.scuinklezam.app`,
       nickname: cleanName,
-      avatarUrl: cleanAvatar,
+      avatarUrl: custom.customAvatarUrl || cleanAvatar,
       provider: "spotify",
+      equippedTitle: custom.equippedTitle || null,
     };
   }
 

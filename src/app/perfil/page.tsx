@@ -18,8 +18,12 @@ import {
   Loader2,
   ArrowRight,
   BarChart3,
+  Camera,
+  Upload,
+  X,
+  Check,
 } from "lucide-react";
-import { RANKED_CATEGORIES, RankedCategory, calculateTier, RankedTier } from "@/lib/rankedTypes";
+import { RANKED_CATEGORIES, RankedCategory, calculateTier, RankedTier, getRankFrameClasses } from "@/lib/rankedTypes";
 import UserAuthModal from "@/components/UserAuthModal";
 import SpotifyConnectModal from "@/components/SpotifyConnectModal";
 import SpotifyStatsDetailModal from "@/components/SpotifyStatsDetailModal";
@@ -48,6 +52,16 @@ export default function ProfilePage() {
   const [user, setUser] = useState<any>(null);
   const [stats, setStats] = useState<ProfileStats | null>(null);
 
+  const [highestTier, setHighestTier] = useState<string>("Bronce");
+  const [unlockedTitles, setUnlockedTitles] = useState<string[]>([]);
+  const [customization, setCustomization] = useState<{ customAvatarUrl?: string | null; equippedTitle?: string | null }>({});
+
+  const [isCustomizingOpen, setIsCustomizingOpen] = useState(false);
+  const [customAvatarCandidate, setCustomAvatarCandidate] = useState<string | null>(null);
+  const [equippedTitleCandidate, setEquippedTitleCandidate] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [spotifyModalOpen, setSpotifyModalOpen] = useState(false);
   const [showStatsDetailModal, setShowStatsDetailModal] = useState(false);
@@ -62,6 +76,11 @@ export default function ProfilePage() {
           setAuthenticated(true);
           setUser(data.user);
           setStats(data.stats);
+          setHighestTier(data.highestTier || "Bronce");
+          setUnlockedTitles(data.unlockedTitles || ["Novato Musical", "Oído Fino"]);
+          setCustomization(data.customization || {});
+          setCustomAvatarCandidate(data.customization?.customAvatarUrl || data.user.avatarUrl);
+          setEquippedTitleCandidate(data.customization?.equippedTitle || null);
         } else {
           setAuthenticated(false);
           setUser(null);
@@ -78,6 +97,60 @@ export default function ProfilePage() {
   useEffect(() => {
     fetchProfile();
   }, []);
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 160;
+        canvas.height = 160;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        const minDim = Math.min(img.width, img.height);
+        const sx = (img.width - minDim) / 2;
+        const sy = (img.height - minDim) / 2;
+        ctx.drawImage(img, sx, sy, minDim, minDim, 0, 0, 160, 160);
+        let dataUrl = canvas.toDataURL("image/webp", 0.78);
+        if (!dataUrl.startsWith("data:image/webp")) {
+          dataUrl = canvas.toDataURL("image/jpeg", 0.75);
+        }
+        setCustomAvatarCandidate(dataUrl);
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSaveCustomization = async () => {
+    setIsSaving(true);
+    try {
+      const res = await fetch("/api/user/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customAvatarUrl: customAvatarCandidate,
+          equippedTitle: equippedTitleCandidate,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSaveSuccess(true);
+        setTimeout(() => {
+          setSaveSuccess(false);
+          setIsCustomizingOpen(false);
+          fetchProfile();
+        }, 600);
+      }
+    } catch (err) {
+      console.error("Error saving customization:", err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#060D09] text-white flex flex-col font-sans selection:bg-goblinPrimary selection:text-black">
@@ -135,19 +208,38 @@ export default function ProfilePage() {
             {/* Header de Usuario */}
             <div className="p-6 sm:p-8 rounded-3xl bg-gradient-to-r from-[#0C1D13] via-[#0E2619] to-black border border-emerald-500/25 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-6">
               <div className="flex items-center gap-5 text-center sm:text-left">
-                <img
-                  src={user.avatarUrl}
-                  alt={user.nickname}
-                  className="w-20 h-20 rounded-full border-2 border-goblinLime shadow-xl object-cover shrink-0"
-                />
+                <div className="relative group shrink-0">
+                  <img
+                    src={user.avatarUrl}
+                    alt={user.nickname}
+                    className={`w-20 h-20 rounded-full object-cover shrink-0 ${getRankFrameClasses(highestTier)}`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomAvatarCandidate(customization?.customAvatarUrl || user.avatarUrl);
+                      setEquippedTitleCandidate(customization?.equippedTitle || null);
+                      setIsCustomizingOpen(true);
+                    }}
+                    className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center shadow-lg border border-black/60 transition cursor-pointer"
+                    title="Personalizar avatar y título"
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                  </button>
+                </div>
                 <div className="space-y-1.5">
-                  <div className="flex items-center gap-2.5 justify-center sm:justify-start">
+                  <div className="flex items-center gap-2.5 justify-center sm:justify-start flex-wrap">
                     <h1 className="font-display font-black text-2xl sm:text-3xl text-white">
                       {user.nickname}
                     </h1>
                     <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-950 border border-emerald-500/40 text-goblinLime">
                       {stats?.currentTier?.name || "Bronce"}
                     </span>
+                    {customization?.equippedTitle && (
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-950/80 border border-purple-500/40 text-purple-200 shadow-sm">
+                        {customization.equippedTitle}
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2 text-xs text-zinc-300 justify-center sm:justify-start">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -159,6 +251,19 @@ export default function ProfilePage() {
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomAvatarCandidate(customization?.customAvatarUrl || user.avatarUrl);
+                    setEquippedTitleCandidate(customization?.equippedTitle || null);
+                    setIsCustomizingOpen(true);
+                  }}
+                  className="bg-emerald-500/10 hover:bg-emerald-500/20 text-goblinLime border border-emerald-500/30 rounded-xl px-4 py-2.5 text-xs font-bold transition flex items-center gap-2 cursor-pointer shadow-sm"
+                >
+                  <Sparkles className="w-4 h-4 text-goblinLime" />
+                  <span>Personalizar</span>
+                </button>
+
                 {user.provider === "spotify" && (
                   <button
                     type="button"
@@ -377,6 +482,173 @@ export default function ProfilePage() {
         onClose={() => setShowStatsDetailModal(false)}
         userDisplayName={user?.nickname}
       />
+
+      {/* MODAL PERSONALIZAR PERFIL */}
+      {isCustomizingOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
+          <div className="bg-[#0B1710] border border-emerald-500/30 rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-emerald-500/15 pb-3">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-goblinLime" />
+                <h3 className="text-base font-black text-white">Personalizar Perfil</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCustomizingOpen(false)}
+                className="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Live Preview Avatar + Rank Frame + Title */}
+            <div className="p-4 rounded-2xl bg-black/50 border border-emerald-500/15 text-center flex flex-col items-center justify-center space-y-2.5">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
+                Vista previa con tu marco ({highestTier})
+              </div>
+              <div className="relative">
+                <img
+                  src={customAvatarCandidate || user?.avatarUrl || "https://api.dicebear.com/7.x/identicon/svg?seed=preview"}
+                  alt="Avatar preview"
+                  className={`w-20 h-20 rounded-full object-cover transition-all ${getRankFrameClasses(highestTier)}`}
+                />
+              </div>
+              <div className="space-y-0.5">
+                <div className="font-extrabold text-sm text-white">{user?.nickname}</div>
+                {equippedTitleCandidate ? (
+                  <span className="inline-block text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-purple-950/80 border border-purple-500/40 text-purple-200">
+                    {equippedTitleCandidate}
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-zinc-500 italic">Sin título equipado</span>
+                )}
+              </div>
+            </div>
+
+            {/* Custom Photo Upload */}
+            <div className="space-y-2">
+              <label className="text-xs font-black uppercase tracking-wider text-emerald-400">
+                Subir foto propia
+              </label>
+              <label className="flex items-center justify-center gap-2 p-3 rounded-2xl border border-dashed border-emerald-500/30 hover:border-emerald-400/60 bg-emerald-950/20 hover:bg-emerald-950/40 text-xs font-bold text-zinc-300 hover:text-white cursor-pointer transition">
+                <Upload className="w-4 h-4 text-emerald-400" />
+                <span>Elegir imagen de tu dispositivo (cuadrada 160x160)</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+              </label>
+            </div>
+
+            {/* Presets DiceBear */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-black uppercase tracking-wider text-emerald-400">
+                  O elige un estilo rápido
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setCustomAvatarCandidate(null)}
+                  className="text-[10px] text-zinc-400 hover:text-rose-300 underline cursor-pointer"
+                >
+                  Restaurar foto original
+                </button>
+              </div>
+
+              <div className="grid grid-cols-6 gap-2">
+                {[
+                  { id: "avataaars", name: "Avatares", url: `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(user?.nickname || "Player")}&backgroundColor=0B1710` },
+                  { id: "bottts", name: "Robots", url: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(user?.nickname || "Player")}&backgroundColor=0B1710` },
+                  { id: "lorelei", name: "Lorelei", url: `https://api.dicebear.com/7.x/lorelei/svg?seed=${encodeURIComponent(user?.nickname || "Player")}&backgroundColor=0B1710` },
+                  { id: "fun-emoji", name: "Emoji", url: `https://api.dicebear.com/7.x/fun-emoji/svg?seed=${encodeURIComponent(user?.nickname || "Player")}&backgroundColor=0B1710` },
+                  { id: "thumbs", name: "Thumbs", url: `https://api.dicebear.com/7.x/thumbs/svg?seed=${encodeURIComponent(user?.nickname || "Player")}&backgroundColor=0B1710` },
+                  { id: "shapes", name: "Shapes", url: `https://api.dicebear.com/7.x/shapes/svg?seed=${encodeURIComponent(user?.nickname || "Player")}&backgroundColor=0B1710` },
+                ].map((preset) => {
+                  const isSelected = customAvatarCandidate === preset.url;
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => setCustomAvatarCandidate(preset.url)}
+                      className={`p-1 rounded-xl border transition flex flex-col items-center gap-1 cursor-pointer ${
+                        isSelected
+                          ? "border-goblinLime bg-emerald-500/20 shadow-md shadow-emerald-500/20 scale-105"
+                          : "border-white/10 hover:border-emerald-500/40 bg-black/40"
+                      }`}
+                      title={preset.name}
+                    >
+                      <img src={preset.url} alt={preset.name} className="w-8 h-8 rounded-lg" />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Title Selector */}
+            <div className="space-y-2">
+              <label className="text-xs font-black uppercase tracking-wider text-emerald-400">
+                Título Equipable
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setEquippedTitleCandidate(null)}
+                  className={`px-2.5 py-1 rounded-xl text-xs font-bold transition cursor-pointer border ${
+                    !equippedTitleCandidate
+                      ? "bg-emerald-500 text-black border-goblinLime font-black"
+                      : "bg-black/40 text-zinc-400 border-white/10 hover:border-white/20"
+                  }`}
+                >
+                  Sin título
+                </button>
+                {unlockedTitles.map((t) => {
+                  const isSelected = equippedTitleCandidate === t;
+                  return (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => setEquippedTitleCandidate(t)}
+                      className={`px-2.5 py-1 rounded-xl text-xs font-bold transition cursor-pointer border ${
+                        isSelected
+                          ? "bg-gradient-to-r from-purple-600 to-emerald-500 text-white border-goblinLime shadow-md shadow-emerald-500/20 font-black"
+                          : "bg-black/40 text-zinc-300 border-white/10 hover:border-emerald-500/40"
+                      }`}
+                    >
+                      {t}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="pt-2 flex items-center justify-end gap-3 border-t border-emerald-500/15">
+              <button
+                type="button"
+                onClick={() => setIsCustomizingOpen(false)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-zinc-400 hover:text-white bg-white/[0.05] hover:bg-white/10 transition cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={isSaving}
+                onClick={handleSaveCustomization}
+                className="px-5 py-2 rounded-xl text-xs font-black text-black bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime hover:opacity-95 transition cursor-pointer flex items-center gap-1.5 shadow-md shadow-emerald-500/20 disabled:opacity-50"
+              >
+                {isSaving ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : saveSuccess ? (
+                  <Check className="w-3.5 h-3.5" />
+                ) : null}
+                <span>{saveSuccess ? "¡Guardado!" : isSaving ? "Guardando..." : "Guardar Cambios"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

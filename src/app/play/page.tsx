@@ -50,9 +50,13 @@ import {
   LogOut,
   Play,
   Pause,
+  Gauge,
+  EyeOff,
+  Timer,
 } from "lucide-react";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
 import type { RoomState, Player, GameMode, GuessType, RoundOption } from "@/lib/roomStore";
+import { getRankFrameClasses } from "@/lib/rankedTypes";
 
 // Universal clipboard copy fallback
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -128,6 +132,12 @@ function renderModeIcon(modeId: GameMode, className: string = "w-5 h-5") {
       return <UserCheck className={`${className} text-purple-400`} />;
     case "survival":
       return <Skull className={`${className} text-rose-400`} />;
+    case "speed_chaos":
+      return <Gauge className={`${className} text-amber-400`} />;
+    case "buzzer":
+      return <Zap className={`${className} text-cyan-400`} />;
+    case "intro_flash":
+      return <Timer className={`${className} text-purple-400`} />;
 
     default:
       return <FlaskConical className={`${className} text-emerald-400`} />;
@@ -151,6 +161,24 @@ const GAME_MODES: Array<{
     name: "Top 50 Mundial",
     badge: "Oficial",
     desc: "Adivina los éxitos más reproducidos actualmente en el catálogo global de Spotify.",
+  },
+  {
+    id: "speed_chaos",
+    name: "Velocidad Loca",
+    badge: "Caos",
+    desc: "Cada ronda suena acelerada (1.4x) o lenta y grave (0.7x). ¿Reconoces tus propios temas?",
+  },
+  {
+    id: "buzzer",
+    name: "Modo Pulsador",
+    badge: "1º Gana",
+    desc: "El primero en acertar se lleva 100 pts y cierra la ronda. Si fallas, quedas bloqueado.",
+  },
+  {
+    id: "intro_flash",
+    name: "Intro Flash 2.5s",
+    badge: "Reflejos",
+    desc: "Solo suenan los primeros 2.5 segundos de la canción. Adivina solo por el inicio.",
   },
   {
     id: "vote",
@@ -177,6 +205,152 @@ const GAME_MODES: Array<{
     desc: "Rondas infinitas con 3 vidas. Falla y pierdes una vida, acierta 3 seguidas y recuperas una. ¡Aguanta hasta el final!",
   },
 ];
+
+interface MatchAward {
+  id: string;
+  icon: string;
+  title: string;
+  badge: string;
+  description: string;
+  playerName: string;
+}
+
+function calculateMatchAwards(
+  players: Player[],
+  playedRounds: any[],
+  answersByRound?: Record<number, Record<string, any>>
+): MatchAward[] {
+  const awards: MatchAward[] = [];
+  if (!players || players.length === 0 || !playedRounds || playedRounds.length === 0) return awards;
+
+  // 1. ⚡ Dedos más rápidos: jugador con menor tiempo medio entre respuestas correctas (mínimo 1 acierto)
+  let fastestPlayer: { player: Player; avgMs: number } | null = null;
+  for (const p of players) {
+    let totalCorrectTime = 0;
+    let correctCount = 0;
+    for (let rIdx = 1; rIdx <= playedRounds.length; rIdx++) {
+      const ans = answersByRound?.[rIdx]?.[p.id] || p.answersByRound?.[rIdx];
+      if (ans && ans.isCorrect && typeof ans.timeMs === "number" && ans.timeMs > 0) {
+        totalCorrectTime += ans.timeMs;
+        correctCount++;
+      }
+    }
+    if (correctCount > 0) {
+      const avgMs = totalCorrectTime / correctCount;
+      if (!fastestPlayer || avgMs < fastestPlayer.avgMs) {
+        fastestPlayer = { player: p, avgMs };
+      }
+    }
+  }
+
+  if (fastestPlayer) {
+    awards.push({
+      id: "fastest_fingers",
+      icon: "⚡",
+      title: "Dedos más rápidos",
+      badge: "Velocidad",
+      description: `${fastestPlayer.player.name} · ${(fastestPlayer.avgMs / 1000).toFixed(2)}s de media`,
+      playerName: fastestPlayer.player.name,
+    });
+  }
+
+  // 2. 🎯 Francotirador: mayor precisión (mínimo 80% en >= 3 rondas, o 100% si hubo menos)
+  let sniperPlayer: { player: Player; correct: number; total: number; ratio: number } | null = null;
+  for (const p of players) {
+    let correctCount = 0;
+    let totalAnswered = 0;
+    for (let rIdx = 1; rIdx <= playedRounds.length; rIdx++) {
+      const ans = answersByRound?.[rIdx]?.[p.id] || p.answersByRound?.[rIdx];
+      if (ans) {
+        totalAnswered++;
+        if (ans.isCorrect) correctCount++;
+      }
+    }
+    if (totalAnswered > 0) {
+      const ratio = correctCount / totalAnswered;
+      const qualifies = totalAnswered >= 3 ? ratio >= 0.8 : ratio === 1.0;
+      if (qualifies) {
+        if (
+          !sniperPlayer ||
+          ratio > sniperPlayer.ratio ||
+          (ratio === sniperPlayer.ratio && totalAnswered > sniperPlayer.total)
+        ) {
+          sniperPlayer = { player: p, correct: correctCount, total: totalAnswered, ratio };
+        }
+      }
+    }
+  }
+
+  if (sniperPlayer) {
+    awards.push({
+      id: "sniper",
+      icon: "🎯",
+      title: "Francotirador",
+      badge: "Precisión",
+      description: `${sniperPlayer.player.name} · ${sniperPlayer.correct}/${sniperPlayer.total} aciertos`,
+      playerName: sniperPlayer.player.name,
+    });
+  }
+
+  // 3. 🤡 El Traidor: jugador que falló (o no respondió) una canción aportada por él mismo
+  let traitorPlayer: { player: Player; count: number; failedSongTitle: string } | null = null;
+  for (const p of players) {
+    let failCount = 0;
+    let firstFailedTitle = "";
+    playedRounds.forEach((round, idx) => {
+      if (round.contributedByPlayerId === p.id) {
+        const rIdx = idx + 1;
+        const ans = answersByRound?.[rIdx]?.[p.id] || p.answersByRound?.[rIdx];
+        if (!ans || !ans.isCorrect) {
+          failCount++;
+          if (!firstFailedTitle) {
+            firstFailedTitle = round.correctTitle || round.targetTrack?.title || "su canción";
+          }
+        }
+      }
+    });
+    if (failCount > 0) {
+      if (!traitorPlayer || failCount > traitorPlayer.count) {
+        traitorPlayer = { player: p, count: failCount, failedSongTitle: firstFailedTitle };
+      }
+    }
+  }
+
+  if (traitorPlayer) {
+    awards.push({
+      id: "traitor",
+      icon: "🤡",
+      title: "El Traidor",
+      badge: "Despiste",
+      description: `${traitorPlayer.player.name} · Falló su propio temazo (${traitorPlayer.failedSongTitle})`,
+      playerName: traitorPlayer.player.name,
+    });
+  }
+
+  // 4. 🔥 Imparable: mayor maxStreak (mínimo racha de 3)
+  let streakPlayer: { player: Player; maxStreak: number } | null = null;
+  for (const p of players) {
+    const s = Math.max(p.maxStreak || 0, p.streak || 0);
+    if (s >= 3) {
+      if (!streakPlayer || s > streakPlayer.maxStreak) {
+        streakPlayer = { player: p, maxStreak: s };
+      }
+    }
+  }
+
+  if (streakPlayer) {
+    awards.push({
+      id: "unstoppable",
+      icon: "🔥",
+      title: "Imparable",
+      badge: "Racha",
+      description: `${streakPlayer.player.name} · Racha de ${streakPlayer.maxStreak} seguidas`,
+      playerName: streakPlayer.player.name,
+    });
+  }
+
+  return awards;
+}
 
 interface ArtistSuggestion {
   id: string;
@@ -251,6 +425,8 @@ function PlayArenaContent() {
   } | null>(null);
   const scorePopupTimerRef = useRef<NodeJS.Timeout | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const introCutTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [introFinished, setIntroFinished] = useState<boolean>(false);
   const [showAudioUnlockButton, setShowAudioUnlockButton] = useState<boolean>(false);
   const fallbackAttemptsRef = useRef<Map<string, number>>(new Map());
   const hasUnlockedAudioRef = useRef<boolean>(false);
@@ -259,6 +435,27 @@ function PlayArenaContent() {
   const [savingAll, setSavingAll] = useState<boolean>(false);
   const [isRematching, setIsRematching] = useState<boolean>(false);
   const [playingPodioUrl, setPlayingPodioUrl] = useState<string | null>(null);
+
+  const [userCustomization, setUserCustomization] = useState<{
+    avatarUrl?: string;
+    rankTier?: string;
+    equippedTitle?: string;
+  }>({});
+
+  useEffect(() => {
+    fetch("/api/user/profile")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.success && d.authenticated) {
+          setUserCustomization({
+            avatarUrl: d.customization?.customAvatarUrl || d.user?.avatarUrl,
+            rankTier: d.highestTier || "Bronce",
+            equippedTitle: d.customization?.equippedTitle || undefined,
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Audio & Timer Refs
   const clockOffsetRef = useRef<number>(0);
@@ -556,7 +753,10 @@ function PlayArenaContent() {
           action: "update_player_profile",
           playerId,
           name: resolvedName,
-          avatarColor: spotifyAuthUser?.avatarUrl || undefined,
+          avatarColor: userCustomization.avatarUrl || spotifyAuthUser?.avatarUrl || undefined,
+          avatarUrl: userCustomization.avatarUrl || spotifyAuthUser?.avatarUrl || undefined,
+          rankTier: userCustomization.rankTier,
+          equippedTitle: userCustomization.equippedTitle,
         }),
       })
         .then(async (r) => {
@@ -907,6 +1107,19 @@ function PlayArenaContent() {
         audio.src = previewUrl;
         audio.muted = isGlobalMutedState || globalVolume === 0;
         audio.volume = isGlobalMutedState ? 0 : globalVolume;
+
+        const rate = room.gameMode === "speed_chaos" ? (currentRoundData?.playbackRate || 1) : 1;
+        audio.playbackRate = rate;
+        (audio as any).preservesPitch = rate === 1;
+        (audio as any).webkitPreservesPitch = rate === 1;
+        (audio as any).mozPreservesPitch = rate === 1;
+
+        if (introCutTimerRef.current) {
+          clearTimeout(introCutTimerRef.current);
+          introCutTimerRef.current = null;
+        }
+        setIntroFinished(false);
+
         audio.play().then(() => {
           setShowAudioUnlockButton(false);
           // Preload next track silently while current track plays
@@ -939,6 +1152,21 @@ function PlayArenaContent() {
 
     // Status changed to Round Reveal — audio continues playing during reveal (no pause)
     if (room.status === "round_reveal" && prevStatusRef.current !== "round_reveal") {
+      if (audioRef.current) {
+        audioRef.current.playbackRate = 1;
+        (audioRef.current as any).preservesPitch = true;
+        (audioRef.current as any).webkitPreservesPitch = true;
+        (audioRef.current as any).mozPreservesPitch = true;
+      }
+      if (introCutTimerRef.current) {
+        clearTimeout(introCutTimerRef.current);
+        introCutTimerRef.current = null;
+      }
+      setIntroFinished(false);
+      if (audioRef.current && room.gameMode === "intro_flash") {
+        audioRef.current.play().catch(() => {});
+      }
+
       // Preload next track during reveal as well
       const nextTrackPreview = room.rounds[room.currentRound]?.targetTrack?.previewUrl;
       if (nextTrackPreview) {
@@ -1088,6 +1316,9 @@ function PlayArenaContent() {
           hostId: playerId,
           roomName: `Sala de ${hostDisplayName}`,
           initialArtists: tastes,
+          avatarUrl: userCustomization.avatarUrl || spotifyAuthUser?.avatarUrl || undefined,
+          rankTier: userCustomization.rankTier,
+          equippedTitle: userCustomization.equippedTitle,
         }),
       });
       const data = await res.json();
@@ -1132,6 +1363,9 @@ function PlayArenaContent() {
           name: guestDisplayName,
           favoriteArtists: [],
           spotifyConnected: spotifyConnected,
+          avatarUrl: userCustomization.avatarUrl || spotifyAuthUser?.avatarUrl || undefined,
+          rankTier: userCustomization.rankTier,
+          equippedTitle: userCustomization.equippedTitle,
         }),
       });
       const data = await res.json();
@@ -1158,6 +1392,7 @@ function PlayArenaContent() {
     gameMode?: GameMode;
     guessType?: GuessType;
     totalRounds?: number;
+    blindMode?: boolean;
   }) => {
     if (!roomCode) return;
     try {
@@ -1825,6 +2060,16 @@ function PlayArenaContent() {
             stallTimerRef.current = null;
           }
           setShowAudioUnlockButton(false);
+
+          if (room?.gameMode === "intro_flash" && room?.status === "playing") {
+            if (introCutTimerRef.current) clearTimeout(introCutTimerRef.current);
+            introCutTimerRef.current = setTimeout(() => {
+              if (audioRef.current && room?.status === "playing") {
+                audioRef.current.pause();
+                setIntroFinished(true);
+              }
+            }, 2500);
+          }
         }}
         className="hidden"
       />
@@ -2143,33 +2388,49 @@ function PlayArenaContent() {
                     })}
                   </div>
 
-                  {/* Host Match Options: Rounds */}
-                  {isHost && (
-                    <div className="mt-4 pt-4 border-t border-emerald-500/15 flex flex-wrap items-center justify-between gap-3 text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="text-zinc-400 font-semibold">Rondas:</span>
-                        {room.gameMode === "survival" ? (
-                          <span className="px-3 py-1 rounded-lg font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                            ∞ Rondas Infinitas · 3 Vidas ❤️❤️❤️
-                          </span>
-                        ) : (
-                          [5, 10, 15, 20].map((num) => (
-                            <button
-                              key={num}
-                              onClick={() => handleChangeSettings({ totalRounds: num })}
-                              className={`px-2.5 py-1 rounded-lg font-bold transition ${
-                                room.totalRounds === num
-                                  ? "bg-goblinPrimary text-black"
-                                  : "bg-white/[0.05] text-zinc-400 hover:text-white"
-                              }`}
-                            >
-                              {num}
-                            </button>
-                          ))
-                        )}
-                      </div>
+                  {/* Lobby Match Options: Rounds & Modo Ciego */}
+                  <div className="mt-4 pt-4 border-t border-emerald-500/15 flex flex-wrap items-center justify-between gap-3 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="text-zinc-400 font-semibold">Rondas:</span>
+                      {room.gameMode === "survival" ? (
+                        <span className="px-3 py-1 rounded-lg font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          ∞ Rondas Infinitas · 3 Vidas ❤️❤️❤️
+                        </span>
+                      ) : (
+                        [5, 10, 15, 20].map((num) => (
+                          <button
+                            key={num}
+                            type="button"
+                            disabled={!isHost}
+                            onClick={() => isHost && handleChangeSettings({ totalRounds: num })}
+                            className={`px-2.5 py-1 rounded-lg font-bold transition ${
+                              room.totalRounds === num
+                                ? "bg-goblinPrimary text-black"
+                                : "bg-white/[0.05] text-zinc-400 hover:text-white"
+                            } ${!isHost ? "cursor-default opacity-80" : "cursor-pointer"}`}
+                          >
+                            {num}
+                          </button>
+                        ))
+                      )}
                     </div>
-                  )}
+
+                    {/* Modo Ciego Toggle */}
+                    <button
+                      type="button"
+                      disabled={!isHost}
+                      onClick={() => isHost && handleChangeSettings({ blindMode: !room.blindMode })}
+                      className={`px-3 py-1.5 rounded-xl font-bold transition border flex items-center gap-1.5 ${
+                        room.blindMode
+                          ? "bg-purple-950/80 text-purple-200 border-purple-500/50 shadow-md shadow-purple-500/20"
+                          : "bg-white/[0.05] text-zinc-400 border-white/10 hover:text-white"
+                      } ${!isHost ? "cursor-default" : "cursor-pointer"}`}
+                      title={isHost ? "Alternar Modo Ciego" : undefined}
+                    >
+                      <EyeOff className="w-3.5 h-3.5" />
+                      <span>🙈 Modo Ciego: {room.blindMode ? "Activado (Sin carátulas)" : "Desactivado"}</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Taste Blender Panel (Mezclador de Gustos) */}
@@ -2752,12 +3013,20 @@ function PlayArenaContent() {
                         className="flex items-center justify-between p-3 rounded-2xl bg-[#0B1710] border border-emerald-500/15"
                       >
                         <div className="flex items-center gap-3">
-                          <div
-                            className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs text-black shadow"
-                            style={{ backgroundColor: player.avatarColor }}
-                          >
-                            {player.name.substring(0, 2).toUpperCase()}
-                          </div>
+                          {player.avatarUrl ? (
+                            <img
+                              src={player.avatarUrl}
+                              alt={player.name}
+                              className={`w-9 h-9 rounded-full object-cover shrink-0 ${getRankFrameClasses(player.rankTier)}`}
+                            />
+                          ) : (
+                            <div
+                              className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs text-black shadow ${getRankFrameClasses(player.rankTier)}`}
+                              style={{ backgroundColor: player.avatarColor }}
+                            >
+                              {player.name.substring(0, 2).toUpperCase()}
+                            </div>
+                          )}
                           <div>
                             {player.id === playerId && isEditingName ? (
                               <div className="flex items-center gap-1.5 py-0.5">
@@ -2819,19 +3088,26 @@ function PlayArenaContent() {
                                 )}
                               </div>
                             )}
-                            {player.spotifyBadge ? (
-                              <div
-                                className="inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full bg-[#1DB954]/20 border border-[#1DB954]/40 text-[#1DB954] font-semibold truncate max-w-[200px]"
-                                title={player.spotifyBadge}
-                              >
-                                <span className="w-1.5 h-1.5 rounded-full bg-[#1DB954] shrink-0" />
-                                <span className="truncate">{player.spotifyBadge}</span>
-                              </div>
-                            ) : (
-                              <div className="text-[11px] text-zinc-400 truncate max-w-[180px]">
-                                {player.favoriteArtists.join(", ") || "Sin artistas"}
-                              </div>
-                            )}
+                            <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                              {player.equippedTitle && (
+                                <span className="inline-flex items-center text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 font-medium">
+                                  {player.equippedTitle}
+                                </span>
+                              )}
+                              {player.spotifyBadge ? (
+                                <div
+                                  className="inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full bg-[#1DB954]/20 border border-[#1DB954]/40 text-[#1DB954] font-semibold truncate max-w-[200px]"
+                                  title={player.spotifyBadge}
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full bg-[#1DB954] shrink-0" />
+                                  <span className="truncate">{player.spotifyBadge}</span>
+                                </div>
+                              ) : (
+                                <div className="text-[11px] text-zinc-400 truncate max-w-[180px]">
+                                  {player.favoriteArtists.join(", ") || "Sin artistas"}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </div>
 
@@ -3384,6 +3660,47 @@ function PlayArenaContent() {
               </div>
             )}
 
+            {/* Speed Chaos / Intro Flash / Buzzer Banners */}
+            {room.gameMode === "speed_chaos" && room.status === "playing" && currentRound.playbackRate && (
+              <div className="flex justify-center animate-fadeIn">
+                <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black tracking-wide bg-amber-500/20 text-amber-300 border border-amber-400/50 shadow-md shadow-amber-500/10 animate-pulse">
+                  <Gauge className="w-4 h-4 text-amber-400" />
+                  <span>{currentRound.playbackRate > 1 ? "⚡ ACELERADA x1.4" : "🐢 LENTA x0.7"}</span>
+                </span>
+              </div>
+            )}
+
+            {room.gameMode === "intro_flash" && room.status === "playing" && (
+              <div className="flex justify-center animate-fadeIn">
+                <span className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black tracking-wide border shadow-md transition ${
+                  introFinished
+                    ? "bg-purple-950/90 text-purple-200 border-purple-400/60 animate-bounce"
+                    : "bg-purple-950/40 text-purple-300 border-purple-500/30"
+                }`}>
+                  <Timer className="w-4 h-4 text-purple-400" />
+                  <span>{introFinished ? "⏱️ Intro terminada · ¡Adivina ahora!" : "🎧 Escuchando intro (2.5s)..."}</span>
+                </span>
+              </div>
+            )}
+
+            {room.gameMode === "buzzer" && room.status === "playing" && (
+              <div className="flex justify-center animate-fadeIn">
+                <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black tracking-wide bg-cyan-950/80 text-cyan-200 border border-cyan-400/50 shadow-md shadow-cyan-500/10">
+                  <Zap className="w-4 h-4 text-cyan-400 fill-current" />
+                  <span>Modo Pulsador · ¡El primer acierto se lleva los 100 pts y cierra la ronda!</span>
+                </span>
+              </div>
+            )}
+
+            {room.status === "round_reveal" && room.gameMode === "buzzer" && currentRound.buzzerWinnerName && (
+              <div className="p-3.5 rounded-2xl bg-gradient-to-r from-cyan-950/90 via-emerald-950/90 to-cyan-950/90 border border-cyan-400/50 text-center shadow-lg animate-scaleUp">
+                <span className="font-extrabold text-sm sm:text-base text-cyan-200 flex items-center justify-center gap-2">
+                  <Zap className="w-4 h-4 text-cyan-300 fill-current" />
+                  <span>⚡ ¡{currentRound.buzzerWinnerName} pulsó primero y se llevó los 100 pts!</span>
+                </span>
+              </div>
+            )}
+
             {/* 4 Quiz Options Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 sm:gap-4">
               {currentRound.options.map((opt, optIdx) => {
@@ -3462,7 +3779,11 @@ function PlayArenaContent() {
                     {/* Left: Artwork Container + Center: Title & Artist */}
                     <div className="flex items-center gap-3 min-w-0 flex-1">
                       <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-lg overflow-hidden shrink-0 bg-emerald-950/80 border border-white/10 relative flex items-center justify-center">
-                        {optionImageErrors[imgKey] ? (
+                        {room.blindMode && room.status === "playing" ? (
+                          <div className="w-full h-full bg-black/60 border border-purple-500/30 flex items-center justify-center text-purple-300">
+                            <EyeOff className="w-5 h-5 opacity-70" />
+                          </div>
+                        ) : optionImageErrors[imgKey] ? (
                           <Music2 className="w-5 h-5 text-emerald-400" />
                         ) : (
                           <img
@@ -3617,9 +3938,23 @@ function PlayArenaContent() {
                           </div>
                         )}
                         <div className="flex items-center justify-between">
-                          <span className="font-bold text-xs text-white truncate max-w-[85px]">
-                            #{idx + 1} {p.name}
-                          </span>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            {p.avatarUrl ? (
+                              <img
+                                src={p.avatarUrl}
+                                alt={p.name}
+                                className={`w-4 h-4 rounded-full object-cover shrink-0 ${getRankFrameClasses(p.rankTier)}`}
+                              />
+                            ) : (
+                              <span
+                                className={`w-2.5 h-2.5 rounded-full shrink-0 ${getRankFrameClasses(p.rankTier)}`}
+                                style={{ backgroundColor: p.avatarColor }}
+                              />
+                            )}
+                            <span className="font-bold text-xs text-white truncate max-w-[75px]">
+                              #{idx + 1} {p.name}
+                            </span>
+                          </div>
                           <div className="flex items-center gap-1.5">
                             {p.spotifyBadge && (
                               <span
@@ -3636,10 +3971,6 @@ function PlayArenaContent() {
                                 ✕
                               </button>
                             )}
-                            <span
-                              className="w-2.5 h-2.5 rounded-full"
-                              style={{ backgroundColor: p.avatarColor }}
-                            />
                           </div>
                         </div>
 
@@ -3733,9 +4064,30 @@ function PlayArenaContent() {
                     {second && (
                       <div className="flex flex-col items-center flex-1 max-w-[130px]">
                         <Trophy className="w-6 h-6 text-slate-300" />
-                        <div className="font-bold text-xs text-zinc-300 mt-1 truncate">
+                        <div className="mt-1">
+                          {second.avatarUrl ? (
+                            <img
+                              src={second.avatarUrl}
+                              alt={second.name}
+                              className={`w-9 h-9 rounded-full object-cover mx-auto ${getRankFrameClasses(second.rankTier)}`}
+                            />
+                          ) : (
+                            <div
+                              className={`w-8 h-8 rounded-xl flex items-center justify-center font-bold text-xs text-black shadow mx-auto ${getRankFrameClasses(second.rankTier)}`}
+                              style={{ backgroundColor: second.avatarColor }}
+                            >
+                              {second.name.substring(0, 2).toUpperCase()}
+                            </div>
+                          )}
+                        </div>
+                        <div className="font-bold text-xs text-zinc-300 mt-1 truncate max-w-[120px]">
                           {second.name}
                         </div>
+                        {second.equippedTitle && (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 font-medium truncate max-w-[110px] mt-0.5">
+                            {second.equippedTitle}
+                          </span>
+                        )}
                         <div className="font-mono font-black text-xs text-goblinLime">
                           {second.score} pts
                         </div>
@@ -3754,9 +4106,30 @@ function PlayArenaContent() {
                     {first && (
                       <div className="flex flex-col items-center flex-1 max-w-[150px]">
                         <Crown className="w-8 h-8 text-amber-300 animate-bounce" />
-                        <div className="font-extrabold text-sm text-white mt-1 truncate">
+                        <div className="mt-1">
+                          {first.avatarUrl ? (
+                            <img
+                              src={first.avatarUrl}
+                              alt={first.name}
+                              className={`w-11 h-11 rounded-full object-cover mx-auto ${getRankFrameClasses(first.rankTier)}`}
+                            />
+                          ) : (
+                            <div
+                              className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-xs text-black shadow mx-auto ${getRankFrameClasses(first.rankTier)}`}
+                              style={{ backgroundColor: first.avatarColor }}
+                            >
+                              {first.name.substring(0, 2).toUpperCase()}
+                            </div>
+                          )}
+                        </div>
+                        <div className="font-extrabold text-sm text-white mt-1 truncate max-w-[140px]">
                           {first.name}
                         </div>
+                        {first.equippedTitle && (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 font-medium truncate max-w-[130px] mt-0.5">
+                            {first.equippedTitle}
+                          </span>
+                        )}
                         <div className="font-mono font-black text-sm text-goblinLime">
                           {first.score} pts
                         </div>
@@ -3776,9 +4149,30 @@ function PlayArenaContent() {
                     {third && (
                       <div className="flex flex-col items-center flex-1 max-w-[130px]">
                         <Trophy className="w-6 h-6 text-amber-600" />
-                        <div className="font-bold text-xs text-zinc-300 mt-1 truncate">
+                        <div className="mt-1">
+                          {third.avatarUrl ? (
+                            <img
+                              src={third.avatarUrl}
+                              alt={third.name}
+                              className={`w-9 h-9 rounded-full object-cover mx-auto ${getRankFrameClasses(third.rankTier)}`}
+                            />
+                          ) : (
+                            <div
+                              className={`w-8 h-8 rounded-xl flex items-center justify-center font-bold text-xs text-black shadow mx-auto ${getRankFrameClasses(third.rankTier)}`}
+                              style={{ backgroundColor: third.avatarColor }}
+                            >
+                              {third.name.substring(0, 2).toUpperCase()}
+                            </div>
+                          )}
+                        </div>
+                        <div className="font-bold text-xs text-zinc-300 mt-1 truncate max-w-[120px]">
                           {third.name}
                         </div>
+                        {third.equippedTitle && (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 font-medium truncate max-w-[110px] mt-0.5">
+                            {third.equippedTitle}
+                          </span>
+                        )}
                         <div className="font-mono font-black text-xs text-goblinLime">
                           {third.score} pts
                         </div>
@@ -3792,6 +4186,44 @@ function PlayArenaContent() {
                         </div>
                       </div>
                     )}
+                  </div>
+                );
+              })()}
+
+              {/* Match Awards Grid (Premios Graciosos) */}
+              {(() => {
+                const playedRounds = room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length));
+                const matchAwards = calculateMatchAwards(room.players, playedRounds, room.answersByRound);
+                if (matchAwards.length === 0) return null;
+                return (
+                  <div className="pt-2 pb-1 text-left space-y-3">
+                    <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wider text-emerald-400">
+                      <span>🏆</span>
+                      <span>Premios de la Partida</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {matchAwards.map((award) => (
+                        <div
+                          key={award.id}
+                          className="p-3.5 rounded-2xl bg-[#0B1710]/80 border border-emerald-500/20 backdrop-blur-sm flex items-center gap-3.5 hover:border-emerald-500/40 transition shadow-sm"
+                        >
+                          <div className="w-10 h-10 rounded-xl bg-emerald-950/90 border border-emerald-500/30 flex items-center justify-center text-xl shrink-0 shadow-inner">
+                            {award.icon}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-black text-white">{award.title}</span>
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                                {award.badge}
+                              </span>
+                            </div>
+                            <div className="text-xs text-zinc-300 font-medium truncate mt-0.5">
+                              {award.description}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 );
               })()}

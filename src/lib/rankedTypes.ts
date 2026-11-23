@@ -1,5 +1,7 @@
+export type RankedTierName = "Bronce" | "Plata" | "Oro" | "Platino" | "Diamante" | "Maestro";
+
 export interface RankedTier {
-  name: "Bronce" | "Plata" | "Oro" | "Platino" | "Diamante" | "Maestro";
+  name: RankedTierName;
   minScore: number;
   badgeColor: string;
   badgeBg: string;
@@ -23,6 +25,23 @@ export function calculateTier(score: number): RankedTier {
     }
   }
   return RANKED_TIERS[RANKED_TIERS.length - 1];
+}
+
+export function getRankFrameClasses(tier?: string): string {
+  switch (tier) {
+    case "Maestro":
+      return "ring-2 ring-purple-400 shadow-[0_0_16px_rgba(192,132,252,0.75)]";
+    case "Diamante":
+      return "ring-2 ring-cyan-400 shadow-[0_0_14px_rgba(34,211,238,0.65)]";
+    case "Platino":
+      return "ring-2 ring-teal-300 shadow-[0_0_12px_rgba(94,234,212,0.55)]";
+    case "Oro":
+      return "ring-2 ring-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.55)]";
+    case "Plata":
+      return "ring-2 ring-slate-300";
+    default:
+      return "ring-1 ring-emerald-500/40";
+  }
 }
 
 export interface RankedCategory {

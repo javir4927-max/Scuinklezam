@@ -15,8 +15,13 @@ export async function POST(request: Request) {
     const hostId = body.hostId || `player_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const roomName = body.roomName;
     const initialArtists = Array.isArray(body.initialArtists) ? body.initialArtists : [];
+    const hostCustomization = {
+      avatarUrl: body.avatarUrl,
+      rankTier: body.rankTier,
+      equippedTitle: body.equippedTitle,
+    };
 
-    const room = await createRoom(hostName, hostId, roomName, initialArtists);
+    const room = await createRoom(hostName, hostId, roomName, initialArtists, hostCustomization);
 
     return NextResponse.json(
       {

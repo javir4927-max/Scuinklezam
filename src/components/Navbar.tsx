@@ -12,6 +12,7 @@ import {
   User,
   Home,
   Zap,
+  CalendarCheck,
 } from "lucide-react";
 import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
 import GlobalVolumeControl from "@/components/GlobalVolumeControl";
@@ -25,7 +26,7 @@ interface NavbarProps {
   onOpenSpotifyModal?: () => void;
   onOpenAuthModal?: () => void;
   rightSlot?: React.ReactNode;
-  activeRoute?: "home" | "play" | "ranked" | "perfil" | "miniquiz";
+  activeRoute?: "home" | "play" | "ranked" | "perfil" | "miniquiz" | "diario";
 }
 
 export default function Navbar({
@@ -141,6 +142,18 @@ export default function Navbar({
             >
               <Trophy className="w-4 h-4 text-amber-400 shrink-0" />
               <span>Ranked</span>
+            </Link>
+
+            <Link
+              href="/diario"
+              className={`px-3 py-1.5 rounded-full transition flex items-center gap-2 font-semibold whitespace-nowrap ${
+                activeRoute === "diario"
+                  ? "bg-emerald-500/25 border border-emerald-400 text-goblinLime shadow-[0_0_15px_rgba(16,185,129,0.25)]"
+                  : "bg-emerald-500/10 border border-emerald-400/30 text-emerald-300 hover:bg-emerald-500/20 hover:border-emerald-400/60"
+              }`}
+            >
+              <CalendarCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>Diario</span>
             </Link>
 
             {onOpenMiniQuiz ? (
@@ -319,7 +332,7 @@ export default function Navbar({
       </header>
 
       {/* BARRA INFERIOR FIJA ESTILO APP NATIVA (md:hidden) */}
-      <nav className="fixed bottom-0 inset-x-0 z-50 h-16 bg-zinc-950/95 backdrop-blur-lg border-t border-white/10 grid grid-cols-5 items-center px-1 md:hidden select-none">
+      <nav className="fixed bottom-0 inset-x-0 z-50 h-16 bg-zinc-950/95 backdrop-blur-lg border-t border-white/10 grid grid-cols-6 items-center px-0.5 md:hidden select-none">
         {/* 1. Inicio */}
         <Link
           href="/"
@@ -330,7 +343,7 @@ export default function Navbar({
           }`}
         >
           <Home className="w-5 h-5 mb-0.5" />
-          <span className="text-[11px] leading-tight">Inicio</span>
+          <span className="text-[10px] leading-tight">Inicio</span>
         </Link>
 
         {/* 2. Multijugador */}
@@ -343,7 +356,7 @@ export default function Navbar({
           }`}
         >
           <Users className="w-5 h-5 mb-0.5" />
-          <span className="text-[11px] leading-tight">Multijugador</span>
+          <span className="text-[10px] leading-tight">Multijugador</span>
         </Link>
 
         {/* 3. Ranked */}
@@ -361,10 +374,23 @@ export default function Navbar({
           }`}
         >
           <Trophy className="w-5 h-5 mb-0.5" />
-          <span className="text-[11px] leading-tight">Ranked</span>
+          <span className="text-[10px] leading-tight">Ranked</span>
         </Link>
 
-        {/* 4. Miniquiz */}
+        {/* 4. Diario */}
+        <Link
+          href="/diario"
+          className={`flex flex-col items-center justify-center py-1 transition ${
+            activeRoute === "diario"
+              ? "text-goblinLime font-semibold"
+              : "text-zinc-400 hover:text-zinc-200 font-medium"
+          }`}
+        >
+          <CalendarCheck className="w-5 h-5 mb-0.5" />
+          <span className="text-[10px] leading-tight">Diario</span>
+        </Link>
+
+        {/* 5. Miniquiz */}
         {onOpenMiniQuiz ? (
           <button
             type="button"
