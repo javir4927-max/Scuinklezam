@@ -188,9 +188,10 @@ export async function submitRankedScore(
   persistedInRedis: boolean;
   redisError?: string;
 }> {
-  const tier = calculateTier(score);
+  const safeScore = Math.min(1000, Math.max(0, Math.round(score)));
+  const tier = calculateTier(safeScore);
   let isPersonalBest = true;
-  let bestScore = score;
+  let bestScore = safeScore;
   let persistedInRedis = false;
   let redisError: string | undefined;
 
@@ -199,10 +200,10 @@ export async function submitRankedScore(
     try {
       const catKey = `scuinklezam:ranked:${categoryId}`;
       const prevCatScoreRaw = await redis.zscore(catKey, userId);
-      const prevCatScore = Number(prevCatScoreRaw || 0);
+      const prevCatScore = Math.min(1000, Number(prevCatScoreRaw || 0));
 
-      isPersonalBest = score > prevCatScore;
-      bestScore = Math.max(prevCatScore, score);
+      isPersonalBest = safeScore > prevCatScore;
+      bestScore = Math.min(1000, Math.max(prevCatScore, safeScore));
 
       // 1. Increment real play counts
       await redis.incr(`scuinklezam:stats:plays:${categoryId}`);
@@ -216,8 +217,8 @@ export async function submitRankedScore(
 
       // 2.5 Query existing global record to prevent downgrading global personal best
       const prevGlobalRaw = await redis.zscore("scuinklezam:ranked:global", userId);
-      const prevGlobal = Number(prevGlobalRaw || 0);
-      const effectiveGlobalBest = Math.max(prevGlobal, bestScore);
+      const prevGlobal = Math.min(1000, Number(prevGlobalRaw || 0));
+      const effectiveGlobalBest = Math.min(1000, Math.max(prevGlobal, bestScore));
 
       // 3. Save user profile metadata for leaderboard display
       await redis.set(
@@ -238,7 +239,7 @@ export async function submitRankedScore(
 
       // 5. Update user global stats
       await redis.hincrby(`scuinklezam:user_stats:${userId}`, "totalPlays", 1);
-      await redis.hincrby(`scuinklezam:user_stats:${userId}`, "totalPoints", score);
+      await redis.hincrby(`scuinklezam:user_stats:${userId}`, "totalPoints", safeScore);
 
       // 6. Push match to user recent history
       await redis.lpush(
@@ -246,8 +247,8 @@ export async function submitRankedScore(
         JSON.stringify({
           categoryId,
           categoryName: categoryName || categoryId,
-          score,
-          correctCount: correctCount ?? Math.round(score / 100),
+          score: safeScore,
+          correctCount: correctCount ?? Math.round(safeScore / 100),
           timestamp: Date.now(),
         })
       );
@@ -273,8 +274,9 @@ export async function submitRankedScore(
   const catMap = memoryScores.get(categoryId)!;
   const current = catMap.get(userId);
   if (!redis) {
-    isPersonalBest = !current || score > current.score;
-    bestScore = isPersonalBest ? score : (current?.score ?? score);
+    const currentScore = Math.min(1000, current?.score ?? 0);
+    isPersonalBest = !current || safeScore > currentScore;
+    bestScore = isPersonalBest ? safeScore : (current ? currentScore : safeScore);
   }
 
   catMap.set(userId, { score: bestScore, nickname, avatarUrl });
@@ -282,7 +284,7 @@ export async function submitRankedScore(
   // Update in-memory user stats
   const mStats = memoryStats.get(userId) || { totalPlays: 0, totalPoints: 0 };
   mStats.totalPlays += 1;
-  mStats.totalPoints += score;
+  mStats.totalPoints += safeScore;
   memoryStats.set(userId, mStats);
 
   // Update in-memory history
@@ -290,8 +292,8 @@ export async function submitRankedScore(
   mHist.unshift({
     categoryId,
     categoryName: categoryName || categoryId,
-    score,
-    correctCount: correctCount ?? Math.round(score / 100),
+    score: safeScore,
+    correctCount: correctCount ?? Math.round(safeScore / 100),
     timestamp: Date.now(),
   });
   if (mHist.length > 20) mHist.pop();
@@ -335,10 +337,21 @@ export async function getCategoryLeaderboard(
       if (topIds && topIds.length > 0) {
         for (let i = 0; i < topIds.length; i += 2) {
           const mId = typeof topIds[i] === "object" ? (topIds[i] as any).member : topIds[i];
-          const mScore = typeof topIds[i] === "object" ? Number((topIds[i] as any).score) : Number(topIds[i + 1]);
+          const rawScore = typeof topIds[i] === "object" ? Number((topIds[i] as any).score) : Number(topIds[i + 1]);
+          const mScore = Math.min(1000, Math.max(0, Math.round(rawScore || 0)));
+
+          // Auto-heal any legacy record > 1000 in Redis sorted set
+          if (rawScore > 1000) {
+            redis.zadd(`scuinklezam:ranked:${categoryId}`, { score: mScore, member: mId }).catch(() => {});
+          }
 
           const profileRaw = await redis.get<string | any>(`scuinklezam:user_profile:${mId}`);
           const profile = typeof profileRaw === "string" ? JSON.parse(profileRaw) : profileRaw;
+
+          if (profile && profile.bestScore && Number(profile.bestScore) > 1000) {
+            profile.bestScore = 1000;
+            redis.set(`scuinklezam:user_profile:${mId}`, JSON.stringify(profile)).catch(() => {});
+          }
 
           const nick = profile?.nickname || `Jugador #${(i / 2) + 1}`;
           const av =
@@ -407,7 +420,7 @@ export async function getUserProfileData(userId: string) {
       const bests = await redis.hgetall<Record<string, string>>(`scuinklezam:user_bests:${userId}`);
       if (bests) {
         for (const [k, v] of Object.entries(bests)) {
-          personalBests[k] = Number(v);
+          personalBests[k] = Math.min(1000, Number(v));
         }
       }
 
@@ -473,9 +486,10 @@ export async function submitArtistRankedScore(
 }> {
   const cleanName = artistName.trim();
   const slug = toArtistSlug(cleanName);
+  const safeScore = Math.min(1000, Math.max(0, Math.round(score)));
 
-  let newTotalPoints = score;
-  let finalBestScore = score;
+  let newTotalPoints = safeScore;
+  let finalBestScore = safeScore;
   let newQuizzesPlayed = 1;
   let userRank: number | null = null;
   let persistedInRedis = false;
@@ -487,15 +501,15 @@ export async function submitArtistRankedScore(
       const zsetKey = `scuinklezam:ranked:artist:${slug}`;
 
       // 1. Increment cumulative points and quizzes in Redis hash
-      const updatedPoints = await redis.hincrby(statsKey, "totalPoints", score);
+      const updatedPoints = await redis.hincrby(statsKey, "totalPoints", safeScore);
       const updatedQuizzes = await redis.hincrby(statsKey, "quizzesPlayed", 1);
-      newTotalPoints = Number(updatedPoints || score);
+      newTotalPoints = Number(updatedPoints || safeScore);
       newQuizzesPlayed = Number(updatedQuizzes || 1);
 
       // 2. Read previous best score and calculate final best score
       const prevBestRaw = await redis.hget<string>(statsKey, "bestScore");
-      const prevBest = Number(prevBestRaw || 0);
-      finalBestScore = Math.max(prevBest, score);
+      const prevBest = Math.min(1000, Number(prevBestRaw || 0));
+      finalBestScore = Math.min(1000, Math.max(prevBest, safeScore));
 
       await redis.hset(statsKey, {
         bestScore: finalBestScore,
@@ -548,8 +562,8 @@ export async function submitArtistRankedScore(
   };
 
   if (!redis) {
-    newTotalPoints = current.totalPoints + score;
-    finalBestScore = Math.max(current.bestScore, score);
+    newTotalPoints = current.totalPoints + safeScore;
+    finalBestScore = Math.min(1000, Math.max(Math.min(1000, current.bestScore), safeScore));
     newQuizzesPlayed = current.quizzesPlayed + 1;
   }
 
@@ -647,7 +661,7 @@ export async function getArtistProfileAndLeaderboard(
         if (uStats) {
           userTotalPoints = Number(uStats.totalPoints || 0);
           userQuizzesPlayed = Number(uStats.quizzesPlayed || 0);
-          userBestScore = Number(uStats.bestScore || 0);
+          userBestScore = Math.min(1000, Number(uStats.bestScore || 0));
         }
         const rankIdx = await redis.zrevrank(zsetKey, userId);
         if (rankIdx !== null && rankIdx !== undefined) {
@@ -681,10 +695,14 @@ export async function getArtistProfileAndLeaderboard(
           nick = nick || `Jugador #${leaderboard.length + 1}`;
           av = av || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(nick)}&backgroundColor=0B1710`;
 
-          // Auto-migrate legacy accumulated scores in Redis sorted set
-          const entryBest = Number(uStats?.bestScore || 0) || Math.min(1000, mScore);
+          // Auto-migrate legacy accumulated scores in Redis sorted set and hash
+          const rawBest = Number(uStats?.bestScore || 0);
+          const entryBest = Math.min(1000, rawBest || Math.min(1000, mScore));
           if (mScore > 1000 || mScore !== entryBest) {
             redis.zadd(zsetKey, { score: entryBest, member: mId }).catch(() => {});
+          }
+          if (rawBest > 1000) {
+            redis.hset(statsKey, { bestScore: entryBest }).catch(() => {});
           }
 
           leaderboard.push({

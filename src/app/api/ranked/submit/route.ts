@@ -30,13 +30,15 @@ export async function POST(request: Request) {
       sessionUser?.avatarUrl ||
       `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(nickname)}&backgroundColor=0B1710`;
 
+    const clampedScore = Math.min(1000, Math.max(0, Math.round(score)));
+
     // 1. Submit to general category ranking
     const result = await submitRankedScore(
       userId,
       nickname,
       avatarUrl,
       categoryId,
-      score,
+      clampedScore,
       categoryName,
       correctCount
     );
@@ -50,7 +52,7 @@ export async function POST(request: Request) {
         nickname,
         avatarUrl,
         targetArtist,
-        score,
+        clampedScore,
         correctCount
       );
     }

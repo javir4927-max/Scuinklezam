@@ -422,6 +422,7 @@ export default function RankedArenaPage() {
     setScorePopup(null);
     setSummaryData(null);
     answersHistoryRef.current = [];
+    isHandlingAnswerRef.current = false;
     setAnswersHistory([]);
     setPlayingPreviewUrl(null);
 
@@ -536,6 +537,7 @@ export default function RankedArenaPage() {
       setQuestions(generated);
       setGameState("playing");
       setTimeLeft(ROUND_DURATION_SEC);
+      isHandlingAnswerRef.current = false;
 
       if (generated[0]?.correctTrack?.previewUrl) {
         audioPlayer.playTrack(generated[0].correctTrack.previewUrl);
@@ -691,7 +693,11 @@ export default function RankedArenaPage() {
           setGameState("summary");
           isHandlingAnswerRef.current = false;
 
-          const finalScore = scoreRef.current + roundPoints;
+          const finalScore = Math.min(
+            1000,
+            answersHistoryRef.current.reduce((acc, item) => acc + (Number(item.points) || 0), 0)
+          );
+          setScore(finalScore);
           const guestId = user?.id || (typeof window !== "undefined" ? localStorage.getItem("scuinklezam_ranked_uid") : "") || `guest_${Date.now()}`;
           if (typeof window !== "undefined") {
             localStorage.setItem("scuinklezam_ranked_uid", guestId);
