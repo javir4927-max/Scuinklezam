@@ -80,6 +80,7 @@ export interface Player {
   avatarUrl?: string;
   rankTier?: string;
   equippedTitle?: string;
+  wins?: number;
 }
 
 export interface VotingCandidate {
@@ -144,6 +145,7 @@ export interface RoomState {
   gameMode: GameMode;
   guessType: GuessType;
   blindMode?: boolean;
+  matchWinnerAwarded?: boolean;
   totalRounds: number;
   currentRound: number;
   roundDuration?: number;
@@ -1353,6 +1355,7 @@ export async function createRoom(
     lostLifeThisRound: false,
     currentAnswer: null,
     votedTheme: null,
+    wins: 0,
   };
 
   const newRoom: RoomState = {
@@ -1364,6 +1367,7 @@ export async function createRoom(
     gameMode: "blend",
     guessType: "song",
     blindMode: false,
+    matchWinnerAwarded: false,
     totalRounds: 10,
     currentRound: 1,
     roundDuration: ROUND_DURATION_SEC,
@@ -1448,6 +1452,57 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
 
   // Pure read: NEVER writes room to Redis on normal polling!
   return room;
+}
+
+/**
+ * Authoritatively marks a match as finished, trims played rounds,
+ * and increments room wins for the match leader(s) once with idempotency.
+ */
+export function finalizeRoomMatch(room: RoomState): void {
+  room.status = "finished";
+  room.rounds = room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length));
+  room.totalRounds = room.rounds.length;
+
+  if (!room.matchWinnerAwarded && room.players.length > 0) {
+    const isSurvival = room.gameMode === "survival";
+    const ranked = [...room.players].sort((a, b) => {
+      if (isSurvival) {
+        if (!a.isEliminated && b.isEliminated) return -1;
+        if (a.isEliminated && !b.isEliminated) return 1;
+        if (a.isEliminated && b.isEliminated) {
+          const roundA = a.eliminatedAtRound ?? 0;
+          const roundB = b.eliminatedAtRound ?? 0;
+          if (roundB !== roundA) return roundB - roundA;
+        }
+      }
+      return b.score - a.score;
+    });
+
+    const top = ranked[0];
+    const topHasWon = top && (top.score > 0 || (isSurvival && !top.isEliminated));
+
+    if (topHasWon) {
+      const winners = ranked.filter((p) => {
+        if (isSurvival) {
+          return (
+            p.isEliminated === top.isEliminated &&
+            p.eliminatedAtRound === top.eliminatedAtRound &&
+            p.score === top.score
+          );
+        }
+        return p.score === top.score;
+      });
+
+      const winnerIds = new Set(winners.map((w) => w.id));
+      room.players.forEach((p) => {
+        if (winnerIds.has(p.id)) {
+          p.wins = (p.wins || 0) + 1;
+        }
+      });
+    }
+
+    room.matchWinnerAwarded = true;
+  }
 }
 
 /**
@@ -1596,9 +1651,7 @@ export async function checkRoomStateProgression(room: RoomState, heartbeats?: Re
         const shouldFinish = initialCount >= 2 ? alivePlayers.length <= 1 : alivePlayers.length === 0;
 
         if (shouldFinish) {
-          room.status = "finished";
-          room.rounds = room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length));
-          room.totalRounds = room.rounds.length;
+          finalizeRoomMatch(room);
         } else {
           // Continuous infinite survival generation
           if (room.rounds.length - room.currentRound <= 4) {
@@ -1640,9 +1693,7 @@ export async function checkRoomStateProgression(room: RoomState, heartbeats?: Re
             p.currentAnswer = null;
           });
         } else {
-          room.status = "finished";
-          room.rounds = room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length));
-          room.totalRounds = room.rounds.length;
+          finalizeRoomMatch(room);
         }
       }
       changed = true;
@@ -1728,6 +1779,7 @@ export async function joinRoom(
         lostLifeThisRound: false,
         currentAnswer: null,
         votedTheme: null,
+        wins: 0,
       };
 
       room.players.push(newPlayer);
@@ -2199,6 +2251,7 @@ export async function startRoomGame(
     }
 
     // Reset players for new match
+    room.matchWinnerAwarded = false;
     room.players.forEach((p) => {
       p.score = 0;
       p.streak = 0;
@@ -2723,9 +2776,7 @@ export async function advanceRoomRound(
       const shouldFinish = initialCount >= 2 ? alivePlayers.length <= 1 : alivePlayers.length === 0;
 
       if (shouldFinish) {
-        room.status = "finished";
-        room.rounds = room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length));
-        room.totalRounds = room.rounds.length;
+        finalizeRoomMatch(room);
       } else {
         if (room.rounds.length - room.currentRound <= 4) {
           try {
@@ -2766,9 +2817,7 @@ export async function advanceRoomRound(
           p.currentAnswer = null;
         });
       } else {
-        room.status = "finished";
-        room.rounds = room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length));
-        room.totalRounds = room.rounds.length;
+        finalizeRoomMatch(room);
       }
     }
 
@@ -2788,6 +2837,7 @@ export async function resetRoomToLobby(code: string, hostId: string): Promise<{ 
     if (room.hostId !== hostId) return { success: false, error: "Solo el anfitrión puede reiniciar la sala." };
 
     room.status = "lobby";
+    room.matchWinnerAwarded = false;
     room.currentRound = 1;
     room.rounds = [];
     room.roundStartTime = 0;
@@ -2844,6 +2894,7 @@ export async function rematchRoomGame(
     });
 
     // 2. Synchronize heartbeats and reset players for rematch
+    room.matchWinnerAwarded = false;
     const heartbeats = await getPlayerHeartbeats(code);
     const now = Date.now();
     room.players.forEach((p) => {

@@ -3038,6 +3038,7 @@ function PlayArenaContent() {
                 const connectedPlayers = room.players.filter((p) => p.isConnected !== false);
                 const readyPlayersCount = connectedPlayers.filter((p) => !requiresMusic || hasPlayerContributedMusic(p, room.playlists)).length;
                 const allPlayersReady = connectedPlayers.length > 0 && readyPlayersCount === connectedPlayers.length;
+                const anyRoomWins = room.players.some((p) => (p.wins || 0) > 0);
 
                 return (
                   <div className="lg:col-span-5 space-y-6">
@@ -3169,6 +3170,20 @@ function PlayArenaContent() {
                             </div>
 
                             <div className="flex items-center gap-2">
+                              {(anyRoomWins || (player.wins || 0) > 0) && (
+                                <span
+                                  title={`${player.wins || 0} ${(player.wins || 0) === 1 ? "partida ganada" : "partidas ganadas"} en esta sala`}
+                                  className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full border transition shrink-0 ${
+                                    (player.wins || 0) > 0
+                                      ? "bg-amber-500/15 border-amber-400/40 text-amber-300 shadow-sm shadow-amber-500/10"
+                                      : "bg-white/[0.04] border-white/10 text-zinc-400"
+                                  }`}
+                                >
+                                  <Trophy className={`w-3 h-3 ${(player.wins || 0) > 0 ? "text-amber-400" : "text-zinc-500"}`} />
+                                  <span>{player.wins || 0}</span>
+                                </span>
+                              )}
+
                               {player.isConnected === false ? (
                                 <span className="inline-flex items-center gap-1 text-[11px] text-amber-400 font-semibold bg-amber-950/60 px-1.5 py-0.5 rounded">
                                   <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
@@ -3528,28 +3543,6 @@ function PlayArenaContent() {
                 <span className="text-[11px] text-rose-200/70">
                   (Sigues escuchando la música mientras los demás luchan por sobrevivir)
                 </span>
-              </div>
-            )}
-
-            {/* Song Contributor / Source Mode Badge */}
-            {(currentRound.contributedByPlayerName || currentRound.sourceMode) && (
-              <div className="text-center">
-                {room.gameMode === "who_listens" && room.status === "playing" ? (
-                  <span className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-bold bg-gradient-to-r from-purple-950/80 via-emerald-950/80 to-purple-950/80 border border-purple-500/40 text-purple-200 shadow-md shadow-purple-500/10 animate-pulse">
-                    <span>🕵️ ¿De quién es este temazo? · Elige al amigo antes de responder (+50 pts)</span>
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold bg-[#102218] border border-emerald-500/40 text-emerald-300 shadow-md shadow-emerald-500/10">
-                    <Headphones className="w-4 h-4 text-emerald-400" />
-                    <span>
-                      {currentRound.sourceMode && currentRound.contributedByPlayerName
-                        ? `De ${currentRound.sourceMode} de ${currentRound.contributedByPlayerName}`
-                        : currentRound.sourceMode
-                        ? `De ${currentRound.sourceMode}`
-                        : `Aportada por ${currentRound.contributedByPlayerName}`}
-                    </span>
-                  </span>
-                )}
               </div>
             )}
 
@@ -3965,6 +3958,15 @@ function PlayArenaContent() {
                             <span className="font-bold text-xs text-white truncate max-w-[75px]">
                               #{idx + 1} {p.name}
                             </span>
+                            {(p.wins || 0) > 0 && (
+                              <span
+                                title={`${p.wins} ${(p.wins === 1 ? "victoria" : "victorias")} en sala`}
+                                className="inline-flex items-center gap-0.5 text-[10px] font-extrabold text-amber-300 bg-amber-500/15 border border-amber-400/40 px-1 py-0.2 rounded shrink-0"
+                              >
+                                <span>🏆</span>
+                                <span>{p.wins}</span>
+                              </span>
+                            )}
                           </div>
                           <div className="flex items-center gap-1.5">
                             {p.spotifyBadge && (
@@ -4102,6 +4104,9 @@ function PlayArenaContent() {
                         <div className="font-mono font-black text-xs text-goblinLime">
                           {second.score} pts
                         </div>
+                        <div className="text-[10px] font-bold text-amber-300/90 mt-0.5">
+                          🏆 {second.wins || 0} {(second.wins || 0) === 1 ? "victoria" : "victorias"} en sala
+                        </div>
                         {room.gameMode === "survival" && (
                           <div className="text-[10px] text-amber-300 font-bold mt-0.5">
                             🔥 {second.maxStreak || second.streak || 0} racha
@@ -4143,6 +4148,9 @@ function PlayArenaContent() {
                         )}
                         <div className="font-mono font-black text-sm text-goblinLime">
                           {first.score} pts
+                        </div>
+                        <div className="text-[11px] font-extrabold text-amber-300 mt-0.5">
+                          🏆 {first.wins || 0} {(first.wins || 0) === 1 ? "victoria" : "victorias"} en sala
                         </div>
                         {room.gameMode === "survival" && (
                           <div className="text-[11px] text-amber-300 font-extrabold mt-0.5 flex items-center gap-1">
@@ -4186,6 +4194,9 @@ function PlayArenaContent() {
                         )}
                         <div className="font-mono font-black text-xs text-goblinLime">
                           {third.score} pts
+                        </div>
+                        <div className="text-[10px] font-bold text-amber-300/90 mt-0.5">
+                          🏆 {third.wins || 0} {(third.wins || 0) === 1 ? "victoria" : "victorias"} en sala
                         </div>
                         {room.gameMode === "survival" && (
                           <div className="text-[10px] text-amber-300 font-bold mt-0.5">
