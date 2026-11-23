@@ -55,8 +55,28 @@ import {
   Timer,
 } from "lucide-react";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
-import type { RoomState, Player, GameMode, GuessType, RoundOption } from "@/lib/roomStore";
+import type { RoomState, Player, GameMode, GuessType, RoundOption, RoomPlaylist } from "@/lib/roomStore";
 import { getRankFrameClasses } from "@/lib/rankedTypes";
+
+// Readiness Helpers (replicated from roomStore to keep client bundle clean of server deps)
+function modeRequiresPlayerMusic(gameMode: GameMode): boolean {
+  return gameMode !== "top50" && gameMode !== "vote" && gameMode !== "random";
+}
+
+function hasPlayerContributedMusic(player: Player, playlists?: RoomPlaylist[]): boolean {
+  const hasArtists = Array.isArray(player.favoriteArtists) && player.favoriteArtists.some((a) => a.trim().length > 0);
+  const hasSpotifyTracks =
+    (Array.isArray(player.injectedTracks) && player.injectedTracks.length > 0) ||
+    (player.injectedTracksCount || 0) > 0;
+  const hasPlaylist =
+    Array.isArray(playlists) &&
+    playlists.some(
+      (pl) =>
+        pl.addedByPlayerId === player.id &&
+        ((Array.isArray(pl.tracks) && pl.tracks.length > 0) || (pl.trackCount || 0) > 0)
+    );
+  return hasArtists || hasSpotifyTracks || hasPlaylist;
+}
 
 // Universal clipboard copy fallback
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -166,7 +186,7 @@ const GAME_MODES: Array<{
     id: "speed_chaos",
     name: "Una Vaina Loca",
     badge: "Caos",
-    desc: "Cada ronda suena acelerada (1.4x) o lenta y grave (0.7x). ¿Reconoces tus propios temas?",
+    desc: "Velocidades locas e impredecibles en cada ronda: desde modo demonio x0.5 hasta hipervelocidad x3.0.",
   },
   {
     id: "buzzer",
@@ -184,7 +204,7 @@ const GAME_MODES: Array<{
     id: "vote",
     name: "Votación Democrática",
     badge: "En Vivo",
-    desc: "Todos los jugadores proponen y votan temas en el lobby. Se juega con el más votado.",
+    desc: "Al iniciar la partida aparecen 4 temáticas 100% aleatorias y todos votan en vivo durante 10 segundos.",
   },
   {
     id: "random",
@@ -1108,11 +1128,13 @@ function PlayArenaContent() {
         audio.muted = isGlobalMutedState || globalVolume === 0;
         audio.volume = isGlobalMutedState ? 0 : globalVolume;
 
-        const rate = room.gameMode === "speed_chaos" ? (currentRoundData?.playbackRate || 1) : 1;
+        const isChaos = room.gameMode === "speed_chaos";
+        const rate = isChaos ? (currentRoundData?.playbackRate || 1) : 1;
         audio.playbackRate = rate;
-        (audio as any).preservesPitch = rate === 1;
-        (audio as any).webkitPreservesPitch = rate === 1;
-        (audio as any).mozPreservesPitch = rate === 1;
+        audio.loop = isChaos;
+        (audio as any).preservesPitch = !isChaos;
+        (audio as any).webkitPreservesPitch = !isChaos;
+        (audio as any).mozPreservesPitch = !isChaos;
 
         if (introCutTimerRef.current) {
           clearTimeout(introCutTimerRef.current);
@@ -1154,6 +1176,7 @@ function PlayArenaContent() {
     if (room.status === "round_reveal" && prevStatusRef.current !== "round_reveal") {
       if (audioRef.current) {
         audioRef.current.playbackRate = 1;
+        audioRef.current.loop = false;
         (audioRef.current as any).preservesPitch = true;
         (audioRef.current as any).webkitPreservesPitch = true;
         (audioRef.current as any).mozPreservesPitch = true;
@@ -1189,11 +1212,28 @@ function PlayArenaContent() {
     if (room.status === "finished" && prevStatusRef.current !== "finished") {
       if (audioRef.current) {
         audioRef.current.pause();
+        audioRef.current.playbackRate = 1;
+        audioRef.current.loop = false;
+        (audioRef.current as any).preservesPitch = true;
+        (audioRef.current as any).webkitPreservesPitch = true;
+        (audioRef.current as any).mozPreservesPitch = true;
       }
       audioPlayer.stop();
       playSynthNote(523.25, 0.2);
       setTimeout(() => playSynthNote(659.25, 0.2), 150);
       setTimeout(() => playSynthNote(783.99, 0.4), 300);
+    }
+
+    // Status changed to Lobby
+    if (room.status === "lobby" && prevStatusRef.current !== "lobby") {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.playbackRate = 1;
+        audioRef.current.loop = false;
+        (audioRef.current as any).preservesPitch = true;
+        (audioRef.current as any).webkitPreservesPitch = true;
+        (audioRef.current as any).mozPreservesPitch = true;
+      }
     }
 
     prevStatusRef.current = room.status;
@@ -2992,271 +3032,228 @@ function PlayArenaContent() {
                 </div>
               </div>
 
-              {/* Right Column (5 cols): Players List & Theme Proposals */}
-              <div className="lg:col-span-5 space-y-6">
-                {/* Players In Lobby List */}
-                <div className="glass-card rounded-3xl p-6 border border-emerald-500/20 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h2 className="font-display font-extrabold text-lg text-white">
-                      Jugadores ({room.players.length})
-                    </h2>
-                    <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400 font-bold">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                      En línea
-                    </span>
-                  </div>
+              {/* Right Column (5 cols): Players List */}
+              {(() => {
+                const requiresMusic = modeRequiresPlayerMusic(room.gameMode);
+                const connectedPlayers = room.players.filter((p) => p.isConnected !== false);
+                const readyPlayersCount = connectedPlayers.filter((p) => !requiresMusic || hasPlayerContributedMusic(p, room.playlists)).length;
+                const allPlayersReady = connectedPlayers.length > 0 && readyPlayersCount === connectedPlayers.length;
 
-                  <div className="space-y-2.5 max-h-[280px] overflow-y-auto pr-1">
-                    {room.players.map((player) => (
-                      <div
-                        key={player.id}
-                        className="flex items-center justify-between p-3 rounded-2xl bg-[#0B1710] border border-emerald-500/15"
-                      >
-                        <div className="flex items-center gap-3">
-                          {player.avatarUrl ? (
-                            <img
-                              src={player.avatarUrl}
-                              alt={player.name}
-                              className={`w-9 h-9 rounded-full object-cover shrink-0 ${getRankFrameClasses(player.rankTier)}`}
-                            />
-                          ) : (
-                            <div
-                              className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs text-black shadow ${getRankFrameClasses(player.rankTier)}`}
-                              style={{ backgroundColor: player.avatarColor }}
-                            >
-                              {player.name.substring(0, 2).toUpperCase()}
-                            </div>
-                          )}
-                          <div>
-                            {player.id === playerId && isEditingName ? (
-                              <div className="flex items-center gap-1.5 py-0.5">
-                                <input
-                                  type="text"
-                                  value={editNameInput}
-                                  onChange={(e) => setEditNameInput(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter") handleRenamePlayer();
-                                    if (e.key === "Escape") setIsEditingName(false);
-                                  }}
-                                  className="px-2 py-0.5 text-xs rounded-lg bg-black/70 border border-emerald-400 text-white focus:outline-none w-28"
-                                  autoFocus
-                                  maxLength={20}
+                return (
+                  <div className="lg:col-span-5 space-y-6">
+                    {/* Players In Lobby List */}
+                    <div className="glass-card rounded-3xl p-6 border border-emerald-500/20 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h2 className="font-display font-extrabold text-lg text-white">
+                          Jugadores ({room.players.length})
+                        </h2>
+                        <span className={`inline-flex items-center gap-1.5 text-xs font-bold ${
+                          allPlayersReady ? "text-emerald-400" : "text-amber-400"
+                        }`}>
+                          <span className={`w-2 h-2 rounded-full ${
+                            allPlayersReady ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
+                          }`} />
+                          {readyPlayersCount}/{connectedPlayers.length} listos
+                        </span>
+                      </div>
+
+                      <div className="space-y-2.5 max-h-[280px] overflow-y-auto pr-1">
+                        {room.players.map((player) => (
+                          <div
+                            key={player.id}
+                            className="flex items-center justify-between p-3 rounded-2xl bg-[#0B1710] border border-emerald-500/15"
+                          >
+                            <div className="flex items-center gap-3">
+                              {player.avatarUrl ? (
+                                <img
+                                  src={player.avatarUrl}
+                                  alt={player.name}
+                                  className={`w-9 h-9 rounded-full object-cover shrink-0 ${getRankFrameClasses(player.rankTier)}`}
                                 />
-                                <button
-                                  type="button"
-                                  disabled={isSavingName}
-                                  onClick={handleRenamePlayer}
-                                  className="p-1 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black cursor-pointer transition"
-                                  title="Guardar nombre"
+                              ) : (
+                                <div
+                                  className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs text-black shadow ${getRankFrameClasses(player.rankTier)}`}
+                                  style={{ backgroundColor: player.avatarColor }}
                                 >
-                                  {isSavingName ? (
-                                    <Loader2 className="w-3 h-3 animate-spin" />
-                                  ) : (
-                                    <Check className="w-3 h-3" />
-                                  )}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setIsEditingName(false)}
-                                  className="p-1 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 cursor-pointer transition"
-                                  title="Cancelar"
-                                >
-                                  <X className="w-3 h-3" />
-                                </button>
-                              </div>
-                            ) : (
-                              <div className="flex items-center gap-1.5 text-sm font-bold text-white">
-                                <span>{player.name}</span>
-                                {player.isHost && (
-                                  <Crown className="w-3.5 h-3.5 text-amber-400 inline" />
-                                )}
-                                {player.id === playerId && (
-                                  <>
-                                    <span className="text-xs text-goblinLime">(Tú)</span>
+                                  {player.name.substring(0, 2).toUpperCase()}
+                                </div>
+                              )}
+                              <div>
+                                {player.id === playerId && isEditingName ? (
+                                  <div className="flex items-center gap-1.5 py-0.5">
+                                    <input
+                                      type="text"
+                                      value={editNameInput}
+                                      onChange={(e) => setEditNameInput(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") handleRenamePlayer();
+                                        if (e.key === "Escape") setIsEditingName(false);
+                                      }}
+                                      className="px-2 py-0.5 text-xs rounded-lg bg-black/70 border border-emerald-400 text-white focus:outline-none w-28"
+                                      autoFocus
+                                      maxLength={20}
+                                    />
                                     <button
                                       type="button"
-                                      onClick={() => {
-                                        setEditNameInput(player.name);
-                                        setIsEditingName(true);
-                                      }}
-                                      className="p-1 rounded-md hover:bg-emerald-500/20 text-zinc-400 hover:text-emerald-300 transition cursor-pointer"
-                                      title="Cambiar mi nombre"
+                                      disabled={isSavingName}
+                                      onClick={handleRenamePlayer}
+                                      className="p-1 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black cursor-pointer transition"
+                                      title="Guardar nombre"
                                     >
-                                      <Pencil className="w-3.5 h-3.5" />
+                                      {isSavingName ? (
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                      ) : (
+                                        <Check className="w-3 h-3" />
+                                      )}
                                     </button>
-                                  </>
+                                    <button
+                                      type="button"
+                                      onClick={() => setIsEditingName(false)}
+                                      className="p-1 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 cursor-pointer transition"
+                                      title="Cancelar"
+                                    >
+                                      <X className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center gap-1.5 text-sm font-bold text-white">
+                                    <span>{player.name}</span>
+                                    {player.isHost && (
+                                      <Crown className="w-3.5 h-3.5 text-amber-400 inline" />
+                                    )}
+                                    {player.id === playerId && (
+                                      <>
+                                        <span className="text-xs text-goblinLime">(Tú)</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setEditNameInput(player.name);
+                                            setIsEditingName(true);
+                                          }}
+                                          className="p-1 rounded-md hover:bg-emerald-500/20 text-zinc-400 hover:text-emerald-300 transition cursor-pointer"
+                                          title="Cambiar mi nombre"
+                                        >
+                                          <Pencil className="w-3.5 h-3.5" />
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
                                 )}
+                                <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                                  {player.equippedTitle && (
+                                    <span className="inline-flex items-center text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 font-medium">
+                                      {player.equippedTitle}
+                                    </span>
+                                  )}
+                                  {requiresMusic && !hasPlayerContributedMusic(player, room.playlists) ? (
+                                    <span className="text-[11px] text-amber-400/90 font-medium">
+                                      {player.id === playerId
+                                        ? "Añade un artista, playlist o Spotify para estar listo"
+                                        : "Falta añadir música"}
+                                    </span>
+                                  ) : player.spotifyBadge ? (
+                                    <div
+                                      className="inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full bg-[#1DB954]/20 border border-[#1DB954]/40 text-[#1DB954] font-semibold truncate max-w-[200px]"
+                                      title={player.spotifyBadge}
+                                    >
+                                      <span className="w-1.5 h-1.5 rounded-full bg-[#1DB954] shrink-0" />
+                                      <span className="truncate">{player.spotifyBadge}</span>
+                                    </div>
+                                  ) : (
+                                    <div className="text-[11px] text-zinc-400 truncate max-w-[180px]">
+                                      {player.favoriteArtists.join(", ") || "Sin artistas"}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
-                            )}
-                            <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
-                              {player.equippedTitle && (
-                                <span className="inline-flex items-center text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 font-medium">
-                                  {player.equippedTitle}
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              {player.isConnected === false ? (
+                                <span className="inline-flex items-center gap-1 text-[11px] text-amber-400 font-semibold bg-amber-950/60 px-1.5 py-0.5 rounded">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                                  Desconectado
+                                </span>
+                              ) : requiresMusic && !hasPlayerContributedMusic(player, room.playlists) ? (
+                                <span className="inline-flex items-center gap-1 text-[11px] text-amber-300/90 font-semibold bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 rounded-full">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                                  Sin música
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-semibold bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                                  Listo
                                 </span>
                               )}
-                              {player.spotifyBadge ? (
-                                <div
-                                  className="inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full bg-[#1DB954]/20 border border-[#1DB954]/40 text-[#1DB954] font-semibold truncate max-w-[200px]"
-                                  title={player.spotifyBadge}
-                                >
-                                  <span className="w-1.5 h-1.5 rounded-full bg-[#1DB954] shrink-0" />
-                                  <span className="truncate">{player.spotifyBadge}</span>
-                                </div>
-                              ) : (
-                                <div className="text-[11px] text-zinc-400 truncate max-w-[180px]">
-                                  {player.favoriteArtists.join(", ") || "Sin artistas"}
+
+                              {isHost && player.id !== playerId && (
+                                <div className="flex items-center gap-1 ml-1 pl-1.5 border-l border-emerald-500/20">
+                                  <button
+                                    onClick={() => handleTransferHost(player.id, player.name)}
+                                    title="Ceder Anfitrión (Hacer Host)"
+                                    className="p-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 text-xs transition cursor-pointer"
+                                  >
+                                    <Crown className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleKickPlayer(player.id, player.name)}
+                                    title="Expulsar Jugador (Kick)"
+                                    className="p-1 rounded-lg bg-red-500/15 hover:bg-red-500/30 text-red-400 font-bold text-xs transition cursor-pointer flex items-center justify-center"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
                                 </div>
                               )}
                             </div>
                           </div>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          {player.isConnected === false ? (
-                            <span className="inline-flex items-center gap-1 text-[11px] text-amber-400 font-semibold bg-amber-950/60 px-1.5 py-0.5 rounded">
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                              Desconectado
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-semibold">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                              Listo
-                            </span>
-                          )}
-
-                          {isHost && player.id !== playerId && (
-                            <div className="flex items-center gap-1 ml-1 pl-1.5 border-l border-emerald-500/20">
-                              <button
-                                onClick={() => handleTransferHost(player.id, player.name)}
-                                title="Ceder Anfitrión (Hacer Host)"
-                                className="p-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 text-xs transition cursor-pointer"
-                              >
-                                <Crown className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                onClick={() => handleKickPlayer(player.id, player.name)}
-                                title="Expulsar Jugador (Kick)"
-                                className="p-1 rounded-lg bg-red-500/15 hover:bg-red-500/30 text-red-400 font-bold text-xs transition cursor-pointer flex items-center justify-center"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          )}
-                        </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
 
-                  {/* Start Game Action Button */}
-                  {isHost ? (
-                    <button
-                      onClick={handleStartGame}
-                      disabled={isLoading || isStartingGame || loadingSpotifyMode !== null}
-                      className="w-full py-4 rounded-2xl bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime hover:opacity-95 text-black font-black text-sm tracking-wide shadow-xl shadow-emerald-500/25 transition cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
-                    >
-                      {loadingSpotifyMode !== null ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin text-black" />
-                          <span>Sincronizando canciones de Spotify...</span>
-                        </>
-                      ) : isStartingGame || isLoading ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin text-black" />
-                          <span>Preparando canciones de la sala...</span>
-                        </>
-                      ) : (
-                        "¡Iniciar Partida Ranked!"
-                      )}
-                    </button>
-                  ) : (
-                    <div className="p-4 rounded-2xl bg-white/[0.03] border border-emerald-500/15 text-center text-xs text-zinc-400">
-                      Esperando a que el anfitrión comience la partida…
-                    </div>
-                  )}
-                </div>
-
-                {/* Theme Proposal & Voting Panel (only shown when gameMode is 'vote') */}
-                {room.gameMode === "vote" && (
-                  <div className="glass-card rounded-3xl p-6 border border-emerald-500/20 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="font-display font-extrabold text-base text-white">
-                          Votación de Temas en Vivo
-                        </h3>
-                        <p className="text-xs text-zinc-400">
-                          Vota o propón qué estilo queréis jugar
-                        </p>
-                      </div>
-                      <Vote className="w-4 h-4 text-amber-400" />
-                    </div>
-
-                    {/* Proposals List */}
-                    <div className="space-y-2">
-                      {room.themeProposals.map((prop) => {
-                        const totalVotes = room.themeProposals.reduce(
-                          (sum, p) => sum + p.votes.length,
-                          0
-                        );
-                        const votePct =
-                          totalVotes > 0 ? Math.round((prop.votes.length / totalVotes) * 100) : 0;
-                        const hasVoted = prop.votes.includes(playerId);
-
-                        return (
+                      {/* Start Game Action Button */}
+                      {isHost ? (
+                        <div className="space-y-1.5">
                           <button
-                            key={prop.id}
-                            onClick={() => handleVoteTheme(prop.id)}
-                            className={`w-full p-3 rounded-xl border text-left transition relative overflow-hidden flex items-center justify-between ${
-                              hasVoted
-                                ? "border-goblinLime bg-emerald-950/70"
-                                : "border-emerald-500/15 bg-[#0B1710] hover:border-emerald-500/30"
+                            onClick={handleStartGame}
+                            disabled={!allPlayersReady || isLoading || isStartingGame || loadingSpotifyMode !== null}
+                            className={`w-full py-4 rounded-2xl font-black text-sm tracking-wide transition flex items-center justify-center gap-2 ${
+                              !allPlayersReady
+                                ? "bg-zinc-800 text-zinc-400 border border-zinc-700 cursor-not-allowed shadow-none"
+                                : "bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime hover:opacity-95 text-black shadow-xl shadow-emerald-500/25 cursor-pointer disabled:opacity-50"
                             }`}
                           >
-                            {/* Progress fill */}
-                            <div
-                              className="absolute left-0 top-0 bottom-0 bg-emerald-500/15 transition-all duration-300 pointer-events-none"
-                              style={{ width: `${votePct}%` }}
-                            />
-
-                            <div className="relative z-10">
-                              <div className="font-bold text-xs text-white flex items-center gap-2">
-                                <span>{prop.label}</span>
-                                {hasVoted && (
-                                  <span className="text-goblinLime text-xs">✓ Votado</span>
-                                )}
-                              </div>
-                              <div className="text-[10px] text-zinc-400">
-                                Por {prop.proposedBy}
-                              </div>
-                            </div>
-
-                            <div className="relative z-10 font-mono font-bold text-xs text-goblinLime">
-                              {prop.votes.length} {prop.votes.length === 1 ? "voto" : "votos"}
-                            </div>
+                            {loadingSpotifyMode !== null ? (
+                              <>
+                                <Loader2 className="w-4 h-4 animate-spin text-black" />
+                                <span>Sincronizando canciones de Spotify...</span>
+                              </>
+                            ) : isStartingGame || isLoading ? (
+                              <>
+                                <Loader2 className="w-4 h-4 animate-spin text-black" />
+                                <span>Preparando canciones de la sala...</span>
+                              </>
+                            ) : !allPlayersReady ? (
+                              <span>Esperando jugadores ({readyPlayersCount}/{connectedPlayers.length} listos)</span>
+                            ) : (
+                              "¡Iniciar Partida Ranked!"
+                            )}
                           </button>
-                        );
-                      })}
-                    </div>
-
-                    {/* Propose new theme form */}
-                    <div className="flex gap-2 pt-2 border-t border-emerald-500/15">
-                      <input
-                        type="text"
-                        value={newThemeProposal}
-                        onChange={(e) => setNewThemeProposal(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && handleProposeTheme()}
-                        placeholder="Proponer un tema (ej. Bandas Sonoras, K-Pop)..."
-                        className="flex-1 px-3 py-2 rounded-xl bg-black/60 border border-emerald-500/30 text-white text-xs focus:outline-none focus:border-goblinLime"
-                      />
-                      <button
-                        onClick={handleProposeTheme}
-                        className="px-3.5 py-2 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-white font-bold text-xs border border-emerald-500/30 transition"
-                      >
-                        Proponer
-                      </button>
+                          {!allPlayersReady && requiresMusic && (
+                            <p className="text-[11px] text-zinc-400 text-center">
+                              Cada jugador debe añadir al menos 1 artista, una playlist o cargar su Spotify.
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="p-4 rounded-2xl bg-white/[0.03] border border-emerald-500/15 text-center text-xs text-zinc-400">
+                          {!allPlayersReady
+                            ? `Esperando a que todos carguen música (${readyPlayersCount}/${connectedPlayers.length} listos)…`
+                            : "¡Todos listos! Esperando a que el anfitrión inicie la partida…"}
+                        </div>
+                      )}
                     </div>
                   </div>
-                )}
-              </div>
+                );
+              })()}
             </div>
           </div>
         )}
@@ -3661,14 +3658,28 @@ function PlayArenaContent() {
             )}
 
             {/* Speed Chaos / Intro Flash / Buzzer Banners */}
-            {room.gameMode === "speed_chaos" && room.status === "playing" && currentRound.playbackRate && (
-              <div className="flex justify-center animate-fadeIn">
-                <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black tracking-wide bg-amber-500/20 text-amber-300 border border-amber-400/50 shadow-md shadow-amber-500/10 animate-pulse">
-                  <Gauge className="w-4 h-4 text-amber-400" />
-                  <span>{currentRound.playbackRate > 1 ? "⚡ ACELERADA x1.4" : "🐢 LENTA x0.7"}</span>
-                </span>
-              </div>
-            )}
+            {room.gameMode === "speed_chaos" && room.status === "playing" && (currentRound.playbackRate || currentRound.speedLabel) && (() => {
+              const rate = currentRound.playbackRate || 1;
+              const isSlow = currentRound.speedEffect === "slowed" || rate < 1;
+              const rawLabel = currentRound.speedLabel || (isSlow ? `LENTA x${rate}` : `ACELERADA x${rate}`);
+              let emoji = isSlow ? (rate <= 0.5 ? "🐢" : rate <= 0.65 ? "😈" : "🐌") : (rate >= 3.0 ? "🚀" : rate >= 2.5 ? "🐿️" : rate >= 2.0 ? "⚡" : "🔥");
+              const displayLabel = rawLabel.includes(emoji) ? rawLabel : `${emoji} ${rawLabel}`;
+
+              return (
+                <div className="flex justify-center animate-fadeIn">
+                  <span
+                    className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black tracking-wide border shadow-md animate-pulse ${
+                      isSlow
+                        ? "bg-purple-950/70 text-purple-200 border-purple-500/50 shadow-purple-500/20"
+                        : "bg-amber-950/70 text-amber-300 border-amber-500/50 shadow-amber-500/20"
+                    }`}
+                  >
+                    <Gauge className={`w-4 h-4 ${isSlow ? "text-purple-400" : "text-amber-400"}`} />
+                    <span>{displayLabel}</span>
+                  </span>
+                </div>
+              );
+            })()}
 
             {room.gameMode === "intro_flash" && room.status === "playing" && (
               <div className="flex justify-center animate-fadeIn">

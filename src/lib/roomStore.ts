@@ -120,6 +120,7 @@ export interface RoundData {
   sourceMode?: string;
   playbackRate?: number;
   speedEffect?: "sped_up" | "slowed";
+  speedLabel?: string;
   buzzerWinnerId?: string;
   buzzerWinnerName?: string;
 }
@@ -477,6 +478,36 @@ export const DEMOCRATIC_VOTING_CATALOG = [
     icon: "Sparkles",
   },
 ];
+
+export const CHAOS_SPEED_PRESETS = [
+  { rate: 0.5, label: "ULTRA LENTA x0.5", effect: "slowed" as const },
+  { rate: 0.65, label: "MODO DEMONIO x0.65", effect: "slowed" as const },
+  { rate: 0.78, label: "LENTA x0.78", effect: "slowed" as const },
+  { rate: 1.35, label: "ACELERADA x1.35", effect: "sped_up" as const },
+  { rate: 1.65, label: "TURBO x1.65", effect: "sped_up" as const },
+  { rate: 2.0, label: "DOBLE x2.0", effect: "sped_up" as const },
+  { rate: 2.5, label: "ARDILLA x2.5", effect: "sped_up" as const },
+  { rate: 3.0, label: "HIPERVELOCIDAD x3.0", effect: "sped_up" as const },
+];
+
+export function modeRequiresPlayerMusic(gameMode: GameMode): boolean {
+  return gameMode !== "top50" && gameMode !== "vote" && gameMode !== "random";
+}
+
+export function hasPlayerContributedMusic(player: Player, playlists?: RoomPlaylist[]): boolean {
+  const hasArtists = Array.isArray(player.favoriteArtists) && player.favoriteArtists.some((a) => a.trim().length > 0);
+  const hasSpotifyTracks =
+    (Array.isArray(player.injectedTracks) && player.injectedTracks.length > 0) ||
+    (player.injectedTracksCount || 0) > 0;
+  const hasPlaylist =
+    Array.isArray(playlists) &&
+    playlists.some(
+      (pl) =>
+        pl.addedByPlayerId === player.id &&
+        ((Array.isArray(pl.tracks) && pl.tracks.length > 0) || (pl.trackCount || 0) > 0)
+    );
+  return hasArtists || hasSpotifyTracks || hasPlaylist;
+}
 
 /**
  * True Fisher-Yates (Knuth) shuffle algorithm for uniform, unbiased random ordering
@@ -2157,6 +2188,16 @@ export async function startRoomGame(
       return { success: false, error: "No hay jugadores conectados en la sala." };
     }
 
+    if (modeRequiresPlayerMusic(room.gameMode)) {
+      const allReady = connectedPlayers.every((p) => hasPlayerContributedMusic(p, room.playlists));
+      if (!allReady) {
+        return {
+          success: false,
+          error: "Todos los jugadores deben cargar al menos un artista, playlist o modo de Spotify para estar listos.",
+        };
+      }
+    }
+
     // Reset players for new match
     room.players.forEach((p) => {
       p.score = 0;
@@ -2175,32 +2216,16 @@ export async function startRoomGame(
 
     // 1. GAME MODE: VOTE
     if (room.gameMode === "vote") {
-      const candidates: VotingCandidate[] = [];
-      const userProposals = (room.themeProposals || []).filter((tp) => tp.label && tp.label.trim().length > 0);
-      for (const up of userProposals.slice(0, 2)) {
-        candidates.push({
-          id: up.id,
-          name: up.label,
-          description: `Propuesto por ${up.proposedBy || "jugador"}`,
-          query: up.label,
-          icon: "Sparkles",
+      const candidates: VotingCandidate[] = fisherYatesShuffle(DEMOCRATIC_VOTING_CATALOG)
+        .slice(0, 4)
+        .map((item) => ({
+          id: item.id,
+          name: item.name,
+          description: item.description,
+          query: item.query,
+          icon: item.icon,
           votes: [],
-        });
-      }
-      const shuffledCatalog = fisherYatesShuffle(DEMOCRATIC_VOTING_CATALOG);
-      for (const item of shuffledCatalog) {
-        if (candidates.length >= 4) break;
-        if (!candidates.some((c) => c.name.toLowerCase() === item.name.toLowerCase())) {
-          candidates.push({
-            id: item.id,
-            name: item.name,
-            description: item.description,
-            query: item.query,
-            icon: item.icon,
-            votes: [],
-          });
-        }
-      }
+        }));
 
       room.votingCandidates = candidates;
       room.candidateRounds = {};
@@ -2357,6 +2382,17 @@ export async function startRoomGame(
       const smoothedTargets = smoothVerifiedOrder(verifiedTargetObjects);
       const usedDistractorKeys = new Set<string>();
 
+      let chaosSpeeds: typeof CHAOS_SPEED_PRESETS = [];
+      if (room.gameMode === "speed_chaos") {
+        let lastRate: number | null = null;
+        for (let i = 0; i < smoothedTargets.length; i++) {
+          const available = CHAOS_SPEED_PRESETS.filter((p) => p.rate !== lastRate);
+          const chosen = available[Math.floor(Math.random() * available.length)] || CHAOS_SPEED_PRESETS[0];
+          chaosSpeeds.push(chosen);
+          lastRate = chosen.rate;
+        }
+      }
+
       const rounds: RoundData[] = await Promise.all(
         smoothedTargets.map(async (item, i) => {
           const target = item.track;
@@ -2385,13 +2421,15 @@ export async function startRoomGame(
           const correctIndex = options.findIndex((opt) => opt.id === correctOption.id);
           const playerSource = item.playerId ? room.players.find((p) => p.id === item.playerId) : undefined;
 
-          // Speed Chaos Mode: assign playbackRate 1.4 or 0.72
+          // Speed Chaos Mode: select unpredictable rate from CHAOS_SPEED_PRESETS
           let playbackRate: number | undefined;
           let speedEffect: "sped_up" | "slowed" | undefined;
+          let speedLabel: string | undefined;
           if (room.gameMode === "speed_chaos") {
-            const isSpedUp = Math.random() < 0.5;
-            playbackRate = isSpedUp ? 1.4 : 0.72;
-            speedEffect = isSpedUp ? "sped_up" : "slowed";
+            const chosen = chaosSpeeds[i] || CHAOS_SPEED_PRESETS[0];
+            playbackRate = chosen.rate;
+            speedEffect = chosen.effect;
+            speedLabel = chosen.label;
           }
 
           return {
@@ -2412,6 +2450,7 @@ export async function startRoomGame(
             sourceMode: item.sourceMode || target.sourceMode || playerSource?.injectedModeName || "Spotify",
             playbackRate,
             speedEffect,
+            speedLabel,
           };
         })
       );
@@ -2990,6 +3029,17 @@ export async function rematchRoomGame(
       const smoothedTargets = smoothVerifiedOrder(verifiedTargetObjects);
       const usedDistractorKeys = new Set<string>();
 
+      let chaosSpeeds: typeof CHAOS_SPEED_PRESETS = [];
+      if (room.gameMode === "speed_chaos") {
+        let lastRate: number | null = null;
+        for (let i = 0; i < smoothedTargets.length; i++) {
+          const available = CHAOS_SPEED_PRESETS.filter((p) => p.rate !== lastRate);
+          const chosen = available[Math.floor(Math.random() * available.length)] || CHAOS_SPEED_PRESETS[0];
+          chaosSpeeds.push(chosen);
+          lastRate = chosen.rate;
+        }
+      }
+
       const rounds: RoundData[] = await Promise.all(
         smoothedTargets.map(async (item, i) => {
           const target = item.track;
@@ -3018,13 +3068,15 @@ export async function rematchRoomGame(
           const correctIndex = options.findIndex((opt) => opt.id === correctOption.id);
           const playerSource = item.playerId ? room.players.find((p) => p.id === item.playerId) : undefined;
 
-          // Speed Chaos Mode: assign playbackRate 1.4 or 0.72
+          // Speed Chaos Mode: select unpredictable rate from CHAOS_SPEED_PRESETS
           let playbackRate: number | undefined;
           let speedEffect: "sped_up" | "slowed" | undefined;
+          let speedLabel: string | undefined;
           if (room.gameMode === "speed_chaos") {
-            const isSpedUp = Math.random() < 0.5;
-            playbackRate = isSpedUp ? 1.4 : 0.72;
-            speedEffect = isSpedUp ? "sped_up" : "slowed";
+            const chosen = chaosSpeeds[i] || CHAOS_SPEED_PRESETS[0];
+            playbackRate = chosen.rate;
+            speedEffect = chosen.effect;
+            speedLabel = chosen.label;
           }
 
           return {
@@ -3045,6 +3097,7 @@ export async function rematchRoomGame(
             sourceMode: item.sourceMode || target.sourceMode || playerSource?.injectedModeName || "Spotify",
             playbackRate,
             speedEffect,
+            speedLabel,
           };
         })
       );
