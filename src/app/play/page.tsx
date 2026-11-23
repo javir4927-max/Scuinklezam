@@ -3261,16 +3261,22 @@ function PlayArenaContent() {
             {/* Song Contributor / Source Mode Badge */}
             {(currentRound.contributedByPlayerName || currentRound.sourceMode) && (
               <div className="text-center">
-                <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold bg-[#102218] border border-emerald-500/40 text-emerald-300 shadow-md shadow-emerald-500/10">
-                  <Headphones className="w-4 h-4 text-emerald-400" />
-                  <span>
-                    {currentRound.sourceMode && currentRound.contributedByPlayerName
-                      ? `De ${currentRound.sourceMode} de ${currentRound.contributedByPlayerName}`
-                      : currentRound.sourceMode
-                      ? `De ${currentRound.sourceMode}`
-                      : `Aportada por ${currentRound.contributedByPlayerName}`}
+                {room.gameMode === "who_listens" && room.status === "playing" ? (
+                  <span className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-bold bg-gradient-to-r from-purple-950/80 via-emerald-950/80 to-purple-950/80 border border-purple-500/40 text-purple-200 shadow-md shadow-purple-500/10 animate-pulse">
+                    <span>🕵️ ¿De quién es este temazo? · Elige al amigo antes de responder (+50 pts)</span>
                   </span>
-                </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold bg-[#102218] border border-emerald-500/40 text-emerald-300 shadow-md shadow-emerald-500/10">
+                    <Headphones className="w-4 h-4 text-emerald-400" />
+                    <span>
+                      {currentRound.sourceMode && currentRound.contributedByPlayerName
+                        ? `De ${currentRound.sourceMode} de ${currentRound.contributedByPlayerName}`
+                        : currentRound.sourceMode
+                        ? `De ${currentRound.sourceMode}`
+                        : `Aportada por ${currentRound.contributedByPlayerName}`}
+                    </span>
+                  </span>
+                )}
               </div>
             )}
 
@@ -3294,14 +3300,32 @@ function PlayArenaContent() {
                   <div>
                     <div className="text-xs uppercase font-extrabold tracking-wider text-goblinLime flex flex-wrap items-center gap-2">
                       <span>Canción Correcta</span>
-                      {(currentRound.sourceMode || currentRound.contributedByPlayerName) && (
-                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 normal-case font-bold border border-emerald-500/30">
-                          {currentRound.sourceMode && currentRound.contributedByPlayerName
-                            ? `De ${currentRound.sourceMode} de ${currentRound.contributedByPlayerName}`
-                            : currentRound.sourceMode
-                            ? `De ${currentRound.sourceMode}`
-                            : `Aportada por ${currentRound.contributedByPlayerName}`}
-                        </span>
+                      {room.gameMode === "who_listens" ? (
+                        <>
+                          <span className="text-[11px] px-3 py-1 rounded-full bg-gradient-to-r from-purple-900/60 to-emerald-900/60 text-purple-200 normal-case font-black border border-purple-400/50 flex items-center gap-1.5 shadow-md animate-scaleUp">
+                            <span>🎯 ¡Este temazo era de {currentRound.contributedByPlayerName || "un amigo"}!</span>
+                            {currentRound.sourceMode && (
+                              <span className="text-zinc-400 text-[10px]">({currentRound.sourceMode})</span>
+                            )}
+                          </span>
+
+                          {selectedFriend && selectedFriend === currentRound.contributedByPlayerId && (
+                            <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-goblinLime normal-case font-black border border-emerald-400/50 flex items-center gap-1 shadow animate-bounce">
+                              <Sparkles className="w-3 h-3 text-goblinLime" />
+                              <span>+50 pts Bonus de amigo</span>
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        (currentRound.sourceMode || currentRound.contributedByPlayerName) && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 normal-case font-bold border border-emerald-500/30">
+                            {currentRound.sourceMode && currentRound.contributedByPlayerName
+                              ? `De ${currentRound.sourceMode} de ${currentRound.contributedByPlayerName}`
+                              : currentRound.sourceMode
+                              ? `De ${currentRound.sourceMode}`
+                              : `Aportada por ${currentRound.contributedByPlayerName}`}
+                          </span>
+                        )
                       )}
                     </div>
                     <div className="font-display font-extrabold text-xl text-white">
@@ -3484,25 +3508,57 @@ function PlayArenaContent() {
 
             {/* Who Listens Mode Bonus Question: Guess Friend */}
             {room.gameMode === "who_listens" && (
-              <div className="p-4 rounded-2xl bg-[#0B1710] border border-emerald-500/20 space-y-2">
-                <div className="text-xs font-bold text-goblinLime flex items-center gap-1.5">
-                  <UserCheck className="w-4 h-4 text-purple-400" />
-                  <span>Bonus: ¿Quién crees que añadió esta canción? (+50 pts)</span>
+              <div className="p-4 rounded-2xl bg-[#0B1710] border border-purple-500/30 space-y-2.5">
+                <div className="text-xs font-bold text-purple-300 flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <UserCheck className="w-4 h-4 text-purple-400" />
+                    <span>Bonus: ¿Quién crees que añadió esta canción? (+50 pts)</span>
+                  </div>
+                  {room.status === "round_reveal" && (
+                    <span className="text-[10px] uppercase font-black tracking-wider text-emerald-400">
+                      Resultado revelado
+                    </span>
+                  )}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {room.players.map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() => setSelectedFriend(p.id)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition border ${
-                        selectedFriend === p.id
-                          ? "bg-goblinPrimary text-black border-goblinLime"
-                          : "bg-black/50 text-zinc-300 border-emerald-500/20 hover:border-emerald-500/40"
-                      }`}
-                    >
-                      {p.name}
-                    </button>
-                  ))}
+                  {room.players.map((p) => {
+                    const isOwner = p.id === currentRound.contributedByPlayerId;
+                    const isSelected = selectedFriend === p.id;
+                    const isReveal = room.status === "round_reveal";
+                    const disabled = selectedOption !== null || isReveal;
+
+                    let btnStyle = "bg-black/50 text-zinc-300 border-emerald-500/20 hover:border-emerald-500/40";
+                    if (isReveal) {
+                      if (isOwner) {
+                        btnStyle = "bg-gradient-to-r from-purple-600 to-emerald-500 text-black font-black border-goblinLime shadow-lg shadow-emerald-500/20 scale-105";
+                      } else if (isSelected) {
+                        btnStyle = "bg-rose-950/50 text-rose-300 border-rose-500/50 line-through opacity-60";
+                      } else {
+                        btnStyle = "bg-black/30 text-zinc-600 border-white/5 opacity-50";
+                      }
+                    } else if (isSelected) {
+                      btnStyle = "bg-gradient-to-r from-purple-500 to-emerald-400 text-black font-black border-goblinLime shadow-md";
+                    }
+
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        disabled={disabled}
+                        onClick={() => setSelectedFriend(p.id)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition border flex items-center gap-1.5 ${btnStyle} ${
+                          disabled ? "cursor-default" : "cursor-pointer"
+                        }`}
+                      >
+                        <span>{p.name}</span>
+                        {isReveal && isOwner && (
+                          <span className="px-1.5 py-0.2 rounded-full bg-black/60 text-goblinLime text-[10px] font-black">
+                            ✓ Era suyo
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}

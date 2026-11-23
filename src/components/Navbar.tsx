@@ -18,6 +18,7 @@ import GlobalVolumeControl from "@/components/GlobalVolumeControl";
 import SpotifyStatsDetailModal from "@/components/SpotifyStatsDetailModal";
 import SpotifyConnectModal from "@/components/SpotifyConnectModal";
 import SpotifyStatsWrappedModal from "@/components/SpotifyStatsWrappedModal";
+import GlobalLeaderboardModal from "@/components/GlobalLeaderboardModal";
 
 interface NavbarProps {
   onOpenMiniQuiz?: (topic?: string) => void;
@@ -38,9 +39,20 @@ export default function Navbar({
   const [showStatsDetailModal, setShowStatsDetailModal] = useState(false);
   const [spotifyModalOpen, setSpotifyModalOpen] = useState(false);
   const [spotifyWrappedModalOpen, setSpotifyWrappedModalOpen] = useState(false);
+  const [globalLeaderboardOpen, setGlobalLeaderboardOpen] = useState(false);
+  const [isDevUser, setIsDevUser] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
-  const { isConnected, user, logout } = useSpotifyAuth();
+  const { isConnected: realConnected, user: realUser, logout } = useSpotifyAuth();
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.location.search.includes("dev_user=1")) {
+      setIsDevUser(true);
+    }
+  }, []);
+
+  const isConnected = realConnected || isDevUser;
+  const user = realUser || (isDevUser ? ({ id: "test_dev", displayName: "Javier Tester", images: [] } as any) : null);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -131,16 +143,6 @@ export default function Navbar({
               <span>Ranked</span>
             </Link>
 
-            <Link
-              href="/perfil"
-              className={`whitespace-nowrap transition flex items-center gap-1.5 ${
-                activeRoute === "perfil" ? "text-goblinLime font-bold" : "hover:text-white"
-              }`}
-            >
-              <User className="w-3.5 h-3.5 text-goblinLime" />
-              <span>Mi Perfil</span>
-            </Link>
-
             {onOpenMiniQuiz ? (
               <button
                 onClick={handleQuizClick}
@@ -217,19 +219,17 @@ export default function Navbar({
                       <span>Ver mis Stats de Spotify</span>
                     </button>
 
-                    <Link
-                      href="/ranked"
+                    <button
+                      type="button"
                       onClick={() => {
                         setUserMenuOpen(false);
-                        if (typeof window !== "undefined") {
-                          window.dispatchEvent(new Event("scuinklezam_reset_ranked"));
-                        }
+                        setGlobalLeaderboardOpen(true);
                       }}
-                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-amber-300 hover:bg-amber-950/40 flex items-center gap-2.5 transition block"
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-amber-300 hover:bg-amber-950/40 flex items-center gap-2.5 transition cursor-pointer"
                     >
                       <Trophy className="w-4 h-4 text-amber-400 shrink-0" />
-                      <span>Ver mis Rangos y Clasificación</span>
-                    </Link>
+                      <span>Clasificación Global</span>
+                    </button>
 
                     <div className="pt-1 border-t border-emerald-500/15">
                       <button
@@ -419,6 +419,12 @@ export default function Navbar({
       <SpotifyConnectModal
         isOpen={spotifyModalOpen}
         onClose={() => setSpotifyModalOpen(false)}
+      />
+
+      {/* MODAL CLASIFICACIÓN GLOBAL */}
+      <GlobalLeaderboardModal
+        isOpen={globalLeaderboardOpen}
+        onClose={() => setGlobalLeaderboardOpen(false)}
       />
     </>
   );
