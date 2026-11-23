@@ -3,6 +3,12 @@ import { submitRankedScore, submitArtistRankedScore } from "@/lib/rankedStore";
 import { getSessionUser } from "@/lib/userAuth";
 
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+const NO_CACHE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+  Pragma: "no-cache",
+};
 
 export async function POST(request: Request) {
   try {
@@ -10,7 +16,10 @@ export async function POST(request: Request) {
     const { categoryId, score, guestNickname, guestUserId, categoryName, correctCount, artistName } = body;
 
     if (!categoryId || typeof score !== "number") {
-      return NextResponse.json({ success: false, error: "Datos de partida inválidos" }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: "Datos de partida inválidos" },
+        { status: 400, headers: NO_CACHE_HEADERS }
+      );
     }
 
     // Check if user is authenticated (Email session or Spotify)
@@ -46,14 +55,17 @@ export async function POST(request: Request) {
       );
     }
 
-    return NextResponse.json({
-      ...result,
-      artistResult,
-    });
+    return NextResponse.json(
+      {
+        ...result,
+        artistResult,
+      },
+      { headers: NO_CACHE_HEADERS }
+    );
   } catch (err: any) {
     return NextResponse.json(
       { success: false, error: err?.message || "Error al registrar puntuación ranked." },
-      { status: 500 }
+      { status: 500, headers: NO_CACHE_HEADERS }
     );
   }
 }

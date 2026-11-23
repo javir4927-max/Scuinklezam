@@ -185,54 +185,39 @@ export async function submitRankedScore(
   rank: number;
   tier: RankedTier;
   isPersonalBest: boolean;
+  persistedInRedis: boolean;
+  redisError?: string;
 }> {
   const tier = calculateTier(score);
+  let isPersonalBest = true;
+  let bestScore = score;
+  let persistedInRedis = false;
+  let redisError: string | undefined;
 
-  // In-memory update
-  if (!memoryScores.has(categoryId)) {
-    memoryScores.set(categoryId, new Map());
-  }
-  const catMap = memoryScores.get(categoryId)!;
-  const current = catMap.get(userId);
-  const isPersonalBest = !current || score > current.score;
-  const bestScore = isPersonalBest ? score : current.score;
-
-  catMap.set(userId, { score: bestScore, nickname, avatarUrl });
-
-  // Update in-memory user stats
-  const mStats = memoryStats.get(userId) || { totalPlays: 0, totalPoints: 0 };
-  mStats.totalPlays += 1;
-  mStats.totalPoints += score;
-  memoryStats.set(userId, mStats);
-
-  // Update in-memory history
-  const mHist = memoryHistory.get(userId) || [];
-  mHist.unshift({
-    categoryId,
-    categoryName: categoryName || categoryId,
-    score,
-    correctCount: correctCount ?? Math.round((score / 100)),
-    timestamp: Date.now(),
-  });
-  if (mHist.length > 20) mHist.pop();
-  memoryHistory.set(userId, mHist);
-
-  // Redis updates
+  // 1. If Redis is available, query real persistent record first to resist cold starts
   if (redis) {
     try {
+      const catKey = `scuinklezam:ranked:${categoryId}`;
+      const prevCatScoreRaw = await redis.zscore(catKey, userId);
+      const prevCatScore = Number(prevCatScoreRaw || 0);
+
+      isPersonalBest = score > prevCatScore;
+      bestScore = Math.max(prevCatScore, score);
+
       // 1. Increment real play counts
       await redis.incr(`scuinklezam:stats:plays:${categoryId}`);
       await redis.incr(`scuinklezam:stats:plays:global`);
 
       // 2. Update category leaderboard (only best score per user in sorted set)
-      await redis.zadd(`scuinklezam:ranked:${categoryId}`, {
+      await redis.zadd(catKey, {
         score: bestScore,
         member: userId,
       });
 
       // 2.5 Query existing global record to prevent downgrading global personal best
-      const prevGlobal = await redis.zscore("scuinklezam:ranked:global", userId);
-      const effectiveGlobalBest = Math.max(Number(prevGlobal || 0), bestScore);
+      const prevGlobalRaw = await redis.zscore("scuinklezam:ranked:global", userId);
+      const prevGlobal = Number(prevGlobalRaw || 0);
+      const effectiveGlobalBest = Math.max(prevGlobal, bestScore);
 
       // 3. Save user profile metadata for leaderboard display
       await redis.set(
@@ -262,23 +247,55 @@ export async function submitRankedScore(
           categoryId,
           categoryName: categoryName || categoryId,
           score,
-          correctCount: correctCount ?? Math.round((score / 100)),
+          correctCount: correctCount ?? Math.round(score / 100),
           timestamp: Date.now(),
         })
       );
       await redis.ltrim(`scuinklezam:user_history:${userId}`, 0, 19);
 
-      // 7. Global score leaderboard (only if higher than previous global record)
-      if (prevGlobal === null || prevGlobal === undefined || bestScore > Number(prevGlobal)) {
-        await redis.zadd(`scuinklezam:ranked:global`, {
-          score: bestScore,
-          member: userId,
-        });
-      }
-    } catch (err) {
+      // 7. Global score leaderboard (record max)
+      await redis.zadd("scuinklezam:ranked:global", {
+        score: effectiveGlobalBest,
+        member: userId,
+      });
+
+      persistedInRedis = true;
+    } catch (err: any) {
+      redisError = err?.message || String(err);
       console.warn("[submitRankedScore] Redis update error:", err);
     }
   }
+
+  // In-memory fallback update
+  if (!memoryScores.has(categoryId)) {
+    memoryScores.set(categoryId, new Map());
+  }
+  const catMap = memoryScores.get(categoryId)!;
+  const current = catMap.get(userId);
+  if (!redis) {
+    isPersonalBest = !current || score > current.score;
+    bestScore = isPersonalBest ? score : (current?.score ?? score);
+  }
+
+  catMap.set(userId, { score: bestScore, nickname, avatarUrl });
+
+  // Update in-memory user stats
+  const mStats = memoryStats.get(userId) || { totalPlays: 0, totalPoints: 0 };
+  mStats.totalPlays += 1;
+  mStats.totalPoints += score;
+  memoryStats.set(userId, mStats);
+
+  // Update in-memory history
+  const mHist = memoryHistory.get(userId) || [];
+  mHist.unshift({
+    categoryId,
+    categoryName: categoryName || categoryId,
+    score,
+    correctCount: correctCount ?? Math.round(score / 100),
+    timestamp: Date.now(),
+  });
+  if (mHist.length > 20) mHist.pop();
+  memoryHistory.set(userId, mHist);
 
   // Calculate real rank
   const leaderboard = await getCategoryLeaderboard(categoryId, userId);
@@ -291,6 +308,8 @@ export async function submitRankedScore(
     rank,
     tier,
     isPersonalBest,
+    persistedInRedis,
+    redisError,
   };
 }
 
@@ -449,9 +468,71 @@ export async function submitArtistRankedScore(
   bestScore: number;
   quizzesPlayed: number;
   userRank: number | null;
+  persistedInRedis: boolean;
+  redisError?: string;
 }> {
   const cleanName = artistName.trim();
   const slug = toArtistSlug(cleanName);
+
+  let newTotalPoints = score;
+  let finalBestScore = score;
+  let newQuizzesPlayed = 1;
+  let userRank: number | null = null;
+  let persistedInRedis = false;
+  let redisError: string | undefined;
+
+  if (redis) {
+    try {
+      const statsKey = `scuinklezam:artist_user_stats:${slug}:${userId}`;
+      const zsetKey = `scuinklezam:ranked:artist:${slug}`;
+
+      // 1. Increment cumulative points and quizzes in Redis hash
+      const updatedPoints = await redis.hincrby(statsKey, "totalPoints", score);
+      const updatedQuizzes = await redis.hincrby(statsKey, "quizzesPlayed", 1);
+      newTotalPoints = Number(updatedPoints || score);
+      newQuizzesPlayed = Number(updatedQuizzes || 1);
+
+      // 2. Read previous best score and calculate final best score
+      const prevBestRaw = await redis.hget<string>(statsKey, "bestScore");
+      const prevBest = Number(prevBestRaw || 0);
+      finalBestScore = Math.max(prevBest, score);
+
+      await redis.hset(statsKey, {
+        bestScore: finalBestScore,
+        nickname,
+        avatarUrl,
+        lastPlayed: Date.now(),
+      });
+
+      // 3. Update artist leaderboard sorted set with RECORD (finalBestScore), NOT cumulative totalPoints!
+      await redis.zadd(zsetKey, {
+        score: finalBestScore,
+        member: userId,
+      });
+
+      // 4. Save user profile for global lookups
+      await redis.set(
+        `scuinklezam:user_profile:${userId}`,
+        JSON.stringify({
+          userId,
+          nickname,
+          avatarUrl,
+          lastPlayed: Date.now(),
+        })
+      );
+
+      // 5. Get user's updated rank in artist sorted set (0-indexed descending)
+      const rankIdx = await redis.zrevrank(zsetKey, userId);
+      if (rankIdx !== null && rankIdx !== undefined) {
+        userRank = rankIdx + 1;
+      }
+
+      persistedInRedis = true;
+    } catch (err: any) {
+      redisError = err?.message || String(err);
+      console.warn("[submitArtistRankedScore] Redis error:", err);
+    }
+  }
 
   // In-memory update
   if (!memoryArtistStats.has(slug)) {
@@ -466,78 +547,24 @@ export async function submitArtistRankedScore(
     avatarUrl,
   };
 
-  const newTotalPoints = current.totalPoints + score;
-  const newBestScore = Math.max(current.bestScore, score);
-  const newQuizzesPlayed = current.quizzesPlayed + 1;
+  if (!redis) {
+    newTotalPoints = current.totalPoints + score;
+    finalBestScore = Math.max(current.bestScore, score);
+    newQuizzesPlayed = current.quizzesPlayed + 1;
+  }
 
   artistMap.set(userId, {
     totalPoints: newTotalPoints,
-    bestScore: newBestScore,
+    bestScore: finalBestScore,
     quizzesPlayed: newQuizzesPlayed,
     nickname,
     avatarUrl,
   });
 
-  let userRank: number | null = null;
-
-  if (redis) {
-    try {
-      const statsKey = `scuinklezam:artist_user_stats:${slug}:${userId}`;
-      const zsetKey = `scuinklezam:ranked:artist:${slug}`;
-
-      // 1. Increment cumulative points and quizzes in Redis hash
-      await redis.hincrby(statsKey, "totalPoints", score);
-      await redis.hincrby(statsKey, "quizzesPlayed", 1);
-
-      // 2. Update best score if higher
-      const prevBestRaw = await redis.hget<string>(statsKey, "bestScore");
-      const prevBest = Number(prevBestRaw || 0);
-      if (score > prevBest) {
-        await redis.hset(statsKey, { bestScore: score });
-      }
-
-      // 3. Update user metadata in hash
-      await redis.hset(statsKey, {
-        nickname,
-        avatarUrl,
-        lastPlayed: Date.now(),
-      });
-
-      // 4. Read updated total points from hash to ensure consistency
-      const updatedPointsRaw = await redis.hget<string>(statsKey, "totalPoints");
-      const updatedTotalPoints = Number(updatedPointsRaw || newTotalPoints);
-
-      // 5. Update artist leaderboard sorted set with cumulative totalPoints
-      await redis.zadd(zsetKey, {
-        score: updatedTotalPoints,
-        member: userId,
-      });
-
-      // 6. Save user profile for global lookups
-      await redis.set(
-        `scuinklezam:user_profile:${userId}`,
-        JSON.stringify({
-          userId,
-          nickname,
-          avatarUrl,
-          lastPlayed: Date.now(),
-        })
-      );
-
-      // 7. Get user's updated rank in artist sorted set (0-indexed descending)
-      const rankIdx = await redis.zrevrank(zsetKey, userId);
-      if (rankIdx !== null && rankIdx !== undefined) {
-        userRank = rankIdx + 1;
-      }
-    } catch (err) {
-      console.warn("[submitArtistRankedScore] Redis error:", err);
-    }
-  }
-
   if (userRank === null) {
-    // In-memory rank calculation
+    // In-memory rank calculation sorted by bestScore
     const allPlayers = Array.from(artistMap.entries()).sort(
-      (a, b) => b[1].totalPoints - a[1].totalPoints
+      (a, b) => b[1].bestScore - a[1].bestScore || b[1].totalPoints - a[1].totalPoints
     );
     const idx = allPlayers.findIndex(([uid]) => uid === userId);
     userRank = idx !== -1 ? idx + 1 : 1;
@@ -546,9 +573,11 @@ export async function submitArtistRankedScore(
   return {
     success: true,
     totalPoints: newTotalPoints,
-    bestScore: newBestScore,
+    bestScore: finalBestScore,
     quizzesPlayed: newQuizzesPlayed,
     userRank,
+    persistedInRedis,
+    redisError,
   };
 }
 
@@ -576,6 +605,8 @@ export async function getArtistProfileAndLeaderboard(
     nickname: string;
     avatarUrl: string;
     totalPoints: number;
+    bestScore: number;
+    quizzesPlayed: number;
     isCurrentUser: boolean;
   }>;
   relatedArtists: Array<{
@@ -599,6 +630,8 @@ export async function getArtistProfileAndLeaderboard(
     nickname: string;
     avatarUrl: string;
     totalPoints: number;
+    bestScore: number;
+    quizzesPlayed: number;
     isCurrentUser: boolean;
   }> = [];
 
@@ -648,15 +681,28 @@ export async function getArtistProfileAndLeaderboard(
           nick = nick || `Jugador #${leaderboard.length + 1}`;
           av = av || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(nick)}&backgroundColor=0B1710`;
 
+          // Auto-migrate legacy accumulated scores in Redis sorted set
+          const entryBest = Number(uStats?.bestScore || 0) || Math.min(1000, mScore);
+          if (mScore > 1000 || mScore !== entryBest) {
+            redis.zadd(zsetKey, { score: entryBest, member: mId }).catch(() => {});
+          }
+
           leaderboard.push({
             rank: leaderboard.length + 1,
             userId: mId,
             nickname: nick,
             avatarUrl: av,
-            totalPoints: mScore,
+            totalPoints: Number(uStats?.totalPoints || mScore),
+            bestScore: entryBest,
+            quizzesPlayed: Number(uStats?.quizzesPlayed || 1),
             isCurrentUser: !!userId && mId === userId,
           });
         }
+
+        leaderboard.sort((a, b) => b.bestScore - a.bestScore || b.totalPoints - a.totalPoints);
+        leaderboard.forEach((entry, idx) => {
+          entry.rank = idx + 1;
+        });
       }
     } catch (err) {
       console.warn("[getArtistProfileAndLeaderboard] Redis read error:", err);
@@ -668,7 +714,7 @@ export async function getArtistProfileAndLeaderboard(
     const artistMap = memoryArtistStats.get(slug)!;
     totalPlayers = artistMap.size;
     const sorted = Array.from(artistMap.entries()).sort(
-      (a, b) => b[1].totalPoints - a[1].totalPoints
+      (a, b) => b[1].bestScore - a[1].bestScore || b[1].totalPoints - a[1].totalPoints
     );
 
     sorted.slice(0, 50).forEach(([uid, val], idx) => {
@@ -678,6 +724,8 @@ export async function getArtistProfileAndLeaderboard(
         nickname: val.nickname,
         avatarUrl: val.avatarUrl,
         totalPoints: val.totalPoints,
+        bestScore: val.bestScore,
+        quizzesPlayed: val.quizzesPlayed,
         isCurrentUser: !!userId && uid === userId,
       });
     });

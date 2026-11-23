@@ -81,13 +81,13 @@ export async function resolveAudioStream(
     return null;
   };
 
-  // Helper to query iTunes by term and country (2500ms timeout)
+  // Helper to query iTunes by term and country (2200ms timeout)
   const queryItunes = async (term: string, country: "ES" | "US"): Promise<AudioStreamResolution | null> => {
     try {
       const url = `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&media=music&entity=song&country=${country}&limit=10`;
       const res = await fetch(url, {
         headers: { "User-Agent": "Scuinklezam/1.0" },
-        signal: AbortSignal.timeout(2500),
+        signal: AbortSignal.timeout(2200),
       });
       if (res.ok) {
         const data = await res.json();
@@ -100,13 +100,13 @@ export async function resolveAudioStream(
     return null;
   };
 
-  // Helper to query Deezer with cache: "no-store" (2500ms timeout)
+  // Helper to query Deezer with cache: "no-store" (2200ms timeout)
   const queryDeezer = async (dQuery: string, limit = 8): Promise<AudioStreamResolution | null> => {
     try {
       const dUrl = `https://api.deezer.com/search/track?q=${encodeURIComponent(dQuery)}&limit=${limit}`;
       const dRes = await fetch(dUrl, {
         headers: { "User-Agent": "Scuinklezam/1.0" },
-        signal: AbortSignal.timeout(2500),
+        signal: AbortSignal.timeout(2200),
         cache: "no-store",
       });
       if (dRes.ok) {
@@ -122,46 +122,34 @@ export async function resolveAudioStream(
 
   const primaryQuery = `${cleanTitle} ${mainArtist}`.trim();
 
-  // 1. iTunes ES Search
-  let result = await queryItunes(primaryQuery, "ES");
-  if (result) return result;
+  // Wave 1: Fast parallel check (iTunes ES, iTunes US, Deezer)
+  const [esRes, usRes, dzRes] = await Promise.allSettled([
+    queryItunes(primaryQuery, "ES"),
+    queryItunes(primaryQuery, "US"),
+    queryDeezer(primaryQuery, 8),
+  ]);
 
-  // If first query didn't find anything and a collaborator exists, try with collaborator in ES
+  if (esRes.status === "fulfilled" && esRes.value) return esRes.value;
+  if (usRes.status === "fulfilled" && usRes.value) return usRes.value;
+  if (dzRes.status === "fulfilled" && dzRes.value) return dzRes.value;
+
+  // Wave 2: Deep search with exact artist/track and collaborators
+  const wave2Promises: Promise<AudioStreamResolution | null>[] = [
+    queryDeezer(`artist:"${mainArtist}" track:"${cleanTitle}"`, 6),
+  ];
+
   if (artists.length > 1) {
     const secondaryQuery = `${cleanTitle} ${artists[1]}`.trim();
-    result = await queryItunes(secondaryQuery, "ES");
-    if (result) return result;
+    wave2Promises.push(queryItunes(secondaryQuery, "ES"));
+    wave2Promises.push(queryItunes(secondaryQuery, "US"));
+    wave2Promises.push(queryDeezer(`artist:"${artists[1]}" track:"${cleanTitle}"`, 6));
   }
 
-  // 2. iTunes US Search (essential for US / underground hip-hop like MF DOOM / Madvillain)
-  result = await queryItunes(primaryQuery, "US");
-  if (result) return result;
-
-  if (artists.length > 1) {
-    const secondaryQuery = `${cleanTitle} ${artists[1]}`.trim();
-    result = await queryItunes(secondaryQuery, "US");
-    if (result) return result;
-  }
-
-  if (artists.length > 2) {
-    const thirdQuery = `${cleanTitle} ${artists[2]}`.trim();
-    result = await queryItunes(thirdQuery, "US");
-    if (result) return result;
-  }
-
-  // 3. Deezer API Fallback with cache: "no-store"
-  // 3a. Direct query
-  result = await queryDeezer(primaryQuery, 8);
-  if (result) return result;
-
-  // 3b. Advanced syntax: artist:"..." track:"..."
-  result = await queryDeezer(`artist:"${mainArtist}" track:"${cleanTitle}"`, 6);
-  if (result) return result;
-
-  // 3c. Try collaborator on Deezer
-  if (artists.length > 1) {
-    result = await queryDeezer(`artist:"${artists[1]}" track:"${cleanTitle}"`, 6);
-    if (result) return result;
+  const wave2Results = await Promise.allSettled(wave2Promises);
+  for (const r of wave2Results) {
+    if (r.status === "fulfilled" && r.value) {
+      return r.value;
+    }
   }
 
   // If no exact match found, reject audio to prevent playing the wrong song

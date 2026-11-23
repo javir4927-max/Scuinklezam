@@ -492,6 +492,7 @@ function PlayArenaContent() {
   const nextRoundTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastLoadedTrackRef = useRef<string>("");
   const stallTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isFetchingRoomRef = useRef<boolean>(false);
   const [isStartingGame, setIsStartingGame] = useState<boolean>(false);
   const [, startTransition] = useTransition();
 
@@ -924,12 +925,16 @@ function PlayArenaContent() {
     }
   }, [initialRoomQuery, createQuery, artistQuery, playerId]);
 
-  // 3. Real-time Room Polling Engine (Every 1000ms with strict anti-cache)
+  // 3. Real-time Room Polling Engine (Adaptive polling with strict anti-cache)
   useEffect(() => {
     if (!roomCode) return;
 
     let isMounted = true;
+    let timerId: NodeJS.Timeout | null = null;
+
     const fetchRoom = async () => {
+      if (isFetchingRoomRef.current) return;
+      isFetchingRoomRef.current = true;
       try {
         const res = await fetch(`/api/rooms/${roomCode}?playerId=${playerId}&t=${Date.now()}`, {
           cache: "no-store",
@@ -985,11 +990,6 @@ function PlayArenaContent() {
             return;
           }
 
-          // If current is playing, but incoming is lobby (without an explicit reset), ignore
-          if (isCurrentActive && currentRoom.status === "lobby") {
-            return;
-          }
-
           if (!stillInRoom && currentRoom.status === "lobby" && !hasLeftRoomRef.current) {
             // Player temporarily missing from players list (e.g. Redis replication lag).
             // Do NOT kick: automatically re-send background join PATCH to re-sync
@@ -1021,14 +1021,21 @@ function PlayArenaContent() {
         }
       } catch (err) {
         // network retry
+      } finally {
+        isFetchingRoomRef.current = false;
+        if (isMounted) {
+          // Adaptive polling: 1500ms in lobby or finished, 1000ms during active match
+          const currentStatus = roomStatusRef.current;
+          const pollDelay = (currentStatus === "lobby" || currentStatus === "finished") ? 1500 : 1000;
+          timerId = setTimeout(fetchRoom, pollDelay);
+        }
       }
     };
 
     fetchRoom();
-    const interval = setInterval(fetchRoom, 1000);
     return () => {
       isMounted = false;
-      clearInterval(interval);
+      if (timerId) clearTimeout(timerId);
     };
   }, [roomCode, playerId]);
 
@@ -1739,10 +1746,17 @@ function PlayArenaContent() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
       });
-      const data = await res.json();
+      const resText = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(resText);
+      } catch {
+        setPlaylistImportError("Respuesta no válida del servidor.");
+        return;
+      }
 
       if (!res.ok || !data.success || !data.tracks || data.tracks.length === 0) {
-        setPlaylistImportError(data.error || "No se pudieron obtener canciones válidas de esta playlist.");
+        setPlaylistImportError(data.error || "No se pudieron obtener canciones válidas de este enlace.");
         return;
       }
 
@@ -1756,6 +1770,7 @@ function PlayArenaContent() {
             id: data.id,
             name: data.name,
             imageUrl: data.imageUrl,
+            type: data.type,
             trackCount: data.trackCount,
             tracks: data.tracks,
           },
@@ -2992,7 +3007,7 @@ function PlayArenaContent() {
                           onKeyDown={(e) => {
                             if (e.key === "Enter") handleImportPlaylist();
                           }}
-                          placeholder="Pega enlace de Playlist (ej. https://open.spotify.com/playlist/...)"
+                          placeholder="Pega enlace de Playlist o Álbum de Spotify (open.spotify.com/...)"
                           className="flex-1 px-3.5 py-2 rounded-xl bg-black/60 border border-emerald-500/30 text-white text-xs focus:outline-none focus:border-goblinLime placeholder:text-zinc-500"
                         />
                         <button

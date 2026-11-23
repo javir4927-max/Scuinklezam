@@ -24,6 +24,7 @@ import {
   Disc3,
   Loader2,
   ArrowRight,
+  AlertTriangle,
 } from "lucide-react";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
@@ -101,6 +102,8 @@ export default function RankedArenaPage() {
       nickname: string;
       avatarUrl: string;
       totalPoints: number;
+      bestScore?: number;
+      quizzesPlayed?: number;
       isCurrentUser: boolean;
     }>;
     relatedArtists: Array<{
@@ -139,8 +142,14 @@ export default function RankedArenaPage() {
     setShowLiveDropdown(false);
 
     try {
-      const guestId = user?.id || localStorage.getItem("scuinklezam_ranked_uid") || "";
-      const res = await fetch(`/api/ranked/artist?name=${encodeURIComponent(clean)}&userId=${guestId}`);
+      const guestId = user?.id || (typeof window !== "undefined" ? localStorage.getItem("scuinklezam_ranked_uid") : "") || "";
+      const res = await fetch(
+        `/api/ranked/artist?name=${encodeURIComponent(clean)}&userId=${guestId}&_t=${Date.now()}`,
+        {
+          cache: "no-store",
+          headers: { "Cache-Control": "no-cache" },
+        }
+      );
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
@@ -184,11 +193,37 @@ export default function RankedArenaPage() {
     rank: number;
     isPersonalBest: boolean;
   } | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const pendingSubmitRef = useRef<{
+    categoryId: string;
+    categoryName?: string;
+    artistName?: string;
+    score: number;
+    correctCount: number;
+    guestUserId: string;
+    guestNickname: string;
+  } | null>(null);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const advanceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const scorePopupTimerRef = useRef<NodeJS.Timeout | null>(null);
   const answersHistoryRef = useRef<AnswerHistoryItem[]>([]);
+
+  const timeLeftRef = useRef<number>(ROUND_DURATION_SEC);
+  const scoreRef = useRef<number>(0);
+  const currentIdxRef = useRef<number>(0);
+  const isHandlingAnswerRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    timeLeftRef.current = timeLeft;
+  }, [timeLeft]);
+  useEffect(() => {
+    scoreRef.current = score;
+  }, [score]);
+  useEffect(() => {
+    currentIdxRef.current = currentIdx;
+  }, [currentIdx]);
 
   // Listen for navbar "scuinklezam_reset_ranked" event to reset all game and sheet states
   useEffect(() => {
@@ -254,9 +289,14 @@ export default function RankedArenaPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Auto-open artist sheet if ?artist=... or select tab/search if ?theme=...
+  // Auto-open artist sheet if ?artist=... or select tab/search if ?theme=..., and ensure ranked UID exists
   useEffect(() => {
     if (typeof window !== "undefined") {
+      let uid = localStorage.getItem("scuinklezam_ranked_uid");
+      if (!uid) {
+        uid = `guest_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        localStorage.setItem("scuinklezam_ranked_uid", uid);
+      }
       const params = new URLSearchParams(window.location.search);
       const artistParam = params.get("artist");
       const themeParam = params.get("theme");
@@ -509,12 +549,74 @@ export default function RankedArenaPage() {
     }
   };
 
+  // Submit run helper with retry support
+  const submitRankedRun = async (payload: {
+    categoryId: string;
+    categoryName?: string;
+    artistName?: string;
+    score: number;
+    correctCount: number;
+    guestUserId: string;
+    guestNickname: string;
+  }) => {
+    setIsSubmitting(true);
+    setSubmitError(null);
+    pendingSubmitRef.current = payload;
+    const finalScore = payload.score;
+    const tier = calculateTier(finalScore);
+
+    try {
+      const res = await fetch("/api/ranked/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Error al conectar con el servidor.");
+      }
+      setSummaryData({
+        finalScore,
+        tier,
+        rank: data.rank || 1,
+        isPersonalBest: data.isPersonalBest ?? true,
+      });
+      pendingSubmitRef.current = null;
+      loadInitialData();
+
+      if (payload.artistName) {
+        fetch(`/api/ranked/artist?name=${encodeURIComponent(payload.artistName)}&userId=${payload.guestUserId}&_t=${Date.now()}`)
+          .then((r) => r.json())
+          .then((sheetData) => {
+            if (sheetData.success) {
+              setArtistSheetData(sheetData);
+            }
+          })
+          .catch(() => {});
+      }
+    } catch (err: any) {
+      console.error("[submitRankedRun] Error submitting ranked run:", err);
+      setSubmitError(err?.message || "No se pudo guardar la puntuación. Comprueba tu conexión.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleRetrySubmit = () => {
+    if (pendingSubmitRef.current) {
+      submitRankedRun(pendingSubmitRef.current);
+    }
+  };
+
   // Handle Answer in Ranked Run (Max 100 pts per question)
   const handleAnswer = useCallback(
     async (idx: number) => {
-      if (gameState !== "playing" || !questions[currentIdx] || !activeCategory) return;
+      const qIdx = currentIdxRef.current;
+      const currentQ = questions[qIdx];
+      if (gameState !== "playing" || !currentQ || !activeCategory) return;
+      if (isHandlingAnswerRef.current) return;
+      isHandlingAnswerRef.current = true;
 
-      const currentQ = questions[currentIdx];
       setGameState("reveal");
       setAnsweredIdx(idx);
 
@@ -524,7 +626,8 @@ export default function RankedArenaPage() {
         : idx === currentQ.correctIndex;
 
       // Exponential formula points (max 100 per question, max 1000 in 10 questions)
-      const elapsedSec = Math.max(0, ROUND_DURATION_SEC - timeLeft);
+      const currentSec = timeLeftRef.current;
+      const elapsedSec = Math.max(0, ROUND_DURATION_SEC - currentSec);
       const roundPoints = calculateRoundPoints(isCorrect, elapsedSec);
 
       if (isCorrect) {
@@ -560,19 +663,20 @@ export default function RankedArenaPage() {
       }, 1800);
 
       // Preload next audio while revealing
-      if (currentIdx + 1 < questions.length) {
-        audioPlayer.preloadNext(questions[currentIdx + 1]?.correctTrack?.previewUrl);
+      if (qIdx + 1 < questions.length) {
+        audioPlayer.preloadNext(questions[qIdx + 1]?.correctTrack?.previewUrl);
       }
 
-      // Advance after 4.5 seconds (REVEAL_DURATION_MS) for relaxed game pace
+      // Advance after 2.5 seconds for snappy game pace
       advanceTimerRef.current = setTimeout(async () => {
         setScorePopup(null);
-        if (currentIdx + 1 < questions.length) {
-          const nextIdx = currentIdx + 1;
+        if (qIdx + 1 < questions.length) {
+          const nextIdx = qIdx + 1;
           setCurrentIdx(nextIdx);
           setAnsweredIdx(null);
           setGameState("playing");
           setTimeLeft(ROUND_DURATION_SEC);
+          isHandlingAnswerRef.current = false;
 
           const nextTrack = questions[nextIdx].correctTrack;
           if (nextTrack?.previewUrl) {
@@ -585,64 +689,30 @@ export default function RankedArenaPage() {
           // Finished 10 Questions Ranked Run!
           audioPlayer.stop();
           setGameState("summary");
+          isHandlingAnswerRef.current = false;
 
-          const finalScore = score + roundPoints;
-          const tier = calculateTier(finalScore);
-
-          try {
-            const guestId = user?.id || localStorage.getItem("scuinklezam_ranked_uid") || `guest_${Date.now()}`;
+          const finalScore = scoreRef.current + roundPoints;
+          const guestId = user?.id || (typeof window !== "undefined" ? localStorage.getItem("scuinklezam_ranked_uid") : "") || `guest_${Date.now()}`;
+          if (typeof window !== "undefined") {
             localStorage.setItem("scuinklezam_ranked_uid", guestId);
-
-            const res = await fetch("/api/ranked/submit", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                categoryId: activeCategory.id,
-                categoryName: activeCategory.name,
-                artistName: activeCategory.kind === "artist" ? (activeCategory.query || activeCategory.name) : undefined,
-                score: finalScore,
-                correctCount: answersHistoryRef.current.filter((a) => a.isCorrect).length,
-                guestUserId: guestId,
-                guestNickname: user?.nickname || localStorage.getItem("scuinklezam_player_name") || "Jugador Ranked",
-              }),
-            });
-            const data = await res.json();
-            setSummaryData({
-              finalScore,
-              tier,
-              rank: data.rank || 1,
-              isPersonalBest: data.isPersonalBest ?? true,
-            });
-            // Refresh category play counts
-            loadInitialData();
-
-            // If this was an artist run, refresh artist sheet data in background
-            if (activeCategory.kind === "artist") {
-              const artistQueryName = activeCategory.query || activeCategory.name;
-              fetch(`/api/ranked/artist?name=${encodeURIComponent(artistQueryName)}&userId=${guestId}`)
-                .then((r) => r.json())
-                .then((sheetData) => {
-                  if (sheetData.success) {
-                    setArtistSheetData(sheetData);
-                  }
-                })
-                .catch(() => {});
-            }
-          } catch {
-            setSummaryData({
-              finalScore,
-              tier,
-              rank: 1,
-              isPersonalBest: true,
-            });
           }
+
+          submitRankedRun({
+            categoryId: activeCategory.id,
+            categoryName: activeCategory.name,
+            artistName: activeCategory.kind === "artist" ? (activeCategory.query || activeCategory.name) : undefined,
+            score: finalScore,
+            correctCount: answersHistoryRef.current.filter((a) => a.isCorrect).length,
+            guestUserId: guestId,
+            guestNickname: user?.nickname || (typeof window !== "undefined" ? localStorage.getItem("scuinklezam_player_name") : "") || "Jugador Ranked",
+          });
         }
       }, 2500);
     },
-    [gameState, questions, currentIdx, activeCategory, streak, timeLeft, score, user]
+    [gameState, questions, activeCategory, user]
   );
 
-  // 15s Timer
+  // 15s Timer decoupled from answer handler
   useEffect(() => {
     if (gameState !== "playing") {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -650,20 +720,20 @@ export default function RankedArenaPage() {
     }
 
     timerRef.current = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          if (timerRef.current) clearInterval(timerRef.current);
-          handleAnswer(-1); // Timeout as incorrect
-          return 0;
-        }
-        return prev - 1;
-      });
+      setTimeLeft((prev) => (prev > 0 ? prev - 1 : 0));
     }, 1000);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [gameState, currentIdx, handleAnswer]);
+  }, [gameState, currentIdx]);
+
+  // Timeout trigger when timeLeft reaches 0
+  useEffect(() => {
+    if (gameState === "playing" && timeLeft === 0 && !isHandlingAnswerRef.current) {
+      handleAnswer(-1);
+    }
+  }, [gameState, timeLeft, handleAnswer]);
 
   // Keyboard shortcuts [1, 2, 3, 4] for answering during gameState === "playing"
   useEffect(() => {
@@ -913,6 +983,42 @@ export default function RankedArenaPage() {
             {/* ========================================================
                 PANTALLA DE RESULTADOS OFICIAL (2 COLUMNAS)
                ======================================================== */}
+            {/* Loading / Saving spinner when summary is computing */}
+            {gameState === "summary" && !summaryData && !submitError && (
+              <div className="max-w-md mx-auto py-24 text-center space-y-4 animate-fadeIn">
+                <div className="w-12 h-12 border-4 border-goblinLime border-t-transparent rounded-full animate-spin mx-auto" />
+                <div className="text-white font-extrabold text-base">Guardando tu récord...</div>
+                <div className="text-xs text-zinc-400">Sincronizando puntuación con el ranking oficial</div>
+              </div>
+            )}
+
+            {/* Error box with retry button */}
+            {gameState === "summary" && !summaryData && submitError && (
+              <div className="max-w-md mx-auto p-6 rounded-3xl bg-rose-950/80 border border-rose-500/40 text-center space-y-4 shadow-2xl animate-scaleUp">
+                <AlertTriangle className="w-10 h-10 text-rose-400 mx-auto" />
+                <h3 className="font-display font-black text-white text-lg">Error al registrar tu récord</h3>
+                <p className="text-xs text-rose-200">{submitError}</p>
+                <div className="flex items-center justify-center gap-3 pt-2">
+                  <button
+                    onClick={() => handleRetrySubmit()}
+                    disabled={isSubmitting}
+                    className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-goblinPrimary to-goblinLime text-black font-extrabold text-xs shadow hover:opacity-95 transition cursor-pointer"
+                  >
+                    {isSubmitting ? "Reintentando..." : "Reintentar guardar"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setGameState("idle");
+                      setActiveCategory(null);
+                    }}
+                    className="px-4 py-2.5 rounded-xl bg-black/60 text-zinc-400 hover:text-white font-bold text-xs border border-white/10 transition cursor-pointer"
+                  >
+                    Volver al menú
+                  </button>
+                </div>
+              </div>
+            )}
+
             {gameState === "summary" && summaryData && (
               <div className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-12 gap-6 animate-fade-in">
                 {/* Columna Izquierda: Tarjeta Grande Vertical + Botones */}
@@ -1206,10 +1312,10 @@ export default function RankedArenaPage() {
 
                       <div className="p-1.5 sm:p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center min-w-0">
                         <span className="text-[8px] sm:text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5 truncate">
-                          PUNTOS
+                          RÉCORD
                         </span>
                         <div className="text-[11px] sm:text-xl font-black text-goblinLime truncate">
-                          {artistSheetData.userStats.totalPoints.toLocaleString()} <span className="text-[9px] sm:text-xs text-zinc-400 font-normal">pts</span>
+                          {artistSheetData.userStats.bestScore} <span className="text-[9px] sm:text-xs text-zinc-400 font-normal">/ 1k</span>
                         </div>
                       </div>
 
@@ -1224,10 +1330,10 @@ export default function RankedArenaPage() {
 
                       <div className="p-1.5 sm:p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center min-w-0">
                         <span className="text-[8px] sm:text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5 truncate">
-                          MEJOR
+                          ACUMULADO
                         </span>
                         <div className="text-[11px] sm:text-xl font-black text-emerald-400 truncate">
-                          {artistSheetData.userStats.bestScore} <span className="text-[9px] sm:text-xs text-zinc-400 font-normal">/ 1k</span>
+                          {artistSheetData.userStats.totalPoints.toLocaleString()} <span className="text-[9px] sm:text-xs text-zinc-400 font-normal">pts</span>
                         </div>
                       </div>
                     </div>
@@ -1310,7 +1416,7 @@ export default function RankedArenaPage() {
                             </div>
                             <div className="w-full text-center mb-2 px-0.5">
                               <div className="text-[11px] sm:text-xs font-bold text-white truncate">{top2?.nickname || "Vacante"}</div>
-                              <div className="text-[9px] sm:text-[10px] font-mono text-zinc-300 font-bold">{top2 ? `${top2.totalPoints} pts` : "-"}</div>
+                              <div className="text-[9px] sm:text-[10px] font-mono text-zinc-300 font-bold">{top2 ? `${top2.bestScore ?? top2.totalPoints} pts` : "-"}</div>
                             </div>
                             <div className="w-full h-20 sm:h-28 bg-gradient-to-t from-slate-900/90 via-slate-700/80 to-slate-400/70 border-t-2 border-slate-300 rounded-t-2xl flex items-center justify-center shadow-[0_0_20px_rgba(148,163,184,0.25)] ring-1 ring-slate-400/30">
                               <span className="text-slate-300 font-black text-xs sm:text-sm tracking-wider">#2</span>
@@ -1332,7 +1438,7 @@ export default function RankedArenaPage() {
                             </div>
                             <div className="w-full text-center mb-2 px-0.5">
                               <div className="text-xs sm:text-sm font-black text-amber-200 truncate">{top1?.nickname || "Vacante"}</div>
-                              <div className="text-[10px] sm:text-xs font-mono text-amber-300 font-extrabold">{top1 ? `${top1.totalPoints} pts` : "-"}</div>
+                              <div className="text-[10px] sm:text-xs font-mono text-amber-300 font-extrabold">{top1 ? `${top1.bestScore ?? top1.totalPoints} pts` : "-"}</div>
                             </div>
                             <div className="w-full h-28 sm:h-36 bg-gradient-to-t from-amber-950/90 via-amber-700/80 to-amber-500/70 border-t-2 border-amber-300 rounded-t-2xl flex items-center justify-center shadow-[0_0_30px_rgba(245,158,11,0.35)] ring-1 ring-amber-400/40">
                               <span className="text-amber-200 font-black text-sm sm:text-base tracking-wider">#1</span>
@@ -1353,7 +1459,7 @@ export default function RankedArenaPage() {
                             </div>
                             <div className="w-full text-center mb-2 px-0.5">
                               <div className="text-[11px] sm:text-xs font-bold text-white truncate">{top3?.nickname || "Vacante"}</div>
-                              <div className="text-[9px] sm:text-[10px] font-mono text-amber-400/80 font-bold">{top3 ? `${top3.totalPoints} pts` : "-"}</div>
+                              <div className="text-[9px] sm:text-[10px] font-mono text-amber-400/80 font-bold">{top3 ? `${top3.bestScore ?? top3.totalPoints} pts` : "-"}</div>
                             </div>
                             <div className="w-full h-16 sm:h-24 bg-gradient-to-t from-amber-950/90 via-amber-900/70 to-amber-700/60 border-t-2 border-amber-600 rounded-t-2xl flex items-center justify-center shadow-[0_0_20px_rgba(180,83,9,0.25)] ring-1 ring-amber-600/30">
                               <span className="text-amber-500 font-black text-xs sm:text-sm tracking-wider">#3</span>
@@ -1383,7 +1489,7 @@ export default function RankedArenaPage() {
                                 {entry.nickname}
                               </span>
                             </div>
-                            <span className="font-mono text-xs text-zinc-300 font-semibold">{entry.totalPoints} pts</span>
+                            <span className="font-mono text-xs text-zinc-300 font-semibold">{entry.bestScore ?? entry.totalPoints} pts</span>
                           </div>
                         ))}
                     </div>
@@ -1414,7 +1520,7 @@ export default function RankedArenaPage() {
                         </div>
                       </div>
                       <span className="font-mono text-sm font-black text-goblinLime">
-                        {artistSheetData.userStats.totalPoints} pts
+                        {artistSheetData.userStats.bestScore ?? artistSheetData.userStats.totalPoints} pts
                       </span>
                     </div>
 
@@ -2034,7 +2140,7 @@ export default function RankedArenaPage() {
                       </div>
                     </div>
                     <span className="font-mono text-xs font-extrabold text-goblinLime shrink-0">
-                      {entry.totalPoints} pts
+                      {entry.bestScore ?? entry.totalPoints} pts
                     </span>
                   </div>
                 ))

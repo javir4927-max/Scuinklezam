@@ -4,6 +4,12 @@ import { redis } from "@/lib/roomStore";
 import { toArtistSlug } from "@/lib/rankedStore";
 
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+const NO_CACHE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+  Pragma: "no-cache",
+};
 
 export async function GET() {
   const categories = await Promise.all(
@@ -42,9 +48,12 @@ export async function GET() {
     })
   );
 
-  return NextResponse.json({
-    success: true,
-    categories,
-    tiers: RANKED_TIERS,
-  });
+  return NextResponse.json(
+    {
+      success: true,
+      categories,
+      tiers: RANKED_TIERS,
+    },
+    { headers: NO_CACHE_HEADERS }
+  );
 }
