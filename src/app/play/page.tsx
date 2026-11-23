@@ -164,7 +164,7 @@ const GAME_MODES: Array<{
   },
   {
     id: "speed_chaos",
-    name: "Velocidad Loca",
+    name: "Una Vaina Loca",
     badge: "Caos",
     desc: "Cada ronda suena acelerada (1.4x) o lenta y grave (0.7x). ¿Reconoces tus propios temas?",
   },
@@ -176,7 +176,7 @@ const GAME_MODES: Array<{
   },
   {
     id: "intro_flash",
-    name: "Intro Flash 2.5s",
+    name: "Flash",
     badge: "Reflejos",
     desc: "Solo suenan los primeros 2.5 segundos de la canción. Adivina solo por el inicio.",
   },
@@ -3450,8 +3450,8 @@ function PlayArenaContent() {
                     <span className="font-bold text-xs sm:text-sm text-white shrink-0">
                       Ronda {room.currentRound}/{room.rounds.length}
                     </span>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-950 border border-emerald-500/30 text-goblinLime shrink-0">
-                      {room.gameMode.toUpperCase()}
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-950 border border-emerald-500/30 text-goblinLime shrink-0">
+                      {GAME_MODES.find((m) => m.id === room.gameMode)?.name.toUpperCase() || room.gameMode.replace(/_/g, " ").toUpperCase()}
                     </span>
                   </>
                 )}
@@ -3678,7 +3678,7 @@ function PlayArenaContent() {
                     : "bg-purple-950/40 text-purple-300 border-purple-500/30"
                 }`}>
                   <Timer className="w-4 h-4 text-purple-400" />
-                  <span>{introFinished ? "⏱️ Intro terminada · ¡Adivina ahora!" : "🎧 Escuchando intro (2.5s)..."}</span>
+                  <span>{introFinished ? "⏱️ Flash terminado · ¡Adivina ahora!" : "🎧 Escuchando Flash (2.5s)..."}</span>
                 </span>
               </div>
             )}
