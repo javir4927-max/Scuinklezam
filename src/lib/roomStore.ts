@@ -174,6 +174,18 @@ export interface RoomState {
   answersByRound?: Record<number, Record<string, PlayerAnswerRecord>>;
 }
 
+export interface RoomPoolData {
+  injectedByPlayer: Record<string, SpotifyTrackItem[]>;
+  playlistTracksById: Record<string, SpotifyTrackItem[]>;
+  usedTrackKeys: string[];
+}
+
+export interface RoomMeta {
+  v: number;
+  s: RoomState["status"];
+  end: number;
+}
+
 // Global in-memory storage fallback
 declare global {
   // eslint-disable-next-line no-var
@@ -182,6 +194,10 @@ declare global {
   var __scuinklezamHeartbeats: Map<string, Map<string, number>> | undefined;
   // eslint-disable-next-line no-var
   var __scuinklezamLocks: Map<string, Promise<any>> | undefined;
+  // eslint-disable-next-line no-var
+  var __scuinklezamRoomPools: Map<string, RoomPoolData> | undefined;
+  // eslint-disable-next-line no-var
+  var __scuinklezamRoomMetas: Map<string, RoomMeta> | undefined;
 }
 
 if (!global.__scuinklezamRooms) {
@@ -193,10 +209,89 @@ if (!global.__scuinklezamHeartbeats) {
 if (!global.__scuinklezamLocks) {
   global.__scuinklezamLocks = new Map<string, Promise<any>>();
 }
+if (!global.__scuinklezamRoomPools) {
+  global.__scuinklezamRoomPools = new Map<string, RoomPoolData>();
+}
+if (!global.__scuinklezamRoomMetas) {
+  global.__scuinklezamRoomMetas = new Map<string, RoomMeta>();
+}
 
 const rooms = global.__scuinklezamRooms;
 const inMemoryHeartbeats = global.__scuinklezamHeartbeats;
 const inMemoryLocks = global.__scuinklezamLocks;
+const inMemoryRoomPools = global.__scuinklezamRoomPools;
+const inMemoryRoomMetas = global.__scuinklezamRoomMetas;
+
+export async function getRoomPool(code: string): Promise<RoomPoolData> {
+  const upperCode = code.toUpperCase().trim();
+  if (redis) {
+    try {
+      const data = await redis.get<RoomPoolData>(`scuinklezam:room_pool:${upperCode}`);
+      if (data) {
+        return {
+          injectedByPlayer: data.injectedByPlayer || {},
+          playlistTracksById: data.playlistTracksById || {},
+          usedTrackKeys: Array.isArray(data.usedTrackKeys) ? data.usedTrackKeys : [],
+        };
+      }
+    } catch (e) {
+      console.error("[getRoomPool] Redis error:", e);
+    }
+  }
+  const mem = inMemoryRoomPools.get(upperCode);
+  return {
+    injectedByPlayer: mem?.injectedByPlayer ? { ...mem.injectedByPlayer } : {},
+    playlistTracksById: mem?.playlistTracksById ? { ...mem.playlistTracksById } : {},
+    usedTrackKeys: mem?.usedTrackKeys ? [...mem.usedTrackKeys] : [],
+  };
+}
+
+export async function saveRoomPool(code: string, pool: RoomPoolData): Promise<void> {
+  const upperCode = code.toUpperCase().trim();
+  const sanitized: RoomPoolData = {
+    injectedByPlayer: pool.injectedByPlayer || {},
+    playlistTracksById: pool.playlistTracksById || {},
+    usedTrackKeys: Array.isArray(pool.usedTrackKeys) ? pool.usedTrackKeys.slice(-600) : [],
+  };
+  inMemoryRoomPools.set(upperCode, sanitized);
+  if (redis) {
+    try {
+      await redis.set(`scuinklezam:room_pool:${upperCode}`, sanitized, { ex: 7200 });
+    } catch (e) {
+      console.error("[saveRoomPool] Redis error:", e);
+    }
+  }
+}
+
+export async function checkRoomUnchanged(
+  code: string,
+  clientVersion: number,
+  activePlayerId?: string
+): Promise<{ unchanged: boolean; version?: number }> {
+  const upperCode = code.toUpperCase().trim();
+  if (activePlayerId) {
+    await updatePlayerHeartbeat(upperCode, activePlayerId).catch(() => {});
+  }
+  if (!clientVersion || clientVersion <= 0) return { unchanged: false };
+
+  let meta = inMemoryRoomMetas.get(upperCode);
+  if (!meta && redis) {
+    try {
+      const remote = await redis.get<RoomMeta>(`scuinklezam:room_meta:${upperCode}`);
+      if (remote) {
+        meta = remote;
+        inMemoryRoomMetas.set(upperCode, remote);
+      }
+    } catch (e) {
+      console.error("[checkRoomUnchanged] Redis error reading room_meta:", e);
+    }
+  }
+
+  if (meta && meta.v === clientVersion && (meta.end === 0 || Date.now() < meta.end)) {
+    return { unchanged: true, version: meta.v };
+  }
+  return { unchanged: false, version: meta?.v };
+}
 
 // Upstash Redis configuration
 const redisUrl = process.env.UPSTASH_REDIS_REST_URL?.trim();
@@ -808,14 +903,15 @@ function getTrackKey(t: SpotifyTrackItem): string {
 }
 
 /**
- * Records played tracks from completed rounds into room.usedTrackKeys (LRU up to 600 items).
+ * Records played tracks from completed rounds into pool.usedTrackKeys (LRU up to 600 items).
  * Removes prior appearance and appends to end so latest played is at the back.
  */
-export function recordPlayedTracksInRoom(room: RoomState, rounds?: RoundData[]): void {
+export function recordPlayedTracksInRoom(room: RoomState, rounds?: RoundData[], pool?: RoomPoolData): void {
   const playedRounds = rounds || (room.rounds ? room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length)) : []);
   if (!playedRounds || playedRounds.length === 0) return;
 
-  const history = Array.isArray(room.usedTrackKeys) ? [...room.usedTrackKeys] : [];
+  const currentUsed = pool?.usedTrackKeys || room.usedTrackKeys || [];
+  const history = Array.isArray(currentUsed) ? [...currentUsed] : [];
   for (const r of playedRounds) {
     if (!r?.targetTrack) continue;
     const key = getTrackKey(r.targetTrack);
@@ -826,7 +922,11 @@ export function recordPlayedTracksInRoom(room: RoomState, rounds?: RoundData[]):
     history.push(key);
   }
 
-  room.usedTrackKeys = history.slice(-600);
+  const updatedHistory = history.slice(-600);
+  if (pool) {
+    pool.usedTrackKeys = updatedHistory;
+  }
+  room.usedTrackKeys = undefined;
 }
 
 /**
@@ -885,15 +985,19 @@ export function orderPoolBySessionMemory<T>(
  */
 export async function buildPlayerTrackBuckets(
   room: RoomState,
-  usedTrackKeysInput?: Set<string> | string[]
+  usedTrackKeysInput?: Set<string> | string[],
+  poolInput?: RoomPoolData
 ): Promise<{
   buckets: Map<string, PlayerCandidateTrack[]>;
   allPoolTracks: SpotifyTrackItem[];
 }> {
+  const pool = poolInput || (await getRoomPool(room.code));
   const usedKeysList: string[] = Array.isArray(usedTrackKeysInput)
     ? usedTrackKeysInput
     : usedTrackKeysInput instanceof Set
     ? Array.from(usedTrackKeysInput)
+    : Array.isArray(pool.usedTrackKeys)
+    ? pool.usedTrackKeys
     : Array.isArray(room.usedTrackKeys)
     ? room.usedTrackKeys
     : [];
@@ -924,14 +1028,18 @@ export async function buildPlayerTrackBuckets(
       });
     };
 
-    if (p.injectedTracks && p.injectedTracks.length > 0) {
-      p.injectedTracks.forEach((t) => addTrack(t, p.injectedModeName || "Spotify"));
+    const injectedTracks = pool.injectedByPlayer[p.id] || p.injectedTracks || [];
+    if (injectedTracks.length > 0) {
+      injectedTracks.forEach((t) => addTrack(t, p.injectedModeName || "Spotify"));
     }
 
     if (room.playlists && room.playlists.length > 0) {
       room.playlists.forEach((pl) => {
-        if (pl.addedByPlayerId === p.id && pl.tracks && pl.tracks.length > 0) {
-          pl.tracks.forEach((t) => addTrack(t, pl.name || "Playlist"));
+        if (pl.addedByPlayerId === p.id) {
+          const plTracks = pool.playlistTracksById[pl.id] || pl.tracks || [];
+          if (plTracks.length > 0) {
+            plTracks.forEach((t) => addTrack(t, pl.name || "Playlist"));
+          }
         }
       });
     }
@@ -1160,14 +1268,15 @@ export function smoothVerifiedOrder<T extends { playerId?: string }>(
  * Guarantees unique option IDs and tracks usedDistractorKeys across rounds.
  */
 export async function generateSurvivalBatch(room: RoomState, count: number = 10): Promise<RoundData[]> {
-  const usedKeys = new Set<string>(room.usedTrackKeys || []);
+  const pool = await getRoomPool(room.code);
+  const usedKeys = new Set<string>(pool.usedTrackKeys || room.usedTrackKeys || []);
   const usedDistractorKeys = new Set<string>();
   const startRoundNumber = room.rounds.length + 1;
 
   const lastRound = room.rounds[room.rounds.length - 1];
   const lastPlayerId = lastRound?.contributedByPlayerId;
 
-  const { buckets, allPoolTracks } = await buildPlayerTrackBuckets(room, usedKeys);
+  const { buckets, allPoolTracks } = await buildPlayerTrackBuckets(room, usedKeys, pool);
   const interleaved = interleavePlayerBucketsFairly(buckets, lastPlayerId);
 
   const poolTracks = allPoolTracks.length >= count * 2
@@ -1298,15 +1407,61 @@ export async function buildRoundsFromTracks(tracks: SpotifyTrackItem[], totalRou
 }
 
 /**
- * Persists room state in Upstash Redis and in-memory cache with monotonic version increment.
+ * Persists room state in Upstash Redis and in-memory cache with monotonic version increment,
+ * saving an ultra-compact ~50 bytes room_meta for lightweight polling and ensuring heavy
+ * track arrays (injectedTracks, playlists[].tracks, usedTrackKeys) never bloat the room object.
  */
 export async function saveRoom(room: RoomState): Promise<void> {
   room.version = (room.version || 0) + 1;
-  const code = room.code.toUpperCase();
+  const code = room.code.toUpperCase().trim();
+
+  // 1. Calculate next active timer deadline for ultra-fast polling check
+  let nextDeadline = 0;
+  if (room.status === "countdown" && room.countdownEndsAt) nextDeadline = room.countdownEndsAt;
+  else if (room.status === "voting" && room.votingEndsAt) nextDeadline = room.votingEndsAt;
+  else if (room.status === "playing" && room.roundEndsAt) nextDeadline = room.roundEndsAt;
+  else if (room.status === "round_reveal" && room.revealEndsAt) nextDeadline = room.revealEndsAt;
+
+  const meta: RoomMeta = {
+    v: room.version,
+    s: room.status,
+    end: nextDeadline,
+  };
+  inMemoryRoomMetas.set(code, meta);
+
+  // 2. Safety net: strip heavy track arrays and oversize avatars before saving to Redis
+  if (Array.isArray(room.players)) {
+    for (const p of room.players) {
+      if (p.injectedTracks !== undefined) {
+        if (!p.injectedTracksCount && Array.isArray(p.injectedTracks)) {
+          p.injectedTracksCount = p.injectedTracks.length;
+        }
+        p.injectedTracks = undefined;
+      }
+      if (p.avatarUrl && p.avatarUrl.startsWith("data:image/") && p.avatarUrl.length > 2048) {
+        p.avatarUrl = `/api/user/avatar?uid=${encodeURIComponent(p.id)}`;
+      }
+    }
+  }
+
+  if (Array.isArray(room.playlists)) {
+    for (const pl of room.playlists) {
+      if (Array.isArray(pl.tracks) && pl.tracks.length > 0) {
+        if (!pl.trackCount) pl.trackCount = pl.tracks.length;
+        pl.tracks = [];
+      }
+    }
+  }
+
+  room.usedTrackKeys = undefined;
+
   rooms.set(code, room);
   if (redis) {
     try {
-      await redis.set(`${ROOM_KEY_PREFIX}${code}`, room, { ex: ROOM_TTL_SECONDS });
+      await Promise.all([
+        redis.set(`${ROOM_KEY_PREFIX}${code}`, room, { ex: ROOM_TTL_SECONDS }),
+        redis.set(`scuinklezam:room_meta:${code}`, meta, { ex: ROOM_TTL_SECONDS }),
+      ]);
     } catch (err) {
       console.error(`[Upstash Redis] Error saving room ${code}:`, err);
     }
@@ -1314,16 +1469,22 @@ export async function saveRoom(room: RoomState): Promise<void> {
 }
 
 /**
- * Deletes room state from Upstash Redis and in-memory cache.
+ * Deletes room state, isolated track pools, and metadata from Upstash Redis and in-memory cache.
  */
 export async function deleteRoom(code: string): Promise<void> {
-  const upperCode = code.toUpperCase();
+  const upperCode = code.toUpperCase().trim();
   rooms.delete(upperCode);
+  inMemoryRoomPools.delete(upperCode);
+  inMemoryRoomMetas.delete(upperCode);
   if (redis) {
     try {
-      await redis.del(`${ROOM_KEY_PREFIX}${upperCode}`);
-      await redis.del(`lock:room:${upperCode}`);
-      await redis.del(`room:${upperCode}:heartbeats`);
+      await Promise.all([
+        redis.del(`${ROOM_KEY_PREFIX}${upperCode}`),
+        redis.del(`scuinklezam:room_pool:${upperCode}`),
+        redis.del(`scuinklezam:room_meta:${upperCode}`),
+        redis.del(`lock:room:${upperCode}`),
+        redis.del(`room:${upperCode}:heartbeats`),
+      ]);
     } catch (err) {
       console.error(`[Upstash Redis] Error deleting room ${upperCode}:`, err);
     }
@@ -1400,7 +1561,10 @@ export async function createRoom(
         ? initialArtists.slice(0, 3)
         : [],
     spotifyConnected: false,
-    avatarUrl: hostCustomization?.avatarUrl,
+    avatarUrl:
+      hostCustomization?.avatarUrl && hostCustomization.avatarUrl.startsWith("data:image/") && hostCustomization.avatarUrl.length > 2048
+        ? `/api/user/avatar?uid=${encodeURIComponent(hostId)}`
+        : hostCustomization?.avatarUrl,
     rankTier: hostCustomization?.rankTier,
     equippedTitle: hostCustomization?.equippedTitle,
     score: 0,
@@ -1523,6 +1687,12 @@ export function finalizeRoomMatch(room: RoomState): void {
   room.totalRounds = room.rounds.length;
 
   recordPlayedTracksInRoom(room);
+  getRoomPool(room.code)
+    .then((pool) => {
+      recordPlayedTracksInRoom(room, room.rounds, pool);
+      return saveRoomPool(room.code, pool);
+    })
+    .catch((err) => console.error("[finalizeRoomMatch] Error saving pool used keys:", err));
 
   if (!room.matchWinnerAwarded && room.players.length > 0) {
     const isSurvival = room.gameMode === "survival";
@@ -1798,12 +1968,17 @@ export async function joinRoom(
       playerData.avatarColor ||
       colors[room.players.length % colors.length];
 
+    const sanitizedAvatar =
+      playerData.avatarUrl && playerData.avatarUrl.startsWith("data:image/") && playerData.avatarUrl.length > 2048
+        ? `/api/user/avatar?uid=${encodeURIComponent(playerData.id)}`
+        : playerData.avatarUrl;
+
     if (existingIndex >= 0) {
       room.players[existingIndex].name = playerData.name.trim() || room.players[existingIndex].name;
       room.players[existingIndex].isOnline = true;
       room.players[existingIndex].isConnected = true;
       room.players[existingIndex].lastSeen = Date.now();
-      if (playerData.avatarUrl !== undefined) room.players[existingIndex].avatarUrl = playerData.avatarUrl;
+      if (playerData.avatarUrl !== undefined) room.players[existingIndex].avatarUrl = sanitizedAvatar;
       if (playerData.rankTier !== undefined) room.players[existingIndex].rankTier = playerData.rankTier;
       if (playerData.equippedTitle !== undefined) room.players[existingIndex].equippedTitle = playerData.equippedTitle;
       if (playerData.favoriteArtists && playerData.favoriteArtists.length > 0) {
@@ -1826,7 +2001,7 @@ export async function joinRoom(
         lastSeen: Date.now(),
         favoriteArtists: playerData.favoriteArtists ? playerData.favoriteArtists.slice(0, 5) : [],
         spotifyConnected: Boolean(playerData.spotifyConnected),
-        avatarUrl: playerData.avatarUrl,
+        avatarUrl: sanitizedAvatar,
         rankTier: playerData.rankTier,
         equippedTitle: playerData.equippedTitle,
         score: 0,
@@ -1960,7 +2135,13 @@ export async function injectSpotifyTracksToRoom(
     const validTracks = (tracks || []).filter(
       (t) => t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl
     );
-    player.injectedTracks = validTracks;
+
+    // Save heavy tracks into isolated room_pool
+    const pool = await getRoomPool(code);
+    pool.injectedByPlayer[playerId] = validTracks;
+    await saveRoomPool(code, pool);
+
+    player.injectedTracks = undefined;
     player.injectedModeName = modeName || label || "Spotify";
     player.injectedTracksCount = validTracks.length;
     player.injectedTracksSample = validTracks.slice(0, 3).map((t) => `"${t.title} - ${t.artist}"`);
@@ -2051,7 +2232,11 @@ export async function updatePlayerProfile(
       player.avatarColor = profile.avatarColor;
     }
     if (profile.avatarUrl !== undefined) {
-      player.avatarUrl = profile.avatarUrl;
+      if (profile.avatarUrl && profile.avatarUrl.startsWith("data:image/") && profile.avatarUrl.length > 2048) {
+        player.avatarUrl = `/api/user/avatar?uid=${encodeURIComponent(playerId)}`;
+      } else {
+        player.avatarUrl = profile.avatarUrl;
+      }
     }
     if (profile.rankTier !== undefined) {
       player.rankTier = profile.rankTier;
@@ -2099,6 +2284,11 @@ export async function addPlaylistToRoom(
         (t) => t && t.previewUrl && t.previewUrl.startsWith("http") && t.artworkUrl
       );
 
+    // Save heavy tracks in isolated room_pool
+    const pool = await getRoomPool(code);
+    pool.playlistTracksById[playlist.id] = validTracks;
+    await saveRoomPool(code, pool);
+
     const newPlaylist: RoomPlaylist = {
       id: playlist.id,
       name: playlist.name || (playlist.type === "album" ? "Álbum de Spotify" : "Playlist de Spotify"),
@@ -2107,7 +2297,7 @@ export async function addPlaylistToRoom(
       trackCount: validTracks.length > 0 ? validTracks.length : (playlist.trackCount || 0),
       addedByPlayerId: playerId,
       addedByPlayerName: player.name,
-      tracks: validTracks,
+      tracks: [],
     };
 
     room.playlists.push(newPlaylist);
@@ -2140,6 +2330,13 @@ export async function removePlaylistFromRoom(
     }
 
     room.playlists = room.playlists.filter((p) => p.id !== playlistId);
+
+    // Remove from isolated room_pool
+    const pool = await getRoomPool(code);
+    if (pool.playlistTracksById[playlistId]) {
+      delete pool.playlistTracksById[playlistId];
+      await saveRoomPool(code, pool);
+    }
     room.lastActive = Date.now();
     await saveRoom(room);
     return { success: true, room };
@@ -2283,10 +2480,13 @@ export async function changeRoomSettings(
 export async function generateRoundsForRoom(
   room: RoomState
 ): Promise<{ rounds: RoundData[]; roundDuration: number }> {
+  const pool = await getRoomPool(room.code);
+  const usedKeys = pool.usedTrackKeys || room.usedTrackKeys || [];
+
   // 1. GAME MODE: VOTE
   if (room.gameMode === "vote") {
     const theme = room.winningTheme || "Top 50 España";
-    const rounds = await buildRoundsForTheme(theme, room.totalRounds || 10, room.usedTrackKeys || []);
+    const rounds = await buildRoundsForTheme(theme, room.totalRounds || 10, usedKeys);
     return { rounds, roundDuration: ROUND_DURATION_SEC };
   }
 
@@ -2302,7 +2502,7 @@ export async function generateRoundsForRoom(
       }
     }
     const validPool = topPool.length >= room.totalRounds ? topPool : [...topPool, ...FALLBACK_SPOTIFY_TRACKS];
-    const targetCandidates = orderPoolBySessionMemory(validPool, (t) => getTrackKey(t), room.usedTrackKeys || []);
+    const targetCandidates = orderPoolBySessionMemory(validPool, (t) => getTrackKey(t), usedKeys);
     const verifiedTargets = await collectVerifiedTargets(targetCandidates, room.totalRounds, validPool);
     const usedDistractorKeys = new Set<string>();
 
@@ -2360,7 +2560,7 @@ export async function generateRoundsForRoom(
       }
     }
     const validPool = randomPool.length >= room.totalRounds ? randomPool : [...randomPool, ...FALLBACK_SPOTIFY_TRACKS];
-    const targetCandidates = orderPoolBySessionMemory(validPool, (t) => getTrackKey(t), room.usedTrackKeys || []);
+    const targetCandidates = orderPoolBySessionMemory(validPool, (t) => getTrackKey(t), usedKeys);
     const verifiedTargets = await collectVerifiedTargets(targetCandidates, room.totalRounds, validPool);
     const usedDistractorKeys = new Set<string>();
 
@@ -2413,7 +2613,7 @@ export async function generateRoundsForRoom(
   }
 
   // 5. GAME MODE: BLEND / WHO_LISTENS / SPEED_CHAOS / BUZZER / INTRO_FLASH
-  const { buckets, allPoolTracks } = await buildPlayerTrackBuckets(room, room.usedTrackKeys || []);
+  const { buckets, allPoolTracks } = await buildPlayerTrackBuckets(room, usedKeys, pool);
   const interleaved = interleavePlayerBucketsFairly(buckets);
 
   const poolTracks = allPoolTracks.length >= room.totalRounds
@@ -2938,8 +3138,10 @@ export async function resetRoomToLobby(code: string, hostId: string): Promise<{ 
     if (!room) return { success: false, error: "Sala no encontrada." };
     if (room.hostId !== hostId) return { success: false, error: "Solo el anfitrión puede reiniciar la sala." };
 
+    const pool = await getRoomPool(code);
     if (room.rounds && room.rounds.length > 0) {
-      recordPlayedTracksInRoom(room);
+      recordPlayedTracksInRoom(room, room.rounds, pool);
+      await saveRoomPool(code, pool);
     }
 
     room.status = "lobby";
@@ -2991,8 +3193,10 @@ export async function rematchRoomGame(
     if (room.hostId !== hostId) return { success: false, error: "Solo el anfitrión puede reiniciar la partida." };
 
     // Record played tracks in room LRU memory
+    const pool = await getRoomPool(code);
     if (room.rounds && room.rounds.length > 0) {
-      recordPlayedTracksInRoom(room);
+      recordPlayedTracksInRoom(room, room.rounds, pool);
+      await saveRoomPool(code, pool);
     }
 
     // Reset players for rematch

@@ -25,6 +25,26 @@ export interface UserSession {
 export interface UserCustomization {
   customAvatarUrl?: string | null;
   equippedTitle?: string | null;
+  updatedAt?: number;
+}
+
+export function resolvePublicAvatarUrl(
+  userId: string,
+  custom?: UserCustomization | null,
+  fallbackUrl?: string
+): string {
+  if (custom?.customAvatarUrl) {
+    if (custom.customAvatarUrl.startsWith("data:image/")) {
+      return `/api/user/avatar?uid=${encodeURIComponent(userId)}&v=${custom.updatedAt || 1}`;
+    }
+    if (custom.customAvatarUrl.startsWith("https://") || custom.customAvatarUrl.startsWith("/")) {
+      return custom.customAvatarUrl;
+    }
+  }
+  return (
+    fallbackUrl ||
+    `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(userId)}&backgroundColor=0B1710`
+  );
 }
 
 // In-memory fallback if Redis is unreachable
@@ -263,7 +283,7 @@ export async function getSessionUser(): Promise<UserSession | null> {
           id: user.id,
           email: user.email,
           nickname: user.nickname,
-          avatarUrl: custom.customAvatarUrl || user.avatarUrl,
+          avatarUrl: resolvePublicAvatarUrl(user.id, custom, user.avatarUrl),
           provider: "email",
           equippedTitle: custom.equippedTitle || null,
         };
@@ -291,7 +311,7 @@ export async function getSessionUser(): Promise<UserSession | null> {
       id: cleanId,
       email: `${cleanId}@spotify.scuinklezam.app`,
       nickname: cleanName,
-      avatarUrl: custom.customAvatarUrl || cleanAvatar,
+      avatarUrl: resolvePublicAvatarUrl(cleanId, custom, cleanAvatar),
       provider: "spotify",
       equippedTitle: custom.equippedTitle || null,
     };

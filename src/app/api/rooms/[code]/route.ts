@@ -5,6 +5,7 @@ if (typeof process !== "undefined" && process.env && process.env.NODE_ENV !== "p
 import { NextResponse } from "next/server";
 import {
   getRoom,
+  checkRoomUnchanged,
   joinRoom,
   leaveRoom,
   updatePlayerTaste,
@@ -44,7 +45,23 @@ interface RouteParams {
 export async function GET(request: Request, { params }: RouteParams) {
   const code = params.code?.toUpperCase();
   const { searchParams } = new URL(request.url);
-  const playerId = searchParams.get("playerId") || undefined;
+  const playerId = searchParams.get("playerId") || searchParams.get("p") || undefined;
+  const clientVersion = Number(searchParams.get("v") || "0");
+
+  if (clientVersion > 0) {
+    const check = await checkRoomUnchanged(code, clientVersion, playerId);
+    if (check.unchanged) {
+      return NextResponse.json(
+        {
+          success: true,
+          unchanged: true,
+          version: check.version,
+          serverTime: Date.now(),
+        },
+        { headers: NO_CACHE_HEADERS }
+      );
+    }
+  }
 
   const room = await getRoom(code, playerId);
 

@@ -480,6 +480,7 @@ function PlayArenaContent() {
   // Audio & Timer Refs
   const clockOffsetRef = useRef<number>(0);
   const lastRoomVersionRef = useRef<number>(0);
+  const pollCountRef = useRef<number>(0);
   const prevStatusRef = useRef<string>("");
   const prevRoundRef = useRef<number>(0);
   const currentRoundRef = useRef<number>(1);
@@ -936,7 +937,10 @@ function PlayArenaContent() {
       if (isFetchingRoomRef.current) return;
       isFetchingRoomRef.current = true;
       try {
-        const res = await fetch(`/api/rooms/${roomCode}?playerId=${playerId}&t=${Date.now()}`, {
+        pollCountRef.current = (pollCountRef.current + 1) % 6;
+        const useVersion = pollCountRef.current !== 0 && lastRoomVersionRef.current > 0;
+        const versionParam = useVersion ? `&v=${lastRoomVersionRef.current}` : "";
+        const res = await fetch(`/api/rooms/${roomCode}?playerId=${playerId}&t=${Date.now()}${versionParam}`, {
           cache: "no-store",
           headers: {
             "Cache-Control": "no-cache",
@@ -952,6 +956,9 @@ function PlayArenaContent() {
         const data = await res.json();
         if (data.serverTime) {
           clockOffsetRef.current = data.serverTime - Date.now();
+        }
+        if (data.unchanged === true) {
+          return;
         }
         if (data.success && isMounted && data.room) {
           const currentRoom: RoomState = data.room;

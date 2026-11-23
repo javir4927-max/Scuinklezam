@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSessionUser, getUserCustomization, setUserCustomization } from "@/lib/userAuth";
+import { getSessionUser, getUserCustomization, setUserCustomization, resolvePublicAvatarUrl } from "@/lib/userAuth";
 import { getUserProfileData, RANKED_CATEGORIES } from "@/lib/rankedStore";
 import { calculateTier, RankedTierName } from "@/lib/rankedTypes";
 import { redis } from "@/lib/roomStore";
@@ -79,7 +79,9 @@ export async function GET() {
         bestCategoryName: bestCatName || "Ninguno aún",
       },
       customization: {
-        customAvatarUrl: customization.customAvatarUrl || null,
+        customAvatarUrl: customization.customAvatarUrl
+          ? resolvePublicAvatarUrl(user.id, customization, user.avatarUrl)
+          : null,
         equippedTitle: customization.equippedTitle || null,
       },
       highestTier,
@@ -148,19 +150,18 @@ export async function PATCH(req: Request) {
       ...current,
       customAvatarUrl: customAvatarUrl !== undefined ? customAvatarUrl : current.customAvatarUrl,
       equippedTitle: equippedTitle !== undefined ? equippedTitle : current.equippedTitle,
+      updatedAt: Date.now(),
     };
 
     await setUserCustomization(user.id, updated);
 
-    // Sync to user_profile in Redis if custom avatar was updated
+    // Sync to user_profile in Redis if custom avatar was updated, storing the compact public URL (never huge Base64!)
     if (redis) {
       try {
         const rawProfile = await redis.get<string | any>(`scuinklezam:user_profile:${user.id}`);
         if (rawProfile) {
           const prof = typeof rawProfile === "string" ? JSON.parse(rawProfile) : rawProfile;
-          if (updated.customAvatarUrl) {
-            prof.avatarUrl = updated.customAvatarUrl;
-          }
+          prof.avatarUrl = resolvePublicAvatarUrl(user.id, updated, user.avatarUrl);
           await redis.set(`scuinklezam:user_profile:${user.id}`, JSON.stringify(prof));
         }
       } catch (err) {
