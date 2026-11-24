@@ -36,7 +36,7 @@ declare global {
         >
       >
     | undefined;
-  var __scuinklezamMemoryArtistsPopularity: Map<string, number> | undefined;
+  var __scuinklezamMemoryArtistPopularity: Map<string, { name: string; plays: number }> | undefined;
   var __scuinklezamMemoryArtistsMeta: Map<string, { n: string; d?: string }> | undefined;
   var __scuinklezamMemoryCategoryPlays: Map<string, number> | undefined;
 }
@@ -46,7 +46,7 @@ if (!global.__scuinklezamMemoryPersonalBests) global.__scuinklezamMemoryPersonal
 if (!global.__scuinklezamMemoryStats) global.__scuinklezamMemoryStats = new Map();
 if (!global.__scuinklezamMemoryHistory) global.__scuinklezamMemoryHistory = new Map();
 if (!global.__scuinklezamMemoryArtistStats) global.__scuinklezamMemoryArtistStats = new Map();
-if (!global.__scuinklezamMemoryArtistsPopularity) global.__scuinklezamMemoryArtistsPopularity = new Map();
+if (!global.__scuinklezamMemoryArtistPopularity) global.__scuinklezamMemoryArtistPopularity = new Map();
 if (!global.__scuinklezamMemoryArtistsMeta) global.__scuinklezamMemoryArtistsMeta = new Map();
 if (!global.__scuinklezamMemoryCategoryPlays) global.__scuinklezamMemoryCategoryPlays = new Map();
 
@@ -55,9 +55,57 @@ const memoryPersonalBests = global.__scuinklezamMemoryPersonalBests;
 const memoryStats = global.__scuinklezamMemoryStats;
 const memoryHistory = global.__scuinklezamMemoryHistory;
 const memoryArtistStats = global.__scuinklezamMemoryArtistStats;
-const memoryArtistsPopularity = global.__scuinklezamMemoryArtistsPopularity;
+const memoryArtistPopularity = global.__scuinklezamMemoryArtistPopularity;
 const memoryArtistsMeta = global.__scuinklezamMemoryArtistsMeta;
 const memoryCategoryPlays = global.__scuinklezamMemoryCategoryPlays;
+
+let popularityBackfillDone = false;
+
+/**
+ * Safely parses Redis values stored as JSON string or already parsed object.
+ */
+function safeJsonParse<T = any>(raw: any): T | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw === "object") return raw as T;
+  return null;
+}
+
+/**
+ * Parses @upstash/redis zrange(..., { withScores: true }) supporting both:
+ * - Object array format: [{ member, score }, ...]
+ * - Flat tuple array format: [member1, score1, member2, score2, ...]
+ */
+function parseZRangeWithScores(raw: any[]): Array<{ member: string; score: number }> {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const result: Array<{ member: string; score: number }> = [];
+  if (typeof raw[0] === "object" && raw[0] !== null) {
+    for (const item of raw) {
+      if (item && item.member !== undefined) {
+        result.push({
+          member: String(item.member),
+          score: Math.max(0, Math.round(Number(item.score || 0))),
+        });
+      }
+    }
+  } else {
+    for (let i = 0; i < raw.length; i += 2) {
+      if (raw[i] !== undefined) {
+        result.push({
+          member: String(raw[i]),
+          score: Math.max(0, Math.round(Number(raw[i + 1] || 0))),
+        });
+      }
+    }
+  }
+  return result;
+}
 
 // Thematic clusters to discover 12 related artists with verified HD face photos
 const ARTIST_CLUSTERS = [
@@ -447,13 +495,10 @@ export async function getCategoryLeaderboard(
       });
 
       if (topIds && topIds.length > 0) {
-        const memberEntries: Array<{ userId: string; score: number }> = [];
-        for (let i = 0; i < topIds.length; i += 2) {
-          const mId = typeof topIds[i] === "object" ? (topIds[i] as any).member : topIds[i];
-          const rawScore = typeof topIds[i] === "object" ? Number((topIds[i] as any).score) : Number(topIds[i + 1]);
-          const mScore = Math.max(0, Math.round(rawScore || 0));
-          memberEntries.push({ userId: mId, score: mScore });
-        }
+        const memberEntries = parseZRangeWithScores(topIds).map((e) => ({
+          userId: e.member,
+          score: e.score,
+        }));
 
         const profileKeys = memberEntries.map((m) => `scuinklezam:user_profile:${m.userId}`);
         const profilesRaw = profileKeys.length > 0 ? await redis.mget<any[]>(...profileKeys) : [];
@@ -461,7 +506,7 @@ export async function getCategoryLeaderboard(
         for (let idx = 0; idx < memberEntries.length; idx++) {
           const m = memberEntries[idx];
           const pRaw = profilesRaw ? profilesRaw[idx] : null;
-          const profile = typeof pRaw === "string" ? JSON.parse(pRaw) : pRaw;
+          const profile = safeJsonParse<any>(pRaw);
 
           const nick = profile?.nickname || `Jugador #${idx + 1}`;
           const av =
@@ -763,7 +808,10 @@ export async function submitArtistRankedScore(
       avatarUrl,
     });
 
-    memoryArtistsPopularity.set(slug, (memoryArtistsPopularity.get(slug) || 0) + 1);
+    memoryArtistPopularity.set(slug, {
+      name: cleanName,
+      plays: (memoryArtistPopularity.get(slug)?.plays || 0) + 1,
+    });
     if (!memoryArtistsMeta.has(slug)) {
       const meta = await resolveArtistCatalogMeta(cleanName, slug);
       memoryArtistsMeta.set(slug, meta);
@@ -893,20 +941,19 @@ export async function getArtistProfileAndLeaderboard(
       });
 
       if (topIds && topIds.length > 0) {
-        const memberEntries: Array<{ userId: string; score: number }> = [];
-        for (let i = 0; i < topIds.length; i += 2) {
-          const mId = typeof topIds[i] === "object" ? (topIds[i] as any).member : topIds[i];
-          const rawScore = typeof topIds[i] === "object" ? Number((topIds[i] as any).score) : Number(topIds[i + 1]);
-          const mScore = Math.max(0, Math.round(rawScore || 0));
-          memberEntries.push({ userId: mId, score: mScore });
-        }
+        const memberEntries = parseZRangeWithScores(topIds).map((e) => ({
+          userId: e.member,
+          score: e.score,
+        }));
 
         const memberIds = memberEntries.map((m) => m.userId);
         let metaMap: Record<string, any> | null = null;
-        try {
-          metaMap = await redis.hmget<Record<string, any>>(`scuinklezam:artist_meta:${slug}`, ...memberIds);
-        } catch (e) {
-          console.warn("[getArtistProfileAndLeaderboard] hmget error:", e);
+        if (memberIds.length > 0) {
+          try {
+            metaMap = await redis.hmget<Record<string, any>>(`scuinklezam:artist_meta:${slug}`, ...memberIds);
+          } catch (e) {
+            console.warn("[getArtistProfileAndLeaderboard] hmget error:", e);
+          }
         }
 
         // Batch fallback for any legacy member missing from artist_meta
@@ -918,7 +965,7 @@ export async function getArtistProfileAndLeaderboard(
             const pRaws = await redis.mget<any[]>(...keys);
             missingIds.forEach((id, idx) => {
               const raw = pRaws ? pRaws[idx] : null;
-              fallbackProfiles[id] = typeof raw === "string" ? JSON.parse(raw) : raw;
+              fallbackProfiles[id] = safeJsonParse(raw);
             });
           } catch {}
         }
@@ -926,7 +973,7 @@ export async function getArtistProfileAndLeaderboard(
         for (let idx = 0; idx < memberEntries.length; idx++) {
           const { userId: mId, score: mScore } = memberEntries[idx];
           const rawMeta = metaMap ? metaMap[mId] : null;
-          const meta = typeof rawMeta === "string" ? JSON.parse(rawMeta) : rawMeta;
+          const meta = safeJsonParse<any>(rawMeta);
           const fallback = fallbackProfiles[mId];
 
           const nick = meta?.nickname || fallback?.nickname || `Jugador #${idx + 1}`;
@@ -1040,58 +1087,135 @@ export async function getDynamicRankedCategories(): Promise<RankedCategory[]> {
   let countsMap: Record<string, string | number> | null = null;
   let loadedFromRedis = false;
 
-  if (redis) {
-    try {
-      // Command 1: Top 30 played artists
-      const popRaw = await redis.zrange<any[]>("scuinklezam:ranked:artists_popularity", 0, 29, {
-        rev: true,
-        withScores: true,
-      });
+  const baseArtists = RANKED_CATEGORIES.filter((c) => c.kind === "artist");
+  const baseBySlug = new Map<string, RankedCategory>();
+  for (const c of baseArtists) {
+    baseBySlug.set(toArtistSlug(c.query || c.name), c);
+  }
 
-      if (popRaw && popRaw.length > 0) {
-        for (let i = 0; i < popRaw.length; i += 2) {
-          const slug = typeof popRaw[i] === "object" ? String((popRaw[i] as any).member) : String(popRaw[i]);
-          const plays = Math.max(
-            0,
-            Math.round(typeof popRaw[i] === "object" ? Number((popRaw[i] as any).score) : Number(popRaw[i + 1]))
-          );
-          if (plays > 0) {
-            popEntries.push({ slug, plays });
+  if (redis) {
+    const client = redis;
+    try {
+      // Command 1 & 2: Top 50 played artists + theme play counts hash
+      const [popRaw, countsRes] = await Promise.all([
+        client.zrange<any[]>("scuinklezam:ranked:artists_popularity", 0, 49, {
+          rev: true,
+          withScores: true,
+        }),
+        client.hgetall<Record<string, string | number>>("scuinklezam:stats:category_plays"),
+      ]);
+
+      countsMap = countsRes;
+      popEntries = parseZRangeWithScores(popRaw)
+        .map((p) => ({ slug: p.member, plays: Math.max(0, Math.round(p.score)) }))
+        .filter((p) => Boolean(p.slug) && p.plays > 0);
+
+      // One-time automatic backfill if artists_popularity is empty (legacy plays)
+      if (popEntries.length === 0 && !popularityBackfillDone) {
+        popularityBackfillDone = true;
+        const alreadyBackfilled = await client.get("scuinklezam:ranked:popularity_backfilled");
+
+        if (!alreadyBackfilled) {
+          const backfillPlays = new Map<string, number>();
+
+          if (countsMap) {
+            for (const [catId, rawVal] of Object.entries(countsMap)) {
+              if (catId.startsWith("artist_")) {
+                const rawSlug = catId.slice("artist_".length).replace(/_/g, "-");
+                const canonicalSlug = toArtistSlug(rawSlug);
+                const plays = Math.max(0, Math.round(Number(rawVal) || 0));
+                if (canonicalSlug && plays > 0) {
+                  backfillPlays.set(canonicalSlug, (backfillPlays.get(canonicalSlug) || 0) + plays);
+                }
+              }
+            }
+          }
+
+          const legacyKeys = await client.keys("scuinklezam:ranked:artist:*");
+          if (legacyKeys && legacyKeys.length > 0) {
+            const zcardResults = await Promise.all(
+              legacyKeys.map(async (key) => ({
+                key,
+                count: await client.zcard(key),
+              }))
+            );
+
+            for (const { key, count } of zcardResults) {
+              if (count > 0) {
+                const rawSlug = key.replace("scuinklezam:ranked:artist:", "");
+                const canonicalSlug = toArtistSlug(rawSlug);
+                if (canonicalSlug) {
+                  backfillPlays.set(canonicalSlug, Math.max(backfillPlays.get(canonicalSlug) || 0, count));
+                }
+              }
+            }
+          }
+
+          if (backfillPlays.size > 0) {
+            const zaddEntries: Array<{ score: number; member: string }> = [];
+            const metaPayload: Record<string, string> = {};
+
+            for (const [slug, plays] of Array.from(backfillPlays.entries())) {
+              zaddEntries.push({ score: plays, member: slug });
+              popEntries.push({ slug, plays });
+
+              const baseCat = baseBySlug.get(slug);
+              const name =
+                CANONICAL_ARTIST_NAMES[slug] ||
+                baseCat?.name ||
+                formatSlugToName(slug);
+              const desc = getCuratedArtistDescription(slug) || baseCat?.description || "";
+              metaPayload[slug] = JSON.stringify(desc ? { n: name, d: desc } : { n: name });
+            }
+
+            popEntries.sort((a, b) => b.plays - a.plays);
+            popEntries = popEntries.slice(0, 50);
+            artistsMetaMap = metaPayload;
+
+            const [firstEntry, ...restEntries] = zaddEntries;
+            await Promise.all([
+              client.zadd("scuinklezam:ranked:artists_popularity", firstEntry, ...restEntries),
+              client.hset("scuinklezam:ranked:artists_meta", metaPayload),
+              client.set("scuinklezam:ranked:popularity_backfilled", "1"),
+            ]);
+          } else {
+            await client.set("scuinklezam:ranked:popularity_backfilled", "1");
           }
         }
       }
 
-      // Command 2 (only if played artists exist) & Command 3 (theme plays hash)
-      const uniqueRawSlugs = popEntries.map((p) => p.slug);
-      const [metaRes, countsRes] = await Promise.all([
-        uniqueRawSlugs.length > 0
-          ? redis.hmget<Record<string, any>>("scuinklezam:ranked:artists_meta", ...uniqueRawSlugs)
-          : Promise.resolve(null),
-        redis.hgetall<Record<string, string | number>>("scuinklezam:stats:category_plays"),
-      ]);
+      // Command 3: Fetch metadata hash only if played artists exist and weren't just populated by backfill
+      const uniqueRawSlugs = Array.from(new Set(popEntries.map((p) => p.slug))).filter(Boolean);
+      if (!artistsMetaMap && uniqueRawSlugs.length > 0) {
+        artistsMetaMap = await client.hmget<Record<string, any>>(
+          "scuinklezam:ranked:artists_meta",
+          ...uniqueRawSlugs
+        );
+      }
 
-      artistsMetaMap = metaRes;
-      countsMap = countsRes;
       loadedFromRedis = true;
     } catch (err) {
-      console.warn("[getDynamicRankedCategories] Redis read error:", err);
+      console.error("[getDynamicRankedCategories] Redis error:", err);
     }
   }
 
   // Fallback to in-memory popularity & counts if Redis unavailable/failed
   if (!loadedFromRedis) {
-    memoryArtistsPopularity.forEach((plays, slug) => {
-      if (plays > 0) {
-        popEntries.push({ slug, plays });
-      }
-    });
-    popEntries.sort((a, b) => b.plays - a.plays);
-    popEntries = popEntries.slice(0, 30);
-
     const memMetaObj: Record<string, any> = {};
     memoryArtistsMeta.forEach((val, slug) => {
       memMetaObj[slug] = val;
     });
+
+    memoryArtistPopularity.forEach((val, slug) => {
+      if (val.plays > 0) {
+        popEntries.push({ slug, plays: val.plays });
+        if (val.name && !memMetaObj[slug]) {
+          memMetaObj[slug] = { n: val.name };
+        }
+      }
+    });
+    popEntries.sort((a, b) => b.plays - a.plays);
+    popEntries = popEntries.slice(0, 50);
     artistsMetaMap = memMetaObj;
 
     const memCountsObj: Record<string, number> = {};
@@ -1101,29 +1225,27 @@ export async function getDynamicRankedCategories(): Promise<RankedCategory[]> {
     countsMap = memCountsObj;
   }
 
-  const baseArtists = RANKED_CATEGORIES.filter((c) => c.kind === "artist");
-  const baseBySlug = new Map<string, RankedCategory>();
-  for (const c of baseArtists) {
-    baseBySlug.set(toArtistSlug(c.query || c.name), c);
-  }
-
-  // Merge any aliased slugs canonically and build played artist cards
+  // Merge any aliased slugs canonically and build strictly played artist cards (playerCount > 0)
   const mergedPlayedBySlug = new Map<string, { plays: number; rawMeta?: { n?: string; d?: string } }>();
   for (const item of popEntries) {
+    if (item.plays <= 0) continue;
     const canonicalSlug = toArtistSlug(item.slug);
+    if (!canonicalSlug) continue;
+
     const rawMetaVal = artistsMetaMap ? artistsMetaMap[item.slug] || artistsMetaMap[canonicalSlug] : null;
-    const parsedMeta = typeof rawMetaVal === "string" ? JSON.parse(rawMetaVal) : rawMetaVal;
+    const parsedMeta = safeJsonParse<{ n?: string; d?: string }>(rawMetaVal);
 
     const prev = mergedPlayedBySlug.get(canonicalSlug);
     if (prev) {
       prev.plays += item.plays;
       if (!prev.rawMeta && parsedMeta) prev.rawMeta = parsedMeta;
     } else {
-      mergedPlayedBySlug.set(canonicalSlug, { plays: item.plays, rawMeta: parsedMeta });
+      mergedPlayedBySlug.set(canonicalSlug, { plays: item.plays, rawMeta: parsedMeta ?? undefined });
     }
   }
 
   const playedArtists: RankedCategory[] = Array.from(mergedPlayedBySlug.entries())
+    .filter(([, info]) => info.plays > 0)
     .sort((a, b) => b[1].plays - a[1].plays)
     .map(([canonicalSlug, info]) => {
       const baseCat = baseBySlug.get(canonicalSlug);
@@ -1150,21 +1272,6 @@ export async function getDynamicRankedCategories(): Promise<RankedCategory[]> {
       };
     });
 
-  // Clean homepage rule: fill up to 12 with 0-play base artists ONLY if fewer than 12 played artists exist
-  const finalArtists: RankedCategory[] = [...playedArtists];
-  if (finalArtists.length < 12) {
-    for (const baseCat of baseArtists) {
-      if (finalArtists.length >= 12) break;
-      const baseSlug = toArtistSlug(baseCat.query || baseCat.name);
-      if (!mergedPlayedBySlug.has(baseSlug)) {
-        finalArtists.push({
-          ...baseCat,
-          playerCount: 0,
-        });
-      }
-    }
-  }
-
   // Themes sorted descending by real plays
   const themes: RankedCategory[] = RANKED_CATEGORIES.filter((c) => c.kind === "theme")
     .map((t) => ({
@@ -1173,5 +1280,5 @@ export async function getDynamicRankedCategories(): Promise<RankedCategory[]> {
     }))
     .sort((a, b) => b.playerCount - a.playerCount);
 
-  return [...finalArtists, ...themes];
+  return [...playedArtists, ...themes];
 }

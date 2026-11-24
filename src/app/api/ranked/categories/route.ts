@@ -11,14 +11,22 @@ const NO_CACHE_HEADERS = {
 };
 
 export async function GET() {
-  const categories = await getDynamicRankedCategories();
+  try {
+    const categories = await getDynamicRankedCategories();
 
-  return NextResponse.json(
-    {
-      success: true,
-      categories,
-      tiers: RANKED_TIERS,
-    },
-    { headers: NO_CACHE_HEADERS }
-  );
+    return NextResponse.json(
+      {
+        success: true,
+        categories,
+        tiers: RANKED_TIERS,
+      },
+      { headers: NO_CACHE_HEADERS }
+    );
+  } catch (err) {
+    console.error("[GET /api/ranked/categories] Error:", err);
+    return NextResponse.json(
+      { success: false, error: "Error cargando categorías de Ranked" },
+      { status: 500, headers: NO_CACHE_HEADERS }
+    );
+  }
 }

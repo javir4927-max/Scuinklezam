@@ -63,7 +63,10 @@ interface AnswerHistoryItem {
 export default function RankedArenaPage() {
   const [activeTab, setActiveTab] = useState<"artist" | "theme">("artist");
   const [searchFilter, setSearchFilter] = useState<string>("");
-  const [categories, setCategories] = useState<RankedCategory[]>(RANKED_CATEGORIES);
+  const [categories, setCategories] = useState<RankedCategory[]>([]);
+  const [loadingCategories, setLoadingCategories] = useState<boolean>(true);
+  const categoriesReqIdRef = useRef<number>(0);
+  const minValidCategoriesReqIdRef = useRef<number>(0);
   const [user, setUser] = useState<UserSession | null>(null);
 
   // Modals
@@ -253,15 +256,26 @@ export default function RankedArenaPage() {
 
   // Fetch real categories and current user session
   const loadInitialData = async () => {
+    const reqId = ++categoriesReqIdRef.current;
     try {
-      const catRes = await fetch("/api/ranked/categories", { cache: "no-store" });
+      const catRes = await fetch(`/api/ranked/categories?t=${Date.now()}`, { cache: "no-store" });
       if (catRes.ok) {
         const catData = await catRes.json();
-        if (catData.categories && Array.isArray(catData.categories)) {
+        if (
+          catData.categories &&
+          Array.isArray(catData.categories) &&
+          reqId >= minValidCategoriesReqIdRef.current
+        ) {
           setCategories(catData.categories);
         }
       }
-    } catch {}
+    } catch (err) {
+      console.error("[ranked] Error fetching categories:", err);
+    } finally {
+      if (reqId >= minValidCategoriesReqIdRef.current) {
+        setLoadingCategories(false);
+      }
+    }
 
     try {
       const userRes = await fetch("/api/auth/user/me", { cache: "no-store" });
@@ -596,6 +610,54 @@ export default function RankedArenaPage() {
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Error al conectar con el servidor.");
       }
+
+      // Immediately reflect the completed run in local catalog state while fetching authoritative server data
+      categoriesReqIdRef.current += 1;
+      minValidCategoriesReqIdRef.current = categoriesReqIdRef.current;
+      setLoadingCategories(false);
+      setCategories((prev) => {
+        const targetArtistSlug = payload.artistName ? toArtistSlug(payload.artistName) : null;
+        let updated = false;
+        const nextList = prev.map((c) => {
+          const matchesArtist =
+            targetArtistSlug &&
+            c.kind === "artist" &&
+            toArtistSlug(c.query || c.name) === targetArtistSlug;
+          if (c.id === payload.categoryId || matchesArtist) {
+            updated = true;
+            return { ...c, playerCount: (c.playerCount || 0) + 1 };
+          }
+          return c;
+        });
+
+        if (!updated && payload.artistName) {
+          const displayName =
+            activeCategory?.name || getCanonicalArtistName(payload.artistName) || payload.artistName;
+          nextList.push({
+            id: payload.categoryId || `artist_${(targetArtistSlug || "custom").replace(/-/g, "_")}`,
+            name: displayName,
+            kind: "artist",
+            description:
+              activeCategory?.description ||
+              `Catálogo verificado · Pon a prueba tu oído con todas las eras de ${displayName}`,
+            imageUrl:
+              activeCategory?.imageUrl ||
+              `/api/artists/photo?name=${encodeURIComponent(displayName)}`,
+            query: displayName,
+            playerCount: 1,
+          });
+        }
+
+        const artists = nextList
+          .filter((c) => c.kind === "artist" && (c.playerCount || 0) > 0)
+          .sort((a, b) => (b.playerCount || 0) - (a.playerCount || 0));
+        const themes = nextList
+          .filter((c) => c.kind === "theme")
+          .sort((a, b) => (b.playerCount || 0) - (a.playerCount || 0));
+
+        return [...artists, ...themes];
+      });
+
       const authoritativeScore = data.submittedScore ?? finalScore;
       const finalRank = (payload.artistName ? data.artistResult?.userRank : data.rank) || data.rank || 1;
       const bestScore = (payload.artistName ? data.artistResult?.bestScore : data.score) ?? authoritativeScore;
@@ -845,6 +907,7 @@ export default function RankedArenaPage() {
                   gameStateRef.current = "idle";
                   setGameState("idle");
                   setActiveCategory(null);
+                  loadInitialData();
                 }}
                 className="text-xs text-zinc-400 hover:text-white flex items-center gap-1.5 transition cursor-pointer"
               >
@@ -1146,6 +1209,7 @@ export default function RankedArenaPage() {
                           gameStateRef.current = "idle";
                           setGameState("idle");
                           handleOpenArtistSheet(activeCategory.name);
+                          loadInitialData();
                         }}
                         className="w-full py-2.5 rounded-xl bg-emerald-950/80 hover:bg-emerald-900 text-goblinLime font-bold text-xs border border-emerald-500/30 transition flex items-center justify-center gap-2 cursor-pointer"
                       >
@@ -1170,6 +1234,7 @@ export default function RankedArenaPage() {
                         setActiveCategory(null);
                         setSelectedArtistName(null);
                         setArtistSheetData(null);
+                        loadInitialData();
                       }}
                       className="w-full py-2 text-xs text-zinc-400 hover:text-white transition cursor-pointer text-center"
                     >
@@ -1321,6 +1386,7 @@ export default function RankedArenaPage() {
                   onClick={() => {
                     setSelectedArtistName(null);
                     setArtistSheetError(null);
+                    loadInitialData();
                   }}
                   className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs transition cursor-pointer"
                 >
@@ -1347,6 +1413,7 @@ export default function RankedArenaPage() {
                   onClick={() => {
                     setSelectedArtistName(null);
                     setArtistSheetData(null);
+                    loadInitialData();
                   }}
                   className="flex items-center gap-2 text-xs font-bold text-zinc-400 hover:text-white transition mb-6 px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 w-fit cursor-pointer"
                 >
@@ -1437,7 +1504,7 @@ export default function RankedArenaPage() {
                       <button
                         type="button"
                         onClick={() => {
-                          const canonical = (categories || RANKED_CATEGORIES).find(
+                          const canonical = (categories.length > 0 ? categories : RANKED_CATEGORIES).find(
                             (c) => c.kind === "artist" && toArtistSlug(c.query || c.name) === artistSheetData.slug
                           );
                           const chosenId = canonical ? canonical.id : `artist_${artistSheetData.slug.replace(/-/g, "_")}`;
@@ -1929,15 +1996,92 @@ export default function RankedArenaPage() {
               </div>
             )}
 
+            {/* Loading skeleton while dynamic catalog loads */}
+            {loadingCategories && categories.length === 0 && (
+              <div className="space-y-4">
+                <div className="md:hidden space-y-2.5">
+                  {[1, 2, 3, 4].map((i) => (
+                    <div
+                      key={i}
+                      className="flex items-center gap-3 p-3 rounded-2xl bg-zinc-900/60 border border-emerald-500/15 animate-pulse"
+                    >
+                      <div className="w-14 h-14 rounded-xl bg-emerald-950/70 shrink-0" />
+                      <div className="flex-1 space-y-2">
+                        <div className="h-4 w-32 bg-white/10 rounded" />
+                        <div className="h-3 w-48 bg-white/5 rounded" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="hidden md:grid md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
+                  {[1, 2, 3, 4].map((i) => (
+                    <div
+                      key={i}
+                      className="aspect-square rounded-2xl bg-zinc-900/60 border border-emerald-500/15 animate-pulse p-5 flex flex-col justify-between"
+                    >
+                      <div className="w-16 h-16 rounded-xl bg-emerald-950/70" />
+                      <div className="space-y-2">
+                        <div className="h-5 w-36 bg-white/10 rounded" />
+                        <div className="h-3 w-full bg-white/5 rounded" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Clean Empty State when no artists have been played yet */}
+            {!loadingCategories &&
+              activeTab === "artist" &&
+              filteredCategories.length === 0 &&
+              !searchFilter.trim() && (
+                <div className="rounded-3xl bg-gradient-to-b from-emerald-950/35 via-[#0B1710] to-[#060D09] border border-emerald-500/20 p-8 sm:p-12 text-center space-y-5 shadow-xl">
+                  <div className="w-14 h-14 rounded-2xl bg-emerald-950/80 border border-emerald-400/30 flex items-center justify-center mx-auto shadow-lg shadow-emerald-900/30">
+                    <Sparkles className="w-7 h-7 text-goblinLime" />
+                  </div>
+                  <div className="space-y-2 max-w-lg mx-auto">
+                    <h3 className="font-display font-black text-xl sm:text-2xl text-white">
+                      ¡Estrena el ranking de artistas!
+                    </h3>
+                    <p className="text-xs sm:text-sm text-zinc-400 leading-relaxed">
+                      Aquí aparecerán ordenados los artistas más jugados por todos. Busca tu artista favorito arriba y juega la primera partida para posicionarlo en el #1.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-center gap-2 pt-1 max-w-xl mx-auto">
+                    {["Quevedo", "Bad Bunny", "Feid", "MVRK", "Alleh", "Olivia Rodrigo"].map((artistName) => (
+                      <button
+                        key={artistName}
+                        type="button"
+                        onClick={() => handleOpenArtistSheet(artistName)}
+                        className="px-4 py-2 rounded-full bg-emerald-950/70 hover:bg-emerald-900/80 border border-emerald-500/25 hover:border-goblinLime/60 text-xs font-bold text-emerald-200 hover:text-goblinLime transition flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Disc3 className="w-3.5 h-3.5 text-goblinLime" />
+                        <span>{artistName}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            {/* Theme search empty fallback */}
+            {!loadingCategories && activeTab === "theme" && filteredCategories.length === 0 && (
+              <div className="rounded-2xl bg-zinc-900/50 border border-white/10 p-6 text-center text-xs text-zinc-400">
+                No se encontraron temáticas para &ldquo;{searchFilter.trim()}&rdquo;.
+              </div>
+            )}
+
             {/* Discreet subtitle in "Por Artista" tab explaining dynamic popularity sorting */}
-            {activeTab === "artist" && (
+            {!loadingCategories && activeTab === "artist" && filteredCategories.length > 0 && (
               <div className="text-xs text-zinc-400 px-1">
                 Ordenado por los artistas más jugados · Busca cualquier artista para añadirlo al ranking
               </div>
             )}
 
             {/* Categories List - Mobile Spotify-style rows (< md) */}
-            <div className="md:hidden space-y-2.5">
+            <div
+              hidden={loadingCategories || filteredCategories.length === 0}
+              className={!loadingCategories && filteredCategories.length > 0 ? "md:hidden space-y-2.5" : "hidden"}
+            >
               {filteredCategories.map((cat) => (
                 <div
                   key={`mob_${cat.id}`}
@@ -1990,7 +2134,14 @@ export default function RankedArenaPage() {
             </div>
 
             {/* Categories Grid - Desktop View (md:grid) - 1:1 Square Cards */}
-            <div className="hidden md:grid md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
+            <div
+              hidden={loadingCategories || filteredCategories.length === 0}
+              className={
+                !loadingCategories && filteredCategories.length > 0
+                  ? "hidden md:grid md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5"
+                  : "hidden"
+              }
+            >
               {filteredCategories.map((cat) => (
                 <div
                   key={cat.id}
