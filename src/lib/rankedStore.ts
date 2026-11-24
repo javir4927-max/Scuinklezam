@@ -1,38 +1,63 @@
 import { redis } from "./roomStore";
 import { getArtistFacePhoto } from "./artistPhotos";
 import { isStrictArtistMatch } from "./songMatching";
+import { getSpotifyAppToken } from "./spotifyAppToken";
+import { getCuratedArtistDescription } from "./artistDescriptionsCatalog";
 export * from "./rankedTypes";
 import {
   RankedTier,
   calculateTier,
   LeaderboardEntry,
+  RankedCategory,
   RANKED_CATEGORIES,
+  CANONICAL_ARTIST_NAMES,
+  toArtistSlug,
+  getCanonicalArtistName,
 } from "./rankedTypes";
 
-// Helper to normalize artist names to clean URL/Redis slugs
-export function toArtistSlug(name: string): string {
-  if (!name) return "artist";
-  return name
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "artist";
+// Global-persisted in-memory fallbacks so HMR / offline Redis stays consistent during dev
+declare global {
+  var __scuinklezamMemoryScores: Map<string, Map<string, { score: number; nickname: string; avatarUrl: string }>> | undefined;
+  var __scuinklezamMemoryPersonalBests: Map<string, Map<string, number>> | undefined;
+  var __scuinklezamMemoryStats: Map<string, { totalPlays: number; totalPoints: number }> | undefined;
+  var __scuinklezamMemoryHistory: Map<string, Array<any>> | undefined;
+  var __scuinklezamMemoryArtistStats:
+    | Map<
+        string,
+        Map<
+          string,
+          {
+            totalPoints: number;
+            bestScore: number;
+            quizzesPlayed: number;
+            nickname: string;
+            avatarUrl: string;
+          }
+        >
+      >
+    | undefined;
+  var __scuinklezamMemoryArtistsPopularity: Map<string, number> | undefined;
+  var __scuinklezamMemoryArtistsMeta: Map<string, { n: string; d?: string }> | undefined;
+  var __scuinklezamMemoryCategoryPlays: Map<string, number> | undefined;
 }
 
-// In-memory fallback scores if Redis is unreachable
-const memoryScores = new Map<string, Map<string, { score: number; nickname: string; avatarUrl: string }>>();
-const memoryStats = new Map<string, { totalPlays: number; totalPoints: number }>();
-const memoryHistory = new Map<string, Array<any>>();
+if (!global.__scuinklezamMemoryScores) global.__scuinklezamMemoryScores = new Map();
+if (!global.__scuinklezamMemoryPersonalBests) global.__scuinklezamMemoryPersonalBests = new Map();
+if (!global.__scuinklezamMemoryStats) global.__scuinklezamMemoryStats = new Map();
+if (!global.__scuinklezamMemoryHistory) global.__scuinklezamMemoryHistory = new Map();
+if (!global.__scuinklezamMemoryArtistStats) global.__scuinklezamMemoryArtistStats = new Map();
+if (!global.__scuinklezamMemoryArtistsPopularity) global.__scuinklezamMemoryArtistsPopularity = new Map();
+if (!global.__scuinklezamMemoryArtistsMeta) global.__scuinklezamMemoryArtistsMeta = new Map();
+if (!global.__scuinklezamMemoryCategoryPlays) global.__scuinklezamMemoryCategoryPlays = new Map();
 
-// In-memory fallback for artist-specific ranked stats
-const memoryArtistStats = new Map<string, Map<string, {
-  totalPoints: number;
-  bestScore: number;
-  quizzesPlayed: number;
-  nickname: string;
-  avatarUrl: string;
-}>>();
+const memoryScores = global.__scuinklezamMemoryScores;
+const memoryPersonalBests = global.__scuinklezamMemoryPersonalBests;
+const memoryStats = global.__scuinklezamMemoryStats;
+const memoryHistory = global.__scuinklezamMemoryHistory;
+const memoryArtistStats = global.__scuinklezamMemoryArtistStats;
+const memoryArtistsPopularity = global.__scuinklezamMemoryArtistsPopularity;
+const memoryArtistsMeta = global.__scuinklezamMemoryArtistsMeta;
+const memoryCategoryPlays = global.__scuinklezamMemoryCategoryPlays;
 
 // Thematic clusters to discover 12 related artists with verified HD face photos
 const ARTIST_CLUSTERS = [
@@ -41,7 +66,7 @@ const ARTIST_CLUSTERS = [
     "Quevedo", "Saiko", "JC Reyes", "Omar Montes", "Lucho RK", "La Pantera", "Rels B",
     "Bad Gyal", "Morad", "Lola Indigo", "Cruzzi", "Delaossa", "Hoke", "Recycled J",
     "Cano", "Cyril Kamer", "Ana Mena", "Aitana", "Beny Jr", "Ill Pekeño", "Ergo Pro",
-    "Israel B", "Gloosito", "Soto Asa", "Yung Beef", "Kaydy Cain", "Abhir Hathi", "Juicy BAE"
+    "Israel B", "Gloosito", "Soto Asa", "Yung Beef", "Kaydy Cain", "Abhir", "Juicy BAE"
   ],
   // Reggaetón & Urbano Latino
   [
@@ -62,11 +87,80 @@ const ARTIST_CLUSTERS = [
 
 const DEEZER_EMPTY_HASH = "d41d8cd98f00b204e9800998ecf8427e";
 
+function capFirst(str: string): string {
+  if (!str) return "";
+  return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
+function formatSlugToName(slug: string): string {
+  return slug
+    .split("-")
+    .map((w) => (w ? capFirst(w) : ""))
+    .join(" ");
+}
+
+/**
+ * Resolves compact artist catalog metadata for Redis.
+ * - If present in the static curated catalog (+240 artists), stores ONLY { n: cleanName } (0 description bytes in Redis).
+ * - Otherwise fetches 1-2 Spotify genres (timeout 2000ms) or falls back cleanly.
+ */
+export async function resolveArtistCatalogMeta(
+  artistName: string,
+  providedSlug?: string
+): Promise<{ n: string; d?: string }> {
+  const cleanName = getCanonicalArtistName(artistName);
+  const slug = providedSlug ? toArtistSlug(providedSlug) : toArtistSlug(cleanName);
+
+  const curated = getCuratedArtistDescription(slug);
+  if (curated) {
+    return { n: cleanName };
+  }
+
+  let genres: string[] = [];
+  try {
+    const token = await getSpotifyAppToken();
+    if (token) {
+      const res = await fetch(
+        `https://api.spotify.com/v1/search?q=${encodeURIComponent(cleanName)}&type=artist&limit=3`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(2000),
+          cache: "no-store",
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const items: any[] = data?.artists?.items || [];
+        const matched =
+          items
+            .filter((a) => isStrictArtistMatch(a.name || "", cleanName))
+            .sort((a, b) => (b.followers?.total || 0) - (a.followers?.total || 0))[0] || items[0];
+        if (matched && Array.isArray(matched.genres)) {
+          genres = matched.genres.filter(Boolean).slice(0, 2);
+        }
+      }
+    }
+  } catch {
+    // Graceful fallback below
+  }
+
+  let generatedDescription: string;
+  if (genres.length >= 2) {
+    generatedDescription = `${capFirst(genres[0])} y ${genres[1]} · Demuestra cuánto sabes de los temazos de ${cleanName}`;
+  } else if (genres.length === 1) {
+    generatedDescription = `${capFirst(genres[0])} · Demuestra cuánto sabes de los temazos de ${cleanName}`;
+  } else {
+    generatedDescription = `Catálogo verificado · Pon a prueba tu oído con todas las eras de ${cleanName}`;
+  }
+
+  return { n: cleanName, d: generatedDescription };
+}
+
 export async function getDeezerRelatedArtists(
   artistName: string
 ): Promise<Array<{ name: string; slug: string; imageUrl: string }>> {
   try {
-    const clean = artistName.split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)/i)[0].trim();
+    const clean = getCanonicalArtistName(artistName.split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)/i)[0].trim());
     const searchRes = await fetch(
       `https://api.deezer.com/search/artist?q=${encodeURIComponent(clean)}`,
       {
@@ -98,10 +192,11 @@ export async function getDeezerRelatedArtists(
       if (img && img.includes(DEEZER_EMPTY_HASH)) {
         img = "";
       }
+      const canonicalRelName = getCanonicalArtistName(a.name);
       return {
-        name: a.name,
-        slug: toArtistSlug(a.name),
-        imageUrl: img || `/api/artists/photo?name=${encodeURIComponent(a.name)}`,
+        name: canonicalRelName,
+        slug: toArtistSlug(canonicalRelName),
+        imageUrl: img || `/api/artists/photo?name=${encodeURIComponent(canonicalRelName)}`,
       };
     });
   } catch (e) {
@@ -111,7 +206,7 @@ export async function getDeezerRelatedArtists(
 }
 
 export function getRelatedArtistsFor(artistName: string): Array<{ name: string; slug: string; imageUrl: string }> {
-  const clean = artistName.trim().toLowerCase();
+  const clean = getCanonicalArtistName(artistName).trim().toLowerCase();
   const cleanNorm = clean.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
   // Find primary cluster
@@ -123,7 +218,6 @@ export function getRelatedArtistsFor(artistName: string): Array<{ name: string; 
   );
 
   if (!targetCluster) {
-    // Default to España Urbano
     targetCluster = ARTIST_CLUSTERS[0];
   }
 
@@ -172,6 +266,10 @@ export function getRelatedArtistsFor(artistName: string): Array<{ name: string; 
   return result.slice(0, 12);
 }
 
+/**
+ * Submits a ranked match score (0..1000) into cumulative category and global leaderboards.
+ * Single match score and bestScore stay <= 1000, while ZSET totalPoints accumulates without 1000 cap.
+ */
 export async function submitRankedScore(
   userId: string,
   nickname: string,
@@ -183,77 +281,69 @@ export async function submitRankedScore(
 ): Promise<{
   success: boolean;
   score: number;
+  totalScore: number;
+  globalTotal: number;
   rank: number;
   tier: RankedTier;
+  globalTier: RankedTier;
   isPersonalBest: boolean;
   persistedInRedis: boolean;
   redisError?: string;
 }> {
   const safeScore = Math.min(1000, Math.max(0, Math.round(score)));
-  const tier = calculateTier(safeScore);
   let isPersonalBest = true;
-  let bestScore = safeScore;
+  let newCategoryTotal = safeScore;
+  let newGlobalTotal = safeScore;
+  let rank = 1;
   let persistedInRedis = false;
   let redisError: string | undefined;
 
-  // 1. If Redis is available, query real persistent record first to resist cold starts
   if (redis) {
     try {
       const catKey = `scuinklezam:ranked:${categoryId}`;
-      const prevCatScoreRaw = await redis.zscore(catKey, userId);
-      const prevCatScore = Math.min(1000, Number(prevCatScoreRaw || 0));
 
-      isPersonalBest = safeScore > prevCatScore;
-      bestScore = Math.min(1000, Math.max(prevCatScore, safeScore));
+      // 1. Query previous single-game personal best in this category (0..1000)
+      const prevBestRaw = await redis.hget<string>(`scuinklezam:user_bests:${userId}`, categoryId);
+      const prevBestSingle = Math.min(1000, Number(prevBestRaw || 0));
+      isPersonalBest = safeScore > prevBestSingle;
+      const newBestSingle = Math.max(prevBestSingle, safeScore);
 
-      // 1. Increment real play counts (global + single category_plays hash)
-      await redis.incr(`scuinklezam:stats:plays:${categoryId}`).catch(() => {});
-      await redis.incr(`scuinklezam:stats:plays:global`).catch(() => {});
+      // 2. Increment play count in category_plays Hash
       await redis.hincrby("scuinklezam:stats:category_plays", categoryId, 1);
-      if (categoryId.startsWith("artist_")) {
-        const matchingCanonical = RANKED_CATEGORIES.find((cat) => {
-          if (cat.kind !== "artist") return false;
-          const catSlug = toArtistSlug(cat.query || cat.name);
-          return categoryId === `artist_${catSlug}` || categoryId === cat.id;
+
+      // 3. Increment cumulative scores in Category ZSET and Global ZSET (no 1000 cap!)
+      newCategoryTotal = Number(await redis.zincrby(catKey, safeScore, userId));
+      newGlobalTotal = Number(await redis.zincrby("scuinklezam:ranked:global", safeScore, userId));
+
+      // 4. Increment user global stats
+      await redis.hincrby(`scuinklezam:user_stats:${userId}`, "totalPlays", 1);
+      await redis.hincrby(`scuinklezam:user_stats:${userId}`, "totalPoints", safeScore);
+
+      // 5. Update single-game personal best hash only when beaten (or missing)
+      if (isPersonalBest || !prevBestRaw) {
+        await redis.hset(`scuinklezam:user_bests:${userId}`, {
+          [categoryId]: newBestSingle,
         });
-        if (matchingCanonical && matchingCanonical.id !== categoryId) {
-          await redis.hincrby("scuinklezam:stats:category_plays", matchingCanonical.id, 1);
-        }
       }
 
-      // 2. Update category leaderboard (only best score per user in sorted set)
-      await redis.zadd(catKey, {
-        score: bestScore,
-        member: userId,
-      });
+      // 6. Save user profile metadata preserving highest single-game best and updated cumulative totalPoints
+      const existingProfRaw = await redis.get<string | any>(`scuinklezam:user_profile:${userId}`);
+      const existingProf = typeof existingProfRaw === "string" ? JSON.parse(existingProfRaw) : existingProfRaw;
+      const prevGlobalBestSingle = Math.min(1000, Number(existingProf?.bestScore || 0));
 
-      // 2.5 Query existing global record to prevent downgrading global personal best
-      const prevGlobalRaw = await redis.zscore("scuinklezam:ranked:global", userId);
-      const prevGlobal = Math.min(1000, Number(prevGlobalRaw || 0));
-      const effectiveGlobalBest = Math.min(1000, Math.max(prevGlobal, bestScore));
-
-      // 3. Save user profile metadata for leaderboard display
       await redis.set(
         `scuinklezam:user_profile:${userId}`,
         JSON.stringify({
           userId,
           nickname,
           avatarUrl,
-          bestScore: effectiveGlobalBest,
+          totalPoints: newGlobalTotal,
+          bestScore: Math.max(prevGlobalBestSingle, safeScore),
           lastPlayed: Date.now(),
         })
       );
 
-      // 4. Update user's personal bests hash
-      await redis.hset(`scuinklezam:user_bests:${userId}`, {
-        [categoryId]: bestScore,
-      });
-
-      // 5. Update user global stats
-      await redis.hincrby(`scuinklezam:user_stats:${userId}`, "totalPlays", 1);
-      await redis.hincrby(`scuinklezam:user_stats:${userId}`, "totalPoints", safeScore);
-
-      // 6. Push match to user recent history
+      // 7. Push match to user recent history (max 20)
       await redis.lpush(
         `scuinklezam:user_history:${userId}`,
         JSON.stringify({
@@ -266,11 +356,11 @@ export async function submitRankedScore(
       );
       await redis.ltrim(`scuinklezam:user_history:${userId}`, 0, 19);
 
-      // 7. Global score leaderboard (record max)
-      await redis.zadd("scuinklezam:ranked:global", {
-        score: effectiveGlobalBest,
-        member: userId,
-      });
+      // 8. Compute user's real rank in category sorted set
+      const rankIdx = await redis.zrevrank(catKey, userId);
+      if (rankIdx !== null && rankIdx !== undefined) {
+        rank = rankIdx + 1;
+      }
 
       persistedInRedis = true;
     } catch (err: any) {
@@ -279,54 +369,66 @@ export async function submitRankedScore(
     }
   }
 
-  // In-memory fallback update
-  if (!memoryScores.has(categoryId)) {
-    memoryScores.set(categoryId, new Map());
+  // Always keep in-memory fallback synchronized when Redis is unavailable/offline
+  if (!persistedInRedis) {
+    memoryCategoryPlays.set(categoryId, (memoryCategoryPlays.get(categoryId) || 0) + 1);
+
+    if (!memoryScores.has(categoryId)) memoryScores.set(categoryId, new Map());
+    const catMap = memoryScores.get(categoryId)!;
+    const prevCatTotal = catMap.get(userId)?.score || 0;
+    newCategoryTotal = prevCatTotal + safeScore;
+    catMap.set(userId, { score: newCategoryTotal, nickname, avatarUrl });
+
+    if (!memoryScores.has("global")) memoryScores.set("global", new Map());
+    const globalMap = memoryScores.get("global")!;
+    const prevGlobalTotal = globalMap.get(userId)?.score || 0;
+    newGlobalTotal = prevGlobalTotal + safeScore;
+    globalMap.set(userId, { score: newGlobalTotal, nickname, avatarUrl });
+
+    if (!memoryPersonalBests.has(userId)) memoryPersonalBests.set(userId, new Map());
+    const userBestsMap = memoryPersonalBests.get(userId)!;
+    const prevSingle = Math.min(1000, userBestsMap.get(categoryId) || 0);
+    isPersonalBest = safeScore > prevSingle;
+    userBestsMap.set(categoryId, Math.max(prevSingle, safeScore));
+
+    const sorted = Array.from(catMap.entries()).sort((a, b) => b[1].score - a[1].score);
+    const idx = sorted.findIndex(([uid]) => uid === userId);
+    rank = idx !== -1 ? idx + 1 : 1;
+
+    const mStats = memoryStats.get(userId) || { totalPlays: 0, totalPoints: 0 };
+    mStats.totalPlays += 1;
+    mStats.totalPoints += safeScore;
+    memoryStats.set(userId, mStats);
+
+    const mHist = memoryHistory.get(userId) || [];
+    mHist.unshift({
+      categoryId,
+      categoryName: categoryName || categoryId,
+      score: safeScore,
+      correctCount: correctCount ?? Math.round(safeScore / 100),
+      timestamp: Date.now(),
+    });
+    if (mHist.length > 20) mHist.pop();
+    memoryHistory.set(userId, mHist);
   }
-  const catMap = memoryScores.get(categoryId)!;
-  const current = catMap.get(userId);
-  if (!redis) {
-    const currentScore = Math.min(1000, current?.score ?? 0);
-    isPersonalBest = !current || safeScore > currentScore;
-    bestScore = isPersonalBest ? safeScore : (current ? currentScore : safeScore);
-  }
-
-  catMap.set(userId, { score: bestScore, nickname, avatarUrl });
-
-  // Update in-memory user stats
-  const mStats = memoryStats.get(userId) || { totalPlays: 0, totalPoints: 0 };
-  mStats.totalPlays += 1;
-  mStats.totalPoints += safeScore;
-  memoryStats.set(userId, mStats);
-
-  // Update in-memory history
-  const mHist = memoryHistory.get(userId) || [];
-  mHist.unshift({
-    categoryId,
-    categoryName: categoryName || categoryId,
-    score: safeScore,
-    correctCount: correctCount ?? Math.round(safeScore / 100),
-    timestamp: Date.now(),
-  });
-  if (mHist.length > 20) mHist.pop();
-  memoryHistory.set(userId, mHist);
-
-  // Calculate real rank
-  const leaderboard = await getCategoryLeaderboard(categoryId, userId);
-  const userEntry = leaderboard.entries.find((e) => e.userId === userId);
-  const rank = userEntry ? userEntry.rank : 1;
 
   return {
     success: true,
-    score: bestScore,
+    score: safeScore,
+    totalScore: newCategoryTotal,
+    globalTotal: newGlobalTotal,
     rank,
-    tier,
+    tier: calculateTier(newCategoryTotal),
+    globalTier: calculateTier(newGlobalTotal),
     isPersonalBest,
     persistedInRedis,
     redisError,
   };
 }
 
+/**
+ * Fetches Top 20 cumulative leaderboard for a category (or "global") in 2 Redis commands (zrange + mget).
+ */
 export async function getCategoryLeaderboard(
   categoryId: string,
   currentUserId?: string
@@ -337,10 +439,8 @@ export async function getCategoryLeaderboard(
 }> {
   const entries: LeaderboardEntry[] = [];
 
-  // Try Redis first
   if (redis) {
     try {
-      // Get top 20 members sorted descending (rev)
       const topIds = await redis.zrange<string[]>(`scuinklezam:ranked:${categoryId}`, 0, 19, {
         rev: true,
         withScores: true,
@@ -351,13 +451,7 @@ export async function getCategoryLeaderboard(
         for (let i = 0; i < topIds.length; i += 2) {
           const mId = typeof topIds[i] === "object" ? (topIds[i] as any).member : topIds[i];
           const rawScore = typeof topIds[i] === "object" ? Number((topIds[i] as any).score) : Number(topIds[i + 1]);
-          const mScore = Math.min(1000, Math.max(0, Math.round(rawScore || 0)));
-
-          // Auto-heal any legacy record > 1000 in Redis sorted set
-          if (rawScore > 1000) {
-            redis.zadd(`scuinklezam:ranked:${categoryId}`, { score: mScore, member: mId }).catch(() => {});
-          }
-
+          const mScore = Math.max(0, Math.round(rawScore || 0));
           memberEntries.push({ userId: mId, score: mScore });
         }
 
@@ -368,11 +462,6 @@ export async function getCategoryLeaderboard(
           const m = memberEntries[idx];
           const pRaw = profilesRaw ? profilesRaw[idx] : null;
           const profile = typeof pRaw === "string" ? JSON.parse(pRaw) : pRaw;
-
-          if (profile && profile.bestScore && Number(profile.bestScore) > 1000) {
-            profile.bestScore = 1000;
-            redis.set(`scuinklezam:user_profile:${m.userId}`, JSON.stringify(profile)).catch(() => {});
-          }
 
           const nick = profile?.nickname || `Jugador #${idx + 1}`;
           const av =
@@ -410,11 +499,48 @@ export async function getCategoryLeaderboard(
     });
   }
 
-  // ZERO fake bots! If empty, entries remain empty.
-
   let userEntry: LeaderboardEntry | null = null;
   if (currentUserId) {
     userEntry = entries.find((e) => e.userId === currentUserId) || null;
+    if (!userEntry && redis) {
+      try {
+        const [uScoreRaw, uRankIdx, uProfRaw] = await Promise.all([
+          redis.zscore(`scuinklezam:ranked:${categoryId}`, currentUserId),
+          redis.zrevrank(`scuinklezam:ranked:${categoryId}`, currentUserId),
+          redis.get<string | any>(`scuinklezam:user_profile:${currentUserId}`),
+        ]);
+        if (uScoreRaw !== null && uScoreRaw !== undefined) {
+          const uScore = Math.max(0, Math.round(Number(uScoreRaw) || 0));
+          const uProf = typeof uProfRaw === "string" ? JSON.parse(uProfRaw) : uProfRaw;
+          const nick = uProf?.nickname || "Jugador";
+          userEntry = {
+            userId: currentUserId,
+            nickname: nick,
+            avatarUrl:
+              uProf?.avatarUrl ||
+              `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(nick)}&backgroundColor=0B1710`,
+            score: uScore,
+            rank: (uRankIdx ?? entries.length) + 1,
+            tier: calculateTier(uScore),
+          };
+        }
+      } catch {}
+    } else if (!userEntry && memoryScores.has(categoryId)) {
+      const catMap = memoryScores.get(categoryId)!;
+      if (catMap.has(currentUserId)) {
+        const sorted = Array.from(catMap.entries()).sort((a, b) => b[1].score - a[1].score);
+        const idx = sorted.findIndex(([uid]) => uid === currentUserId);
+        const uVal = catMap.get(currentUserId)!;
+        userEntry = {
+          userId: currentUserId,
+          nickname: uVal.nickname,
+          avatarUrl: uVal.avatarUrl,
+          score: uVal.score,
+          rank: idx !== -1 ? idx + 1 : entries.length + 1,
+          tier: calculateTier(uVal.score),
+        };
+      }
+    }
   }
 
   return {
@@ -429,6 +555,7 @@ export async function getUserProfileData(userId: string) {
   let totalPoints = 0;
   let personalBests: Record<string, number> = {};
   let recentMatches: Array<any> = [];
+  let loadedFromRedis = false;
 
   if (redis) {
     try {
@@ -449,33 +576,44 @@ export async function getUserProfileData(userId: string) {
       if (historyRaw && Array.isArray(historyRaw)) {
         recentMatches = historyRaw.map((raw) => (typeof raw === "string" ? JSON.parse(raw) : raw));
       }
+      loadedFromRedis = true;
     } catch (err) {
       console.warn("[getUserProfileData] Redis read error:", err);
     }
-  } else {
+  }
+
+  if (!loadedFromRedis) {
     const s = memoryStats.get(userId);
     if (s) {
       totalPlays = s.totalPlays;
       totalPoints = s.totalPoints;
     }
+    const uBests = memoryPersonalBests.get(userId);
+    if (uBests) {
+      uBests.forEach((sc, catId) => {
+        personalBests[catId] = Math.min(1000, sc);
+      });
+    }
     recentMatches = memoryHistory.get(userId) || [];
   }
 
   const averageScore = totalPlays > 0 ? Math.round(totalPoints / totalPlays) : 0;
-  const currentTier = calculateTier(averageScore || 0);
+  const currentTier = calculateTier(totalPoints);
 
-  // Find best category
+  // Find best single-match category
   let bestCategoryId = "";
   let bestScore = 0;
   for (const [catId, sc] of Object.entries(personalBests)) {
-    if (sc > bestScore) {
-      bestScore = sc;
+    const single = Math.min(1000, sc);
+    if (single > bestScore) {
+      bestScore = single;
       bestCategoryId = catId;
     }
   }
 
   return {
     totalPlays,
+    totalPoints,
     averageScore,
     currentTier,
     bestCategoryId,
@@ -487,7 +625,8 @@ export async function getUserProfileData(userId: string) {
 
 /**
  * Submits a ranked quiz run score specifically for an individual artist.
- * Updates the cumulative points, best score, quizzes played and sorted set leaderboard in Redis.
+ * Accumulates totalPoints without 1000 cap, keeps bestScore <= 1000,
+ * and increments global artist popularity for dynamic catalog sorting.
  */
 export async function submitArtistRankedScore(
   userId: string,
@@ -502,10 +641,11 @@ export async function submitArtistRankedScore(
   bestScore: number;
   quizzesPlayed: number;
   userRank: number | null;
+  tier: RankedTier;
   persistedInRedis: boolean;
   redisError?: string;
 }> {
-  const cleanName = artistName.trim();
+  const cleanName = getCanonicalArtistName(artistName);
   const slug = toArtistSlug(cleanName);
   const safeScore = Math.min(1000, Math.max(0, Math.round(score)));
 
@@ -527,7 +667,7 @@ export async function submitArtistRankedScore(
       newTotalPoints = Number(updatedPoints || safeScore);
       newQuizzesPlayed = Number(updatedQuizzes || 1);
 
-      // 2. Read previous best score and calculate final best score
+      // 2. Read previous best score (0..1000) and update personal single best
       const prevBestRaw = await redis.hget<string>(statsKey, "bestScore");
       const prevBest = Math.min(1000, Number(prevBestRaw || 0));
       finalBestScore = Math.min(1000, Math.max(prevBest, safeScore));
@@ -539,40 +679,53 @@ export async function submitArtistRankedScore(
         lastPlayed: Date.now(),
       });
 
-      // 3. Update artist leaderboard sorted set with RECORD (finalBestScore), NOT cumulative totalPoints!
+      // 3. Update artist leaderboard sorted set with CUMULATIVE totalPoints!
       await redis.zadd(zsetKey, {
-        score: finalBestScore,
+        score: newTotalPoints,
         member: userId,
       });
 
-      // 3.5 Update unified artist meta hash for 1-command leaderboard reads
+      // 4. Update unified artist meta hash for 1-command leaderboard reads
       await redis.hset(`scuinklezam:artist_meta:${slug}`, {
         [userId]: JSON.stringify({
           nickname,
           avatarUrl,
-          bestScore: finalBestScore,
           totalPoints: newTotalPoints,
+          bestScore: finalBestScore,
           quizzesPlayed: newQuizzesPlayed,
         }),
       });
 
-      // 4. Save user profile for global lookups, preserving existing global bestScore
+      // 5. Increment global artist popularity (+1 total match played) & store compact catalog meta if missing
+      await redis.zincrby("scuinklezam:ranked:artists_popularity", 1, slug);
+      const metaExists = await redis.hexists("scuinklezam:ranked:artists_meta", slug);
+      if (!metaExists) {
+        const meta = await resolveArtistCatalogMeta(cleanName, slug);
+        await redis.hset("scuinklezam:ranked:artists_meta", {
+          [slug]: JSON.stringify(meta),
+        });
+      }
+
+      // 6. Preserve user_profile without overwriting totalPoints or downgrading bestScore
       const existingProfileRaw = await redis.get<string | any>(`scuinklezam:user_profile:${userId}`);
-      const existingProfile = typeof existingProfileRaw === "string" ? JSON.parse(existingProfileRaw) : existingProfileRaw;
-      const preservedGlobalBest = Math.max(Number(existingProfile?.bestScore || 0), finalBestScore);
+      const existingProfile =
+        typeof existingProfileRaw === "string" ? JSON.parse(existingProfileRaw) : existingProfileRaw;
+      const preservedGlobalBest = Math.max(Math.min(1000, Number(existingProfile?.bestScore || 0)), finalBestScore);
 
       await redis.set(
         `scuinklezam:user_profile:${userId}`,
         JSON.stringify({
+          ...(existingProfile || {}),
           userId,
           nickname,
           avatarUrl,
+          totalPoints: existingProfile?.totalPoints ?? newTotalPoints,
           bestScore: preservedGlobalBest,
           lastPlayed: Date.now(),
         })
       );
 
-      // 5. Get user's updated rank in artist sorted set (0-indexed descending)
+      // 7. Get user's updated rank in artist sorted set
       const rankIdx = await redis.zrevrank(zsetKey, userId);
       if (rankIdx !== null && rankIdx !== undefined) {
         userRank = rankIdx + 1;
@@ -585,37 +738,39 @@ export async function submitArtistRankedScore(
     }
   }
 
-  // In-memory update
-  if (!memoryArtistStats.has(slug)) {
-    memoryArtistStats.set(slug, new Map());
-  }
-  const artistMap = memoryArtistStats.get(slug)!;
-  const current = artistMap.get(userId) || {
-    totalPoints: 0,
-    bestScore: 0,
-    quizzesPlayed: 0,
-    nickname,
-    avatarUrl,
-  };
+  if (!persistedInRedis) {
+    if (!memoryArtistStats.has(slug)) {
+      memoryArtistStats.set(slug, new Map());
+    }
+    const artistMap = memoryArtistStats.get(slug)!;
+    const current = artistMap.get(userId) || {
+      totalPoints: 0,
+      bestScore: 0,
+      quizzesPlayed: 0,
+      nickname,
+      avatarUrl,
+    };
 
-  if (!redis) {
     newTotalPoints = current.totalPoints + safeScore;
     finalBestScore = Math.min(1000, Math.max(Math.min(1000, current.bestScore), safeScore));
     newQuizzesPlayed = current.quizzesPlayed + 1;
-  }
 
-  artistMap.set(userId, {
-    totalPoints: newTotalPoints,
-    bestScore: finalBestScore,
-    quizzesPlayed: newQuizzesPlayed,
-    nickname,
-    avatarUrl,
-  });
+    artistMap.set(userId, {
+      totalPoints: newTotalPoints,
+      bestScore: finalBestScore,
+      quizzesPlayed: newQuizzesPlayed,
+      nickname,
+      avatarUrl,
+    });
 
-  if (userRank === null) {
-    // In-memory rank calculation sorted by bestScore
+    memoryArtistsPopularity.set(slug, (memoryArtistsPopularity.get(slug) || 0) + 1);
+    if (!memoryArtistsMeta.has(slug)) {
+      const meta = await resolveArtistCatalogMeta(cleanName, slug);
+      memoryArtistsMeta.set(slug, meta);
+    }
+
     const allPlayers = Array.from(artistMap.entries()).sort(
-      (a, b) => b[1].bestScore - a[1].bestScore || b[1].totalPoints - a[1].totalPoints
+      (a, b) => b[1].totalPoints - a[1].totalPoints || b[1].bestScore - a[1].bestScore
     );
     const idx = allPlayers.findIndex(([uid]) => uid === userId);
     userRank = idx !== -1 ? idx + 1 : 1;
@@ -627,6 +782,7 @@ export async function submitArtistRankedScore(
     bestScore: finalBestScore,
     quizzesPlayed: newQuizzesPlayed,
     userRank,
+    tier: calculateTier(newTotalPoints),
     persistedInRedis,
     redisError,
   };
@@ -634,7 +790,7 @@ export async function submitArtistRankedScore(
 
 /**
  * Returns complete Ficha de Artista data:
- * user stats, visual podium, top 50 leaderboard, and 12 related artists.
+ * canonical artistName/slug, description, user stats, top 50 leaderboard sorted by totalPoints, and 12 related artists.
  */
 export async function getArtistProfileAndLeaderboard(
   artistName: string,
@@ -642,6 +798,7 @@ export async function getArtistProfileAndLeaderboard(
 ): Promise<{
   artistName: string;
   slug: string;
+  description: string;
   photoUrl: string;
   userStats: {
     userRank: number | null;
@@ -649,6 +806,7 @@ export async function getArtistProfileAndLeaderboard(
     totalPoints: number;
     quizzesPlayed: number;
     bestScore: number;
+    tier: RankedTier;
   };
   leaderboard: Array<{
     rank: number;
@@ -658,6 +816,7 @@ export async function getArtistProfileAndLeaderboard(
     totalPoints: number;
     bestScore: number;
     quizzesPlayed: number;
+    tier: RankedTier;
     isCurrentUser: boolean;
   }>;
   relatedArtists: Array<{
@@ -666,9 +825,29 @@ export async function getArtistProfileAndLeaderboard(
     imageUrl: string;
   }>;
 }> {
-  const cleanName = artistName.trim();
+  const cleanName = getCanonicalArtistName(artistName);
   const slug = toArtistSlug(cleanName);
   const photoUrl = await getArtistFacePhoto(cleanName);
+
+  // Resolve artist description cleanly (0 Redis reads if in static catalog!)
+  let description = getCuratedArtistDescription(slug) || "";
+  if (!description && redis) {
+    try {
+      const rawMeta = await redis.hget<string | { n?: string; d?: string }>("scuinklezam:ranked:artists_meta", slug);
+      const parsed = typeof rawMeta === "string" ? JSON.parse(rawMeta) : rawMeta;
+      if (parsed?.d) description = parsed.d;
+    } catch {}
+  }
+  if (!description) {
+    const cachedMemMeta = memoryArtistsMeta.get(slug);
+    if (cachedMemMeta?.d) {
+      description = cachedMemMeta.d;
+    } else {
+      const resolvedMeta = await resolveArtistCatalogMeta(cleanName, slug);
+      description = resolvedMeta.d || `Catálogo verificado · Pon a prueba tu oído con todas las eras de ${cleanName}`;
+      memoryArtistsMeta.set(slug, resolvedMeta);
+    }
+  }
 
   let totalPlayers = 0;
   let userRank: number | null = null;
@@ -683,6 +862,7 @@ export async function getArtistProfileAndLeaderboard(
     totalPoints: number;
     bestScore: number;
     quizzesPlayed: number;
+    tier: RankedTier;
     isCurrentUser: boolean;
   }> = [];
 
@@ -706,7 +886,7 @@ export async function getArtistProfileAndLeaderboard(
         }
       }
 
-      // Leaderboard Top 50
+      // Leaderboard Top 50 sorted descending by totalPoints
       const topIds = await redis.zrange<any[]>(zsetKey, 0, 49, {
         rev: true,
         withScores: true,
@@ -717,7 +897,7 @@ export async function getArtistProfileAndLeaderboard(
         for (let i = 0; i < topIds.length; i += 2) {
           const mId = typeof topIds[i] === "object" ? (topIds[i] as any).member : topIds[i];
           const rawScore = typeof topIds[i] === "object" ? Number((topIds[i] as any).score) : Number(topIds[i + 1]);
-          const mScore = Math.min(1000, Math.max(0, Math.round(rawScore || 0)));
+          const mScore = Math.max(0, Math.round(rawScore || 0));
           memberEntries.push({ userId: mId, score: mScore });
         }
 
@@ -729,7 +909,7 @@ export async function getArtistProfileAndLeaderboard(
           console.warn("[getArtistProfileAndLeaderboard] hmget error:", e);
         }
 
-        // Identify any members missing from artist_meta for batch fallback
+        // Batch fallback for any legacy member missing from artist_meta
         const missingIds = memberIds.filter((id) => !metaMap || !metaMap[id]);
         let fallbackProfiles: Record<string, any> = {};
         if (missingIds.length > 0) {
@@ -749,13 +929,18 @@ export async function getArtistProfileAndLeaderboard(
           const meta = typeof rawMeta === "string" ? JSON.parse(rawMeta) : rawMeta;
           const fallback = fallbackProfiles[mId];
 
-          let nick = meta?.nickname || fallback?.nickname || `Jugador #${idx + 1}`;
-          let av = meta?.avatarUrl || fallback?.avatarUrl || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(nick)}&backgroundColor=0B1710`;
+          const nick = meta?.nickname || fallback?.nickname || `Jugador #${idx + 1}`;
+          const av =
+            meta?.avatarUrl ||
+            fallback?.avatarUrl ||
+            `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(nick)}&backgroundColor=0B1710`;
 
-          const rawBest = Number(meta?.bestScore || fallback?.bestScore || 0);
-          const entryBest = Math.min(1000, rawBest || Math.min(1000, mScore));
-          if (mScore > 1000 || mScore !== entryBest) {
-            redis.zadd(zsetKey, { score: entryBest, member: mId }).catch(() => {});
+          const entryTotal = Math.max(0, Math.round(Number(meta?.totalPoints ?? mScore)));
+          const entryBest = Math.min(1000, Math.max(0, Math.round(Number(meta?.bestScore ?? Math.min(1000, mScore)))));
+
+          // Migrate legacy ZSET scores that stored bestScore instead of cumulative totalPoints
+          if (entryTotal > mScore) {
+            redis.zadd(zsetKey, { score: entryTotal, member: mId }).catch(() => {});
           }
 
           leaderboard.push({
@@ -763,14 +948,15 @@ export async function getArtistProfileAndLeaderboard(
             userId: mId,
             nickname: nick,
             avatarUrl: av,
-            totalPoints: Number(meta?.totalPoints || mScore),
+            totalPoints: entryTotal,
             bestScore: entryBest,
             quizzesPlayed: Number(meta?.quizzesPlayed || 1),
+            tier: calculateTier(entryTotal),
             isCurrentUser: !!userId && mId === userId,
           });
         }
 
-        leaderboard.sort((a, b) => b.bestScore - a.bestScore || b.totalPoints - a.totalPoints);
+        leaderboard.sort((a, b) => b.totalPoints - a.totalPoints || b.bestScore - a.bestScore);
         leaderboard.forEach((entry, idx) => {
           entry.rank = idx + 1;
         });
@@ -779,6 +965,7 @@ export async function getArtistProfileAndLeaderboard(
           const meInBoard = leaderboard.find((e) => e.userId === userId);
           if (meInBoard) {
             userRank = meInBoard.rank;
+            userTotalPoints = meInBoard.totalPoints;
           }
         }
       }
@@ -792,7 +979,7 @@ export async function getArtistProfileAndLeaderboard(
     const artistMap = memoryArtistStats.get(slug)!;
     totalPlayers = artistMap.size;
     const sorted = Array.from(artistMap.entries()).sort(
-      (a, b) => b[1].bestScore - a[1].bestScore || b[1].totalPoints - a[1].totalPoints
+      (a, b) => b[1].totalPoints - a[1].totalPoints || b[1].bestScore - a[1].bestScore
     );
 
     sorted.slice(0, 50).forEach(([uid, val], idx) => {
@@ -804,6 +991,7 @@ export async function getArtistProfileAndLeaderboard(
         totalPoints: val.totalPoints,
         bestScore: val.bestScore,
         quizzesPlayed: val.quizzesPlayed,
+        tier: calculateTier(val.totalPoints),
         isCurrentUser: !!userId && uid === userId,
       });
     });
@@ -823,6 +1011,7 @@ export async function getArtistProfileAndLeaderboard(
   return {
     artistName: cleanName,
     slug,
+    description,
     photoUrl,
     userStats: {
       userRank,
@@ -830,8 +1019,159 @@ export async function getArtistProfileAndLeaderboard(
       totalPoints: userTotalPoints,
       quizzesPlayed: userQuizzesPlayed,
       bestScore: userBestScore,
+      tier: calculateTier(userTotalPoints),
     },
     leaderboard,
     relatedArtists,
   };
+}
+
+/**
+ * Returns the dynamic Ranked catalog ordered strictly by community popularity (total matches played),
+ * using at most 3 Redis commands:
+ * 1) ZRANGE scuinklezam:ranked:artists_popularity (Top 30)
+ * 2) HMGET scuinklezam:ranked:artists_meta
+ * 3) HGETALL scuinklezam:stats:category_plays
+ * Clean homepage rule: once >= 12 distinct artists have >= 1 play, base 0-play artists are omitted from the main list.
+ */
+export async function getDynamicRankedCategories(): Promise<RankedCategory[]> {
+  let popEntries: Array<{ slug: string; plays: number }> = [];
+  let artistsMetaMap: Record<string, any> | null = null;
+  let countsMap: Record<string, string | number> | null = null;
+  let loadedFromRedis = false;
+
+  if (redis) {
+    try {
+      // Command 1: Top 30 played artists
+      const popRaw = await redis.zrange<any[]>("scuinklezam:ranked:artists_popularity", 0, 29, {
+        rev: true,
+        withScores: true,
+      });
+
+      if (popRaw && popRaw.length > 0) {
+        for (let i = 0; i < popRaw.length; i += 2) {
+          const slug = typeof popRaw[i] === "object" ? String((popRaw[i] as any).member) : String(popRaw[i]);
+          const plays = Math.max(
+            0,
+            Math.round(typeof popRaw[i] === "object" ? Number((popRaw[i] as any).score) : Number(popRaw[i + 1]))
+          );
+          if (plays > 0) {
+            popEntries.push({ slug, plays });
+          }
+        }
+      }
+
+      // Command 2 (only if played artists exist) & Command 3 (theme plays hash)
+      const uniqueRawSlugs = popEntries.map((p) => p.slug);
+      const [metaRes, countsRes] = await Promise.all([
+        uniqueRawSlugs.length > 0
+          ? redis.hmget<Record<string, any>>("scuinklezam:ranked:artists_meta", ...uniqueRawSlugs)
+          : Promise.resolve(null),
+        redis.hgetall<Record<string, string | number>>("scuinklezam:stats:category_plays"),
+      ]);
+
+      artistsMetaMap = metaRes;
+      countsMap = countsRes;
+      loadedFromRedis = true;
+    } catch (err) {
+      console.warn("[getDynamicRankedCategories] Redis read error:", err);
+    }
+  }
+
+  // Fallback to in-memory popularity & counts if Redis unavailable/failed
+  if (!loadedFromRedis) {
+    memoryArtistsPopularity.forEach((plays, slug) => {
+      if (plays > 0) {
+        popEntries.push({ slug, plays });
+      }
+    });
+    popEntries.sort((a, b) => b.plays - a.plays);
+    popEntries = popEntries.slice(0, 30);
+
+    const memMetaObj: Record<string, any> = {};
+    memoryArtistsMeta.forEach((val, slug) => {
+      memMetaObj[slug] = val;
+    });
+    artistsMetaMap = memMetaObj;
+
+    const memCountsObj: Record<string, number> = {};
+    memoryCategoryPlays.forEach((cnt, id) => {
+      memCountsObj[id] = cnt;
+    });
+    countsMap = memCountsObj;
+  }
+
+  const baseArtists = RANKED_CATEGORIES.filter((c) => c.kind === "artist");
+  const baseBySlug = new Map<string, RankedCategory>();
+  for (const c of baseArtists) {
+    baseBySlug.set(toArtistSlug(c.query || c.name), c);
+  }
+
+  // Merge any aliased slugs canonically and build played artist cards
+  const mergedPlayedBySlug = new Map<string, { plays: number; rawMeta?: { n?: string; d?: string } }>();
+  for (const item of popEntries) {
+    const canonicalSlug = toArtistSlug(item.slug);
+    const rawMetaVal = artistsMetaMap ? artistsMetaMap[item.slug] || artistsMetaMap[canonicalSlug] : null;
+    const parsedMeta = typeof rawMetaVal === "string" ? JSON.parse(rawMetaVal) : rawMetaVal;
+
+    const prev = mergedPlayedBySlug.get(canonicalSlug);
+    if (prev) {
+      prev.plays += item.plays;
+      if (!prev.rawMeta && parsedMeta) prev.rawMeta = parsedMeta;
+    } else {
+      mergedPlayedBySlug.set(canonicalSlug, { plays: item.plays, rawMeta: parsedMeta });
+    }
+  }
+
+  const playedArtists: RankedCategory[] = Array.from(mergedPlayedBySlug.entries())
+    .sort((a, b) => b[1].plays - a[1].plays)
+    .map(([canonicalSlug, info]) => {
+      const baseCat = baseBySlug.get(canonicalSlug);
+      const name =
+        CANONICAL_ARTIST_NAMES[canonicalSlug] ||
+        baseCat?.name ||
+        info.rawMeta?.n ||
+        formatSlugToName(canonicalSlug);
+
+      const description =
+        getCuratedArtistDescription(canonicalSlug) ||
+        info.rawMeta?.d ||
+        baseCat?.description ||
+        `Catálogo verificado · Pon a prueba tu oído con todas las eras de ${name}`;
+
+      return {
+        id: baseCat?.id || `artist_${canonicalSlug.replace(/-/g, "_")}`,
+        name,
+        kind: "artist" as const,
+        description,
+        imageUrl: baseCat?.imageUrl || `/api/artists/photo?name=${encodeURIComponent(name)}`,
+        query: name,
+        playerCount: info.plays,
+      };
+    });
+
+  // Clean homepage rule: fill up to 12 with 0-play base artists ONLY if fewer than 12 played artists exist
+  const finalArtists: RankedCategory[] = [...playedArtists];
+  if (finalArtists.length < 12) {
+    for (const baseCat of baseArtists) {
+      if (finalArtists.length >= 12) break;
+      const baseSlug = toArtistSlug(baseCat.query || baseCat.name);
+      if (!mergedPlayedBySlug.has(baseSlug)) {
+        finalArtists.push({
+          ...baseCat,
+          playerCount: 0,
+        });
+      }
+    }
+  }
+
+  // Themes sorted descending by real plays
+  const themes: RankedCategory[] = RANKED_CATEGORIES.filter((c) => c.kind === "theme")
+    .map((t) => ({
+      ...t,
+      playerCount: Number(countsMap?.[t.id] || 0),
+    }))
+    .sort((a, b) => b.playerCount - a.playerCount);
+
+  return [...finalArtists, ...themes];
 }

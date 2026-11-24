@@ -47,7 +47,7 @@ export default function GlobalLeaderboardModal({
         const rawUserId = user?.id || "";
         const fallbackPrefixed = rawUserId ? (rawUserId.startsWith("spotify_") ? rawUserId : `spotify_${rawUserId}`) : "";
 
-        const profileRes = await fetch("/api/user/profile")
+        const profileRes = await fetch("/api/user/profile", { cache: "no-store" })
           .then((r) => r.json())
           .catch(() => ({ stats: null, user: null }));
 
@@ -56,7 +56,8 @@ export default function GlobalLeaderboardModal({
         const leaderboardRes = await fetch(
           `/api/ranked/leaderboard?category=global${
             effectiveUserId ? `&userId=${encodeURIComponent(effectiveUserId)}` : ""
-          }`
+          }`,
+          { cache: "no-store" }
         )
           .then((r) => r.json())
           .catch(() => ({ entries: [] }));
@@ -91,16 +92,15 @@ export default function GlobalLeaderboardModal({
 
   if (!isOpen) return null;
 
-  // Calculate current score & tier progress using real best score
+  // Calculate current cumulative score & tier progress up to Maestro (50,000+ pts)
   const effectiveScore = Math.max(
     userEntry?.score || 0,
-    profileStats?.bestScore || 0,
-    profileStats?.personalBests?.global || 0
+    profileStats?.totalPoints || 0
   );
 
   const currentTier: RankedTier = calculateTier(effectiveScore);
 
-  // Ascending order: Bronce (0), Plata (400), Oro (550), Platino (700), Diamante (800), Maestro (900)
+  // Ascending order: Bronce (0), Plata (2500), Oro (7500), Platino (15000), Diamante (30000), Maestro (50000)
   const tierOrderAsc = [...RANKED_TIERS].reverse();
   const currentTierIndex = tierOrderAsc.findIndex((t) => t.name === currentTier.name);
   const nextTier: RankedTier | null =
@@ -175,7 +175,7 @@ export default function GlobalLeaderboardModal({
                   Tu Marca Global
                 </div>
                 <div className="text-base font-mono font-black text-goblinLime">
-                  {effectiveScore} <span className="text-xs text-zinc-400 font-normal">/ 1000 pts</span>
+                  {effectiveScore.toLocaleString()} <span className="text-xs text-zinc-400 font-normal">pts</span>
                 </div>
               </div>
             </div>
@@ -187,7 +187,7 @@ export default function GlobalLeaderboardModal({
                   <TrendingUp className="w-3.5 h-3.5 text-goblinLime" />
                   {nextTier ? (
                     <>
-                      Faltan <strong className="text-white">{pointsToNext} pts</strong> para{" "}
+                      Faltan <strong className="text-white">{pointsToNext.toLocaleString()} pts</strong> para{" "}
                       <span className={nextTier.badgeColor}>{nextTier.name}</span>
                     </>
                   ) : (
@@ -305,7 +305,7 @@ export default function GlobalLeaderboardModal({
                       {/* Right: Score */}
                       <div className="text-right shrink-0">
                         <div className="font-mono font-black text-goblinLime text-xs">
-                          {entry.score} pts
+                          {entry.score.toLocaleString()} pts
                         </div>
                       </div>
                     </div>

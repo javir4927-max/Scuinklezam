@@ -23,7 +23,7 @@ import {
   X,
   Check,
 } from "lucide-react";
-import { RANKED_CATEGORIES, RankedCategory, calculateTier, RankedTier, getRankFrameClasses } from "@/lib/rankedTypes";
+import { RANKED_CATEGORIES, RankedCategory, RankedTier, getRankFrameClasses, toArtistSlug, getCanonicalArtistName } from "@/lib/rankedTypes";
 import UserAuthModal from "@/components/UserAuthModal";
 import SpotifyConnectModal from "@/components/SpotifyConnectModal";
 import SpotifyStatsDetailModal from "@/components/SpotifyStatsDetailModal";
@@ -32,6 +32,7 @@ import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
 
 interface ProfileStats {
   totalPlays: number;
+  totalPoints?: number;
   averageScore: number;
   currentTier: RankedTier;
   bestCategoryId: string;
@@ -296,19 +297,19 @@ export default function ProfilePage() {
             {/* 4 Métricas Clave */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="glass-card rounded-2xl p-5 border border-emerald-500/20 text-center space-y-1">
+                <div className="text-zinc-400 text-xs font-semibold">Puntos Totales</div>
+                <div className="font-display font-black text-2xl sm:text-3xl text-goblinLime">
+                  {(stats?.totalPoints || 0).toLocaleString()} <span className="text-xs text-zinc-400 font-normal">pts</span>
+                </div>
+                <div className="text-[10px] text-zinc-400">Media: {stats?.averageScore || 0} / 1000</div>
+              </div>
+
+              <div className="glass-card rounded-2xl p-5 border border-emerald-500/20 text-center space-y-1">
                 <div className="text-zinc-400 text-xs font-semibold">Partidas Jugadas</div>
                 <div className="font-display font-black text-2xl sm:text-3xl text-white">
                   {stats?.totalPlays || 0}
                 </div>
-                <div className="text-[10px] text-zinc-400">Total acumulado</div>
-              </div>
-
-              <div className="glass-card rounded-2xl p-5 border border-emerald-500/20 text-center space-y-1">
-                <div className="text-zinc-400 text-xs font-semibold">Puntuación Media</div>
-                <div className="font-display font-black text-2xl sm:text-3xl text-goblinLime">
-                  {stats?.averageScore || 0} <span className="text-xs text-zinc-400 font-normal">/ 1000</span>
-                </div>
-                <div className="text-[10px] text-zinc-400">Media por partida</div>
+                <div className="text-[10px] text-zinc-400">Quizzes completados</div>
               </div>
 
               <div className="glass-card rounded-2xl p-5 border border-emerald-500/20 text-center space-y-1">
@@ -317,7 +318,7 @@ export default function ProfilePage() {
                   <span>{stats?.currentTier?.icon || "🥉"}</span>
                   <span>{stats?.currentTier?.name || "Bronce"}</span>
                 </div>
-                <div className="text-[10px] text-zinc-400">Basado en tu nivel</div>
+                <div className="text-[10px] text-zinc-400">Escala hasta Maestro (50k)</div>
               </div>
 
               <div className="glass-card rounded-2xl p-5 border border-emerald-500/20 text-center space-y-1">
@@ -362,10 +363,19 @@ export default function ProfilePage() {
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   {Object.entries(stats?.personalBests || {}).map(([catId, personalScore]) => {
-                    const cat = RANKED_CATEGORIES.find((c) => c.id === catId);
-                    const name = cat?.name || catId.replace(/^(artist_|theme_)/, "").replace(/_/g, " ");
+                    const cat = RANKED_CATEGORIES.find(
+                      (c) =>
+                        c.id === catId ||
+                        (catId.startsWith("artist_") &&
+                          c.kind === "artist" &&
+                          toArtistSlug(c.query || c.name) === toArtistSlug(catId.replace(/^artist_/, "")))
+                    );
+                    const name =
+                      cat?.name ||
+                      (catId.startsWith("artist_")
+                        ? getCanonicalArtistName(catId.replace(/^artist_/, "").replace(/_/g, " "))
+                        : catId.replace(/^(artist_|theme_)/, "").replace(/_/g, " "));
                     const img = cat?.imageUrl || `/api/artists/photo?name=${encodeURIComponent(name)}`;
-                    const tier = calculateTier(personalScore);
 
                     return (
                       <div
@@ -386,8 +396,8 @@ export default function ProfilePage() {
                               <span className="font-mono font-black text-xs text-goblinLime">
                                 {personalScore} <span className="text-[10px] text-zinc-400 font-normal">/ 1000</span>
                               </span>
-                              <span className={`text-[10px] font-bold ${tier.badgeColor}`}>
-                                {tier.icon} {tier.name}
+                              <span className="text-[10px] font-bold text-emerald-400/90">
+                                Mejor marca
                               </span>
                             </div>
                           </div>
@@ -423,7 +433,6 @@ export default function ProfilePage() {
               ) : (
                 <div className="glass-card rounded-2xl border border-emerald-500/20 overflow-hidden divide-y divide-emerald-500/10">
                   {stats.recentMatches.map((m, idx) => {
-                    const tier = calculateTier(m.score);
                     const dateStr = new Date(m.timestamp).toLocaleDateString("es-ES", {
                       day: "numeric",
                       month: "short",
@@ -454,11 +463,8 @@ export default function ProfilePage() {
                         </div>
 
                         <div className="flex items-center gap-3 self-end sm:self-auto">
-                          <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border ${tier.badgeBg} ${tier.badgeColor}`}>
-                            {tier.icon} {tier.name}
-                          </span>
                           <span className="font-mono font-black text-base text-goblinLime">
-                            {m.score} <span className="text-xs text-zinc-400 font-normal">/ 1000</span>
+                            +{m.score} <span className="text-xs text-zinc-400 font-normal">/ 1000 pts</span>
                           </span>
                         </div>
                       </div>

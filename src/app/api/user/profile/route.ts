@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionUser, getUserCustomization, setUserCustomization, resolvePublicAvatarUrl } from "@/lib/userAuth";
 import { getUserProfileData, RANKED_CATEGORIES } from "@/lib/rankedStore";
-import { calculateTier, RankedTierName } from "@/lib/rankedTypes";
+import { calculateTier, RankedTierName, getCanonicalArtistName, toArtistSlug } from "@/lib/rankedTypes";
 import { redis } from "@/lib/roomStore";
 
 export const dynamic = "force-dynamic";
@@ -30,20 +30,23 @@ export async function GET() {
     const customization = await getUserCustomization(user.id);
 
     // Resolve human-readable category name for best category
-    const bestCat = RANKED_CATEGORIES.find((c) => c.id === data.bestCategoryId);
+    const bestCat = RANKED_CATEGORIES.find(
+      (c) =>
+        c.id === data.bestCategoryId ||
+        (data.bestCategoryId.startsWith("artist_") &&
+          c.kind === "artist" &&
+          toArtistSlug(c.query || c.name) === toArtistSlug(data.bestCategoryId.replace(/^artist_/, "")))
+    );
     const bestCatName =
       bestCat?.name ||
       (data.bestCategoryId
-        ? data.bestCategoryId.replace(/^(artist_|theme_)/, "").replace(/_/g, " ")
+        ? data.bestCategoryId.startsWith("artist_")
+          ? getCanonicalArtistName(data.bestCategoryId.replace(/^artist_/, "").replace(/_/g, " "))
+          : data.bestCategoryId.replace(/^(artist_|theme_)/, "").replace(/_/g, " ")
         : "");
 
-    // Calculate highestTier from bestScore and averageScore
-    const bestTierObj = calculateTier(data.bestScore);
-    const avgTierObj = calculateTier(data.averageScore);
-    const highestTier: RankedTierName =
-      TIER_RANK_WEIGHT[bestTierObj.name] >= TIER_RANK_WEIGHT[avgTierObj.name]
-        ? bestTierObj.name
-        : avgTierObj.name;
+    // Calculate highestTier from cumulative totalPoints (Bronce 0 -> Maestro 50,000+)
+    const highestTier: RankedTierName = calculateTier(data.totalPoints).name;
 
     // Calculate unlocked titles
     const unlockedTitles: string[] = ["Novato Musical", "Oído Fino"];

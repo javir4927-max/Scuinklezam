@@ -8,15 +8,61 @@ export interface RankedTier {
   icon: string;
 }
 
-// Calibrated for 10 questions / 1000 max points
+// Calibrated for cumulative ranked progression up to Maestro (50,000+ points)
 export const RANKED_TIERS: RankedTier[] = [
-  { name: "Maestro", minScore: 900, badgeColor: "text-purple-400", badgeBg: "bg-purple-950/80 border-purple-500/50", icon: "👑" },
-  { name: "Diamante", minScore: 800, badgeColor: "text-cyan-400", badgeBg: "bg-cyan-950/80 border-cyan-500/50", icon: "💎" },
-  { name: "Platino", minScore: 700, badgeColor: "text-teal-300", badgeBg: "bg-teal-950/80 border-teal-500/50", icon: "⚡" },
-  { name: "Oro", minScore: 550, badgeColor: "text-amber-300", badgeBg: "bg-amber-950/80 border-amber-500/50", icon: "🏆" },
-  { name: "Plata", minScore: 400, badgeColor: "text-slate-300", badgeBg: "bg-slate-900/80 border-slate-400/50", icon: "🥈" },
+  { name: "Maestro", minScore: 50000, badgeColor: "text-purple-400", badgeBg: "bg-purple-950/80 border-purple-500/50", icon: "👑" },
+  { name: "Diamante", minScore: 30000, badgeColor: "text-cyan-400", badgeBg: "bg-cyan-950/80 border-cyan-500/50", icon: "💎" },
+  { name: "Platino", minScore: 15000, badgeColor: "text-teal-300", badgeBg: "bg-teal-950/80 border-teal-500/50", icon: "⚡" },
+  { name: "Oro", minScore: 7500, badgeColor: "text-amber-300", badgeBg: "bg-amber-950/80 border-amber-500/50", icon: "🏆" },
+  { name: "Plata", minScore: 2500, badgeColor: "text-slate-300", badgeBg: "bg-slate-900/80 border-slate-400/50", icon: "🥈" },
   { name: "Bronce", minScore: 0, badgeColor: "text-amber-700", badgeBg: "bg-amber-950/40 border-amber-800/40", icon: "🥉" },
 ];
+
+export const CANONICAL_ARTIST_SLUGS: Record<string, string> = {
+  "ferxxo": "feid",
+  "cruz-cafune": "cruzzi",
+  "ye": "kanye-west",
+  "abhir-hathi": "abhir",
+  "a-ap-rocky": "asap-rocky",
+  "tupac": "2pac",
+  "biggie": "the-notorious-b-i-g",
+  "biggie-smalls": "the-notorious-b-i-g",
+  "notorious-big": "the-notorious-b-i-g",
+  "el-madrileno": "c-tangana",
+  "bzrp": "bizarrap",
+  "biza": "bizarrap",
+  "cro": "c-r-o",
+};
+
+export const CANONICAL_ARTIST_NAMES: Record<string, string> = {
+  "feid": "Feid",
+  "cruzzi": "Cruzzi",
+  "kanye-west": "Kanye West",
+  "abhir": "Abhir",
+  "asap-rocky": "A$AP Rocky",
+  "2pac": "2Pac",
+  "the-notorious-b-i-g": "The Notorious B.I.G.",
+  "c-tangana": "C. Tangana",
+  "bizarrap": "Bizarrap",
+  "c-r-o": "C.R.O",
+};
+
+export function toArtistSlug(name: string): string {
+  if (!name) return "artist";
+  const raw =
+    name
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "artist";
+  return CANONICAL_ARTIST_SLUGS[raw] || raw;
+}
+
+export function getCanonicalArtistName(name: string): string {
+  const slug = toArtistSlug(name);
+  return CANONICAL_ARTIST_NAMES[slug] || name.trim();
+}
 
 export function calculateTier(score: number): RankedTier {
   for (const tier of RANKED_TIERS) {

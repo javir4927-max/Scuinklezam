@@ -180,6 +180,14 @@ const ARTIST_ALIASES: Record<string, string[]> = {
   "cruz cafune": ["cruzzi", "cruz cafune"],
   feid: ["ferxxo", "feid"],
   ferxxo: ["feid", "ferxxo"],
+  ye: ["kanye west", "ye"],
+  "kanye west": ["ye", "kanye west"],
+  abhir: ["abhir hathi", "abhir"],
+  "abhir hathi": ["abhir", "abhir hathi"],
+  "2pac": ["tupac", "2pac"],
+  tupac: ["2pac", "tupac"],
+  bzrp: ["bizarrap", "bzrp"],
+  bizarrap: ["bzrp", "bizarrap"],
 };
 
 export function isStrictArtistMatch(foundArtist: string, expectedArtist: string): boolean {

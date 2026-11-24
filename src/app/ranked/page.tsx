@@ -42,6 +42,8 @@ import {
   RankedTier,
   LeaderboardEntry,
   calculateTier,
+  toArtistSlug,
+  getCanonicalArtistName,
 } from "@/lib/rankedTypes";
 import type { UserSession } from "@/lib/userAuth";
 
@@ -56,18 +58,6 @@ interface AnswerHistoryItem {
   isCorrect: boolean;
   points: number;
   chosenTitle: string;
-}
-
-function toLocalArtistSlug(name: string): string {
-  if (!name) return "artist";
-  return (
-    name
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "artist"
-  );
 }
 
 export default function RankedArenaPage() {
@@ -88,6 +78,7 @@ export default function RankedArenaPage() {
   const [artistSheetData, setArtistSheetData] = useState<{
     artistName: string;
     slug: string;
+    description?: string;
     photoUrl: string;
     userStats: {
       userRank: number | null;
@@ -95,6 +86,7 @@ export default function RankedArenaPage() {
       totalPoints: number;
       quizzesPlayed: number;
       bestScore: number;
+      tier?: RankedTier;
     };
     leaderboard: Array<{
       rank: number;
@@ -104,6 +96,7 @@ export default function RankedArenaPage() {
       totalPoints: number;
       bestScore?: number;
       quizzesPlayed?: number;
+      tier?: RankedTier;
       isCurrentUser: boolean;
     }>;
     relatedArtists: Array<{
@@ -131,9 +124,9 @@ export default function RankedArenaPage() {
   const [artistSheetError, setArtistSheetError] = useState<string | null>(null);
   const [rankedError, setRankedError] = useState<string | null>(null);
 
-  // Handler to open Ficha de Artista Oficial
+  // Handler to open Ficha de Artista Oficial (unified by canonical alias)
   const handleOpenArtistSheet = async (artistName: string) => {
-    const clean = artistName.trim();
+    const clean = getCanonicalArtistName(artistName);
     if (!clean) return;
     setSelectedArtistName(clean);
     setLoadingArtistSheet(true);
@@ -192,6 +185,7 @@ export default function RankedArenaPage() {
     tier: RankedTier;
     rank: number;
     bestScore?: number;
+    totalPoints?: number;
     isPersonalBest: boolean;
   } | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -365,7 +359,7 @@ export default function RankedArenaPage() {
     };
   }, [searchFilter, activeTab]);
 
-  // Filter categories with accent-insensitive and multi-field search
+  // Filter categories with accent-insensitive, multi-field, and canonical alias search
   const filteredCategories = categories.filter((c) => {
     const matchesTab = c.kind === activeTab;
     const cleanFilter = searchFilter.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
@@ -373,14 +367,16 @@ export default function RankedArenaPage() {
     const nName = c.name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
     const nDesc = c.description.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
     const nQuery = (c.query || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-    return matchesTab && (nName.includes(cleanFilter) || nDesc.includes(cleanFilter) || nQuery.includes(cleanFilter));
+    const matchesAlias = c.kind === "artist" && toArtistSlug(c.query || c.name) === toArtistSlug(cleanFilter);
+    return matchesTab && (matchesAlias || nName.includes(cleanFilter) || nDesc.includes(cleanFilter) || nQuery.includes(cleanFilter));
   });
 
-  // Check if search has exact match or if custom search card should be displayed
+  // Check if search has exact match (including canonical alias) or if custom search card should be displayed
   const hasExactSearchMatch = filteredCategories.some((c) => {
     const cleanFilter = searchFilter.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
     const nName = c.name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-    return nName === cleanFilter;
+    const matchesAlias = c.kind === "artist" && toArtistSlug(c.query || c.name) === toArtistSlug(cleanFilter);
+    return nName === cleanFilter || matchesAlias;
   });
   const showCustomArtistCard =
     activeTab === "artist" && searchFilter.trim().length >= 2 && !hasExactSearchMatch;
@@ -465,9 +461,7 @@ export default function RankedArenaPage() {
       }
 
       // Memory of recently played tracks per artist/category to prevent repetition
-      const categorySlug = (cat.kind === "artist" ? (cat.query || cat.name) : cat.id)
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "_");
+      const categorySlug = (cat.kind === "artist" ? toArtistSlug(cat.query || cat.name) : cat.id).replace(/[^a-z0-9]+/g, "_");
       const storageKey = `scuinklezam_recent_artist_tracks:${categorySlug}`;
 
       let recentTitles: string[] = [];
@@ -591,7 +585,6 @@ export default function RankedArenaPage() {
     setSubmitError(null);
     pendingSubmitRef.current = payload;
     const finalScore = payload.score;
-    const tier = calculateTier(finalScore);
 
     try {
       const res = await fetch("/api/ranked/submit", {
@@ -603,17 +596,22 @@ export default function RankedArenaPage() {
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Error al conectar con el servidor.");
       }
+      const authoritativeScore = data.submittedScore ?? finalScore;
       const finalRank = (payload.artistName ? data.artistResult?.userRank : data.rank) || data.rank || 1;
-      const bestScore = (payload.artistName ? data.artistResult?.bestScore : data.score) ?? finalScore;
+      const bestScore = (payload.artistName ? data.artistResult?.bestScore : data.score) ?? authoritativeScore;
+      const totalPoints =
+        (payload.artistName ? data.artistResult?.totalPoints : data.totalScore) ?? authoritativeScore;
+      const tier = (payload.artistName ? data.artistResult?.tier : data.tier) || calculateTier(totalPoints);
       setSummaryData({
-        finalScore,
+        finalScore: authoritativeScore,
         tier,
         rank: finalRank,
         bestScore,
+        totalPoints,
         isPersonalBest: data.isPersonalBest ?? true,
       });
       pendingSubmitRef.current = null;
-      loadInitialData();
+      await loadInitialData();
 
       if (payload.artistName) {
         fetch(
@@ -1072,6 +1070,7 @@ export default function RankedArenaPage() {
                   </button>
                   <button
                     onClick={() => {
+                      gameStateRef.current = "idle";
                       setGameState("idle");
                       setActiveCategory(null);
                     }}
@@ -1104,21 +1103,26 @@ export default function RankedArenaPage() {
                         <span className="text-zinc-300">#{summaryData.rank} ranking</span>
                       </div>
 
-                      <div className="space-y-1">
+                      <div className="space-y-1.5">
                         <div className="font-display font-black text-4xl sm:text-6xl text-white tracking-tight leading-none px-1 py-1">
-                          {summaryData.finalScore} <span className="text-xl sm:text-2xl text-zinc-400 font-normal">/ 1000</span>
+                          +{summaryData.finalScore} <span className="text-xl sm:text-2xl text-zinc-400 font-normal">/ 1000</span>
+                        </div>
+                        <div className="text-xs sm:text-sm font-bold text-emerald-300 flex items-center gap-1.5 flex-wrap">
+                          <span>Total acumulado: {(summaryData.totalPoints ?? summaryData.finalScore).toLocaleString()} pts</span>
+                          <span className="text-zinc-400">·</span>
+                          <span className={summaryData.tier.badgeColor}>Rango {summaryData.tier.name}</span>
                         </div>
                         {summaryData.isPersonalBest ? (
-                          <div className="text-xs sm:text-sm font-bold text-amber-300 flex items-center gap-1.5">
-                            ✨ ¡Nuevo récord personal!
+                          <div className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                            ✨ ¡Nuevo récord personal en una partida!
                           </div>
                         ) : summaryData.bestScore && summaryData.bestScore > summaryData.finalScore ? (
-                          <div className="text-xs sm:text-sm font-medium text-zinc-400">
-                            Tu récord en el ranking se mantiene en{" "}
+                          <div className="text-[11px] font-medium text-zinc-400">
+                            Tu mejor partida en este quiz se mantiene en{" "}
                             <span className="font-bold text-emerald-400">{summaryData.bestScore} / 1000</span>
                           </div>
                         ) : null}
-                        <h2 className="font-display font-extrabold text-base sm:text-xl text-zinc-100 truncate">
+                        <h2 className="font-display font-extrabold text-base sm:text-xl text-zinc-100 truncate pt-0.5">
                           {activeCategory?.name}
                         </h2>
                       </div>
@@ -1372,47 +1376,61 @@ export default function RankedArenaPage() {
                       <h1 className="font-display font-black text-2xl sm:text-5xl text-white tracking-tight mt-2 truncate">
                         {artistSheetData.artistName}
                       </h1>
+                      {artistSheetData.description && (
+                        <p className="text-xs sm:text-sm text-zinc-300/90 mt-1 max-w-xl mx-auto md:mx-0">
+                          {artistSheetData.description}
+                        </p>
+                      )}
                     </div>
 
                     {/* 4 Stats in a compact 4-column row */}
-                    <div className="grid grid-cols-4 gap-1.5 sm:gap-3 w-full max-w-2xl">
-                      <div className="p-1.5 sm:p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center min-w-0">
-                        <span className="text-[8px] sm:text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5 truncate">
-                          PUESTO
-                        </span>
-                        <div className="text-[11px] sm:text-xl font-black text-white truncate">
-                          {artistSheetData.userStats.userRank ? `#${artistSheetData.userStats.userRank}` : "-"}
-                          <span className="text-[9px] sm:text-xs text-zinc-400 font-normal"> / {artistSheetData.userStats.totalPlayers}</span>
-                        </div>
-                      </div>
+                    {(() => {
+                      const userArtistTier =
+                        artistSheetData.userStats.tier || calculateTier(artistSheetData.userStats.totalPoints);
+                      return (
+                        <div className="grid grid-cols-4 gap-1.5 sm:gap-3 w-full max-w-2xl">
+                          <div className="p-1.5 sm:p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center min-w-0">
+                            <span className="text-[8px] sm:text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5 truncate">
+                              PUESTO
+                            </span>
+                            <div className="text-[11px] sm:text-xl font-black text-white truncate">
+                              {artistSheetData.userStats.userRank ? `#${artistSheetData.userStats.userRank}` : "-"}
+                              <span className="text-[9px] sm:text-xs text-zinc-400 font-normal"> / {artistSheetData.userStats.totalPlayers}</span>
+                            </div>
+                          </div>
 
-                      <div className="p-1.5 sm:p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center min-w-0">
-                        <span className="text-[8px] sm:text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5 truncate">
-                          RÉCORD
-                        </span>
-                        <div className="text-[11px] sm:text-xl font-black text-goblinLime truncate">
-                          {artistSheetData.userStats.bestScore} <span className="text-[9px] sm:text-xs text-zinc-400 font-normal">/ 1k</span>
-                        </div>
-                      </div>
+                          <div className="p-1.5 sm:p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center min-w-0">
+                            <span className="text-[8px] sm:text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5 truncate">
+                              PUNTOS
+                            </span>
+                            <div className="text-[11px] sm:text-xl font-black text-goblinLime truncate">
+                              {artistSheetData.userStats.totalPoints.toLocaleString()} <span className="text-[9px] sm:text-xs text-zinc-400 font-normal">pts</span>
+                            </div>
+                            <div className={`text-[9px] sm:text-[10px] font-bold truncate ${userArtistTier.badgeColor}`}>
+                              {userArtistTier.icon} {userArtistTier.name}
+                            </div>
+                          </div>
 
-                      <div className="p-1.5 sm:p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center min-w-0">
-                        <span className="text-[8px] sm:text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5 truncate">
-                          QUIZZES
-                        </span>
-                        <div className="text-[11px] sm:text-xl font-black text-emerald-400 truncate">
-                          {artistSheetData.userStats.quizzesPlayed}
-                        </div>
-                      </div>
+                          <div className="p-1.5 sm:p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center min-w-0">
+                            <span className="text-[8px] sm:text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5 truncate">
+                              PARTIDAS
+                            </span>
+                            <div className="text-[11px] sm:text-xl font-black text-emerald-400 truncate">
+                              {artistSheetData.userStats.quizzesPlayed}
+                            </div>
+                          </div>
 
-                      <div className="p-1.5 sm:p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center min-w-0">
-                        <span className="text-[8px] sm:text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5 truncate">
-                          ACUMULADO
-                        </span>
-                        <div className="text-[11px] sm:text-xl font-black text-emerald-400 truncate">
-                          {artistSheetData.userStats.totalPoints.toLocaleString()} <span className="text-[9px] sm:text-xs text-zinc-400 font-normal">pts</span>
+                          <div className="p-1.5 sm:p-3 rounded-2xl bg-zinc-900/80 border border-emerald-500/20 text-center min-w-0">
+                            <span className="text-[8px] sm:text-[10px] uppercase font-bold text-zinc-400 tracking-wider block mb-0.5 truncate">
+                              MEJOR
+                            </span>
+                            <div className="text-[11px] sm:text-xl font-black text-emerald-400 truncate">
+                              {artistSheetData.userStats.bestScore} <span className="text-[9px] sm:text-xs text-zinc-400 font-normal">/ 1k</span>
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    </div>
+                      );
+                    })()}
 
                     {/* Action Button: Jugar */}
                     <div className="pt-2 w-full">
@@ -1420,14 +1438,14 @@ export default function RankedArenaPage() {
                         type="button"
                         onClick={() => {
                           const canonical = (categories || RANKED_CATEGORIES).find(
-                            (c) => c.kind === "artist" && toLocalArtistSlug(c.query || c.name) === artistSheetData.slug
+                            (c) => c.kind === "artist" && toArtistSlug(c.query || c.name) === artistSheetData.slug
                           );
-                          const chosenId = canonical ? canonical.id : `artist_${artistSheetData.slug}`;
+                          const chosenId = canonical ? canonical.id : `artist_${artistSheetData.slug.replace(/-/g, "_")}`;
                           handleStartRankedRun({
                             id: chosenId,
                             name: canonical ? canonical.name : artistSheetData.artistName,
                             kind: "artist",
-                            description: canonical ? canonical.description : `Quiz de ${artistSheetData.artistName}`,
+                            description: artistSheetData.description || (canonical ? canonical.description : `Quiz de ${artistSheetData.artistName}`),
                             imageUrl: artistSheetData.photoUrl || (canonical ? canonical.imageUrl : ""),
                             query: canonical ? canonical.query : artistSheetData.artistName,
                             playerCount: canonical ? canonical.playerCount : artistSheetData.userStats.totalPlayers,
@@ -1492,7 +1510,9 @@ export default function RankedArenaPage() {
                             </div>
                             <div className="w-full text-center mb-2 px-0.5">
                               <div className="text-[11px] sm:text-xs font-bold text-white truncate">{top2?.nickname || "Vacante"}</div>
-                              <div className="text-[9px] sm:text-[10px] font-mono text-zinc-300 font-bold">{top2 ? `${top2.bestScore ?? top2.totalPoints} pts` : "-"}</div>
+                              <div className="text-[9px] sm:text-[10px] font-mono text-zinc-300 font-bold">
+                                {top2 ? `${top2.totalPoints.toLocaleString()} pts` : "-"}
+                              </div>
                             </div>
                             <div className="w-full h-20 sm:h-28 bg-gradient-to-t from-slate-900/90 via-slate-700/80 to-slate-400/70 border-t-2 border-slate-300 rounded-t-2xl flex items-center justify-center shadow-[0_0_20px_rgba(148,163,184,0.25)] ring-1 ring-slate-400/30">
                               <span className="text-slate-300 font-black text-xs sm:text-sm tracking-wider">#2</span>
@@ -1514,7 +1534,9 @@ export default function RankedArenaPage() {
                             </div>
                             <div className="w-full text-center mb-2 px-0.5">
                               <div className="text-xs sm:text-sm font-black text-amber-200 truncate">{top1?.nickname || "Vacante"}</div>
-                              <div className="text-[10px] sm:text-xs font-mono text-amber-300 font-extrabold">{top1 ? `${top1.bestScore ?? top1.totalPoints} pts` : "-"}</div>
+                              <div className="text-[10px] sm:text-xs font-mono text-amber-300 font-extrabold">
+                                {top1 ? `${top1.totalPoints.toLocaleString()} pts` : "-"}
+                              </div>
                             </div>
                             <div className="w-full h-28 sm:h-36 bg-gradient-to-t from-amber-950/90 via-amber-700/80 to-amber-500/70 border-t-2 border-amber-300 rounded-t-2xl flex items-center justify-center shadow-[0_0_30px_rgba(245,158,11,0.35)] ring-1 ring-amber-400/40">
                               <span className="text-amber-200 font-black text-sm sm:text-base tracking-wider">#1</span>
@@ -1535,7 +1557,9 @@ export default function RankedArenaPage() {
                             </div>
                             <div className="w-full text-center mb-2 px-0.5">
                               <div className="text-[11px] sm:text-xs font-bold text-white truncate">{top3?.nickname || "Vacante"}</div>
-                              <div className="text-[9px] sm:text-[10px] font-mono text-amber-400/80 font-bold">{top3 ? `${top3.bestScore ?? top3.totalPoints} pts` : "-"}</div>
+                              <div className="text-[9px] sm:text-[10px] font-mono text-amber-400/80 font-bold">
+                                {top3 ? `${top3.totalPoints.toLocaleString()} pts` : "-"}
+                              </div>
                             </div>
                             <div className="w-full h-16 sm:h-24 bg-gradient-to-t from-amber-950/90 via-amber-900/70 to-amber-700/60 border-t-2 border-amber-600 rounded-t-2xl flex items-center justify-center shadow-[0_0_20px_rgba(180,83,9,0.25)] ring-1 ring-amber-600/30">
                               <span className="text-amber-500 font-black text-xs sm:text-sm tracking-wider">#3</span>
@@ -1549,25 +1573,35 @@ export default function RankedArenaPage() {
                     <div className="space-y-2 mt-4">
                       {artistSheetData.leaderboard
                         .filter((e) => e.rank === 4 || e.rank === 5)
-                        .map((entry) => (
-                          <div
-                            key={entry.userId}
-                            className="p-3 rounded-xl bg-black/40 border border-white/5 flex items-center justify-between"
-                          >
-                            <div className="flex items-center gap-3">
-                              <span className="font-mono font-bold text-xs text-zinc-400 w-6">#{entry.rank}</span>
-                              <img
-                                src={entry.avatarUrl}
-                                alt={entry.nickname}
-                                className="w-7 h-7 rounded-full object-cover border border-white/10"
-                              />
-                              <span className="text-xs font-bold text-white truncate max-w-[140px] sm:max-w-[200px]">
-                                {entry.nickname}
+                        .map((entry) => {
+                          const entryTier = entry.tier || calculateTier(entry.totalPoints);
+                          return (
+                            <div
+                              key={entry.userId}
+                              className="p-3 rounded-xl bg-black/40 border border-white/5 flex items-center justify-between gap-2"
+                            >
+                              <div className="flex items-center gap-3 min-w-0">
+                                <span className="font-mono font-bold text-xs text-zinc-400 w-6 shrink-0">#{entry.rank}</span>
+                                <img
+                                  src={entry.avatarUrl}
+                                  alt={entry.nickname}
+                                  className="w-7 h-7 rounded-full object-cover border border-white/10 shrink-0"
+                                />
+                                <div className="min-w-0">
+                                  <span className="text-xs font-bold text-white truncate max-w-[140px] sm:max-w-[200px] block">
+                                    {entry.nickname}
+                                  </span>
+                                  <span className={`text-[10px] font-semibold ${entryTier.badgeColor}`}>
+                                    {entryTier.icon} {entryTier.name}
+                                  </span>
+                                </div>
+                              </div>
+                              <span className="font-mono text-xs text-zinc-200 font-bold shrink-0">
+                                {entry.totalPoints.toLocaleString()} pts
                               </span>
                             </div>
-                            <span className="font-mono text-xs text-zinc-300 font-semibold">{entry.bestScore ?? entry.totalPoints} pts</span>
-                          </div>
-                        ))}
+                          );
+                        })}
                     </div>
                   </div>
 
@@ -1590,13 +1624,13 @@ export default function RankedArenaPage() {
                           </div>
                           <div className="text-[10px] text-emerald-300">
                             {artistSheetData.userStats.quizzesPlayed > 0
-                              ? `${artistSheetData.userStats.quizzesPlayed} partidas completadas`
+                              ? `${artistSheetData.userStats.quizzesPlayed} ${artistSheetData.userStats.quizzesPlayed === 1 ? "partida" : "partidas"}`
                               : "Aún no has jugado"}
                           </div>
                         </div>
                       </div>
                       <span className="font-mono text-sm font-black text-goblinLime">
-                        {artistSheetData.userStats.bestScore ?? artistSheetData.userStats.totalPoints} pts
+                        {artistSheetData.userStats.totalPoints.toLocaleString()} pts
                       </span>
                     </div>
 
@@ -1683,7 +1717,7 @@ export default function RankedArenaPage() {
                     Demuestra tu nivel musical
                   </h1>
                   <p className="text-zinc-300 text-sm sm:text-base max-w-xl">
-                    Compite en partidas sobre <strong>1000 puntos</strong>. Compite por artistas o temáticas y sube de rango desde <strong>Bronce</strong> hasta <strong>Maestro</strong>.
+                    Cada partida suma hasta <strong>1.000 pts</strong> a tu puntuación acumulativa para subir de rango desde <strong>Bronce</strong> hasta <strong>Maestro (50.000 pts)</strong>.
                   </p>
                 </div>
 
@@ -1744,7 +1778,7 @@ export default function RankedArenaPage() {
                           {tier.name}
                         </div>
                         <div className="text-[10px] text-zinc-400 font-mono">
-                          {tier.minScore > 0 ? `${tier.minScore}+ pts` : "0-399 pts"}
+                          {tier.minScore > 0 ? `${tier.minScore / 1000}k+ pts` : "0 - 2.499 pts"}
                         </div>
                       </div>
                     </div>
@@ -1895,6 +1929,13 @@ export default function RankedArenaPage() {
               </div>
             )}
 
+            {/* Discreet subtitle in "Por Artista" tab explaining dynamic popularity sorting */}
+            {activeTab === "artist" && (
+              <div className="text-xs text-zinc-400 px-1">
+                Ordenado por los artistas más jugados · Busca cualquier artista para añadirlo al ranking
+              </div>
+            )}
+
             {/* Categories List - Mobile Spotify-style rows (< md) */}
             <div className="md:hidden space-y-2.5">
               {filteredCategories.map((cat) => (
@@ -1920,8 +1961,11 @@ export default function RankedArenaPage() {
                       <h3 className="font-display font-bold text-base text-white truncate">
                         {cat.name}
                       </h3>
-                      <div className="text-xs text-zinc-400 mt-0.5 truncate">
-                        {cat.playerCount} {cat.playerCount === 1 ? "partida jugada" : "partidas jugadas"}
+                      <div className="text-[11px] text-zinc-400 truncate mt-0.5">
+                        {cat.description}
+                      </div>
+                      <div className="text-[10px] text-emerald-400/90 font-semibold mt-0.5 truncate">
+                        {cat.playerCount} {cat.playerCount === 1 ? "partida" : "partidas"}
                       </div>
                     </div>
                   </div>
@@ -1974,10 +2018,10 @@ export default function RankedArenaPage() {
                   <div className="relative z-10 flex items-center justify-between gap-1.5">
                     <span
                       className="px-2.5 py-1 rounded-full text-[10px] font-semibold backdrop-blur-md bg-black/60 border border-white/10 text-emerald-300 flex items-center gap-1 shadow"
-                      title={`${cat.playerCount} ${cat.playerCount === 1 ? "partida jugada" : "partidas jugadas"}`}
+                      title={`${cat.playerCount} ${cat.playerCount === 1 ? "partida" : "partidas"}`}
                     >
                       <Users className="w-3 h-3 text-goblinLime shrink-0" />
-                      <span>{cat.playerCount} {cat.playerCount === 1 ? "jugada" : "jugadas"}</span>
+                      <span>{cat.playerCount} {cat.playerCount === 1 ? "partida" : "partidas"}</span>
                     </span>
 
                     <button
@@ -2130,7 +2174,7 @@ export default function RankedArenaPage() {
                       </div>
 
                       <div className="font-mono font-black text-xs text-goblinLime">
-                        {entry.score} <span className="text-[10px] text-zinc-400 font-normal">/ 1000</span>
+                        {entry.score.toLocaleString()} <span className="text-[10px] text-zinc-400 font-normal">pts</span>
                       </div>
                     </div>
                   );
@@ -2178,48 +2222,54 @@ export default function RankedArenaPage() {
                   <div className="text-goblinLime font-semibold">¡Sé el primero en jugar y coronarte!</div>
                 </div>
               ) : (
-                artistSheetData.leaderboard.map((entry) => (
-                  <div
-                    key={entry.userId}
-                    className={`p-3 rounded-2xl flex items-center justify-between border transition ${
-                      entry.isCurrentUser
-                        ? "bg-emerald-950/80 border-emerald-400/40 shadow-md shadow-emerald-500/5"
-                        : "bg-black/40 border-white/5 hover:border-white/15"
-                    }`}
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <span
-                        className={`font-mono font-bold text-xs w-6 text-center shrink-0 ${
-                          entry.rank === 1
-                            ? "text-amber-300 font-black"
-                            : entry.rank === 2
-                            ? "text-zinc-300 font-black"
-                            : entry.rank === 3
-                            ? "text-amber-500 font-black"
-                            : "text-zinc-400"
-                        }`}
-                      >
-                        {entry.rank === 1 ? "👑" : entry.rank === 2 ? "🥈" : entry.rank === 3 ? "🥉" : `#${entry.rank}`}
-                      </span>
-                      <img
-                        src={entry.avatarUrl}
-                        alt={entry.nickname}
-                        className="w-8 h-8 rounded-full object-cover border border-white/10 shrink-0 bg-zinc-800"
-                      />
-                      <div className="truncate max-w-[160px] sm:max-w-[220px]">
-                        <span className="text-xs font-bold text-white truncate block">
-                          {entry.nickname}
-                          {entry.isCurrentUser && (
-                            <span className="text-goblinLime ml-1.5 font-normal">(Tú)</span>
-                          )}
+                artistSheetData.leaderboard.map((entry) => {
+                  const entryTier = entry.tier || calculateTier(entry.totalPoints);
+                  return (
+                    <div
+                      key={entry.userId}
+                      className={`p-3 rounded-2xl flex items-center justify-between border transition ${
+                        entry.isCurrentUser
+                          ? "bg-emerald-950/80 border-emerald-400/40 shadow-md shadow-emerald-500/5"
+                          : "bg-black/40 border-white/5 hover:border-white/15"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span
+                          className={`font-mono font-bold text-xs w-6 text-center shrink-0 ${
+                            entry.rank === 1
+                              ? "text-amber-300 font-black"
+                              : entry.rank === 2
+                              ? "text-zinc-300 font-black"
+                              : entry.rank === 3
+                              ? "text-amber-500 font-black"
+                              : "text-zinc-400"
+                          }`}
+                        >
+                          {entry.rank === 1 ? "👑" : entry.rank === 2 ? "🥈" : entry.rank === 3 ? "🥉" : `#${entry.rank}`}
                         </span>
+                        <img
+                          src={entry.avatarUrl}
+                          alt={entry.nickname}
+                          className="w-8 h-8 rounded-full object-cover border border-white/10 shrink-0 bg-zinc-800"
+                        />
+                        <div className="truncate max-w-[160px] sm:max-w-[220px]">
+                          <span className="text-xs font-bold text-white truncate block">
+                            {entry.nickname}
+                            {entry.isCurrentUser && (
+                              <span className="text-goblinLime ml-1.5 font-normal">(Tú)</span>
+                            )}
+                          </span>
+                          <span className={`text-[10px] font-semibold ${entryTier.badgeColor}`}>
+                            {entryTier.icon} {entryTier.name}
+                          </span>
+                        </div>
                       </div>
+                      <span className="font-mono text-xs font-extrabold text-goblinLime shrink-0">
+                        {entry.totalPoints.toLocaleString()} pts
+                      </span>
                     </div>
-                    <span className="font-mono text-xs font-extrabold text-goblinLime shrink-0">
-                      {entry.bestScore ?? entry.totalPoints} pts
-                    </span>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
 

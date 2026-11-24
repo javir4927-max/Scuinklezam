@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { submitRankedScore, submitArtistRankedScore } from "@/lib/rankedStore";
 import { getSessionUser } from "@/lib/userAuth";
+import { RANKED_CATEGORIES, toArtistSlug, getCanonicalArtistName } from "@/lib/rankedTypes";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -40,26 +41,39 @@ export async function POST(request: Request) {
       sessionUser?.avatarUrl ||
       `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(nickname)}&backgroundColor=0B1710`;
 
-    // 1. Submit to general category ranking
+    // Normalize canonical artist slug/categoryId to prevent duplicate rankings across aliases
+    const targetArtist =
+      artistName ||
+      (categoryId.startsWith("artist_") || categoryId.startsWith("custom_") ? categoryName : undefined);
+    const canonicalArtistName = targetArtist ? getCanonicalArtistName(targetArtist) : undefined;
+    let canonicalCategoryId = categoryId;
+    if (canonicalArtistName) {
+      const slug = toArtistSlug(canonicalArtistName);
+      const matchedBase = RANKED_CATEGORIES.find(
+        (c) => c.kind === "artist" && toArtistSlug(c.query || c.name) === slug
+      );
+      canonicalCategoryId = matchedBase ? matchedBase.id : `artist_${slug.replace(/-/g, "_")}`;
+    }
+
+    // 1. Submit to general cumulative category & global ranking
     const result = await submitRankedScore(
       userId,
       nickname,
       avatarUrl,
-      categoryId,
+      canonicalCategoryId,
       authoritativeScore,
-      categoryName,
+      canonicalArtistName || categoryName,
       correctCount
     );
 
-    // 2. If this run is for a specific artist, also update the artist ranking (cumulative points, quizzes, best score)
-    const targetArtist = artistName || (categoryId.startsWith("artist_") || categoryId.startsWith("custom_") ? categoryName : undefined);
+    // 2. If this run is for a specific artist, also update the artist ranking (cumulative totalPoints, quizzes, bestScore, popularity)
     let artistResult: any = null;
-    if (targetArtist) {
+    if (canonicalArtistName) {
       artistResult = await submitArtistRankedScore(
         userId,
         nickname,
         avatarUrl,
-        targetArtist,
+        canonicalArtistName,
         authoritativeScore,
         correctCount
       );

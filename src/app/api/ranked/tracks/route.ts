@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { searchVerifiedTracks, searchItunesCatalog, searchStrictArtistTracks } from "@/lib/musicService";
-import { RANKED_CATEGORIES } from "@/lib/rankedTypes";
+import { RANKED_CATEGORIES, toArtistSlug, getCanonicalArtistName } from "@/lib/rankedTypes";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
 import { normalizeSongTitle, getTrackTopic, isStrictArtistMatch, hasNonLatinCharacters, isDottedAcronym, deepNormalize } from "@/lib/songMatching";
 import { getSpotifyAppToken } from "@/lib/spotifyAppToken";
@@ -51,11 +51,18 @@ const THEME_ARTIST_POOLS: Record<string, string[]> = {
  * filtered by primary artist and verified audio previews, deduplicated by normalized title.
  */
 async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrackItem[]> {
-  const clean = artistName.split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)/i)[0].trim();
+  const clean = getCanonicalArtistName(artistName.split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)/i)[0].trim());
+  const slug = toArtistSlug(clean);
   const isLatin = !hasNonLatinCharacters(clean);
-  const searchTerms = [clean];
-  if (clean.toLowerCase() === "cruzzi") {
-    searchTerms.push("Cruz Cafune");
+  let searchTerms = [clean];
+  if (slug === "cruzzi") {
+    searchTerms = ["Cruz Cafune", "Cruzzi"];
+  } else if (slug === "feid") {
+    searchTerms = ["Feid", "Ferxxo"];
+  } else if (slug === "kanye-west") {
+    searchTerms = ["Kanye West", "Ye"];
+  } else if (slug === "abhir") {
+    searchTerms = ["Abhir", "Abhir Hathi"];
   }
 
   // 1. Fetch iTunes Search API limit=80 country=ES and country=US with attribute=artistTerm
@@ -116,20 +123,23 @@ async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrac
 
       let targetArtistId: string | null = null;
       try {
-        const aRes = await fetch(
-          `https://api.spotify.com/v1/search?q=${encodeURIComponent(clean)}&type=artist&limit=5`,
-          {
-            headers: { Authorization: `Bearer ${token}` },
-            cache: "no-store",
-          }
-        );
-        if (aRes.ok) {
-          const aData = await aRes.json();
-          const matchingArtists = (aData?.artists?.items || [])
-            .filter((a: any) => isStrictArtistMatch(a.name, clean))
-            .sort((a: any, b: any) => (b.followers?.total || 0) - (a.followers?.total || 0));
-          if (matchingArtists[0]?.id) {
-            targetArtistId = matchingArtists[0].id;
+        for (const term of searchTerms) {
+          const aRes = await fetch(
+            `https://api.spotify.com/v1/search?q=${encodeURIComponent(term)}&type=artist&limit=5`,
+            {
+              headers: { Authorization: `Bearer ${token}` },
+              cache: "no-store",
+            }
+          );
+          if (aRes.ok) {
+            const aData = await aRes.json();
+            const matchingArtists = (aData?.artists?.items || [])
+              .filter((a: any) => isStrictArtistMatch(a.name, term) || isStrictArtistMatch(a.name, clean))
+              .sort((a: any, b: any) => (b.followers?.total || 0) - (a.followers?.total || 0));
+            if (matchingArtists[0]?.id) {
+              targetArtistId = matchingArtists[0].id;
+              break;
+            }
           }
         }
       } catch {
