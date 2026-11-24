@@ -222,7 +222,7 @@ export async function importSpotifyCollection(rawInput: string): Promise<Importe
   }
 
   // --- 3. Extra fallback for Albums via iTunes Search & Lookup if no tracks found ---
-  if (rawCandidates.length === 0 && type === "album") {
+  if (rawCandidates.length === 0 && type === "album" && collectionName && collectionName !== "Álbum de Spotify") {
     try {
       const itunesSearch = await fetch(
         `https://itunes.apple.com/search?term=${encodeURIComponent(collectionName)}&entity=album&country=ES&limit=3`,

@@ -274,17 +274,19 @@ export async function checkRoomUnchanged(
   }
   if (!clientVersion || clientVersion <= 0) return { unchanged: false };
 
-  let meta = inMemoryRoomMetas.get(upperCode);
-  if (!meta && redis) {
+  let meta: RoomMeta | null | undefined = null;
+  if (redis) {
     try {
-      const remote = await redis.get<RoomMeta>(`scuinklezam:room_meta:${upperCode}`);
-      if (remote) {
-        meta = remote;
-        inMemoryRoomMetas.set(upperCode, remote);
+      meta = await redis.get<RoomMeta>(`scuinklezam:room_meta:${upperCode}`);
+      if (meta) {
+        inMemoryRoomMetas.set(upperCode, meta);
       }
     } catch (e) {
       console.error("[checkRoomUnchanged] Redis error reading room_meta:", e);
+      meta = inMemoryRoomMetas.get(upperCode);
     }
+  } else {
+    meta = inMemoryRoomMetas.get(upperCode);
   }
 
   if (meta && meta.v === clientVersion && (meta.end === 0 || Date.now() < meta.end)) {
@@ -416,7 +418,7 @@ export async function updatePlayerHeartbeat(code: string, playerId: string, forc
   const throttleKey = `${upperCode}:${playerId}`;
   const lastWrite = lastRedisHbWrite.get(throttleKey) || 0;
 
-  if (redis && (force || now - lastWrite >= 4000)) {
+  if (redis && (force || now - lastWrite >= 7000)) {
     lastRedisHbWrite.set(throttleKey, now);
     try {
       const hbKey = `room:${upperCode}:heartbeats`;
@@ -1348,7 +1350,8 @@ export async function generateSurvivalBatch(room: RoomState, count: number = 10)
     })
   );
 
-  room.usedTrackKeys = Array.from(usedKeys);
+  pool.usedTrackKeys = Array.from(usedKeys).slice(-600);
+  await saveRoomPool(room.code, pool);
   return newRounds;
 }
 
@@ -1632,13 +1635,13 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
   const now = Date.now();
   const heartbeats = await getPlayerHeartbeats(upperCode);
 
-  // 3. Mark player connectivity (<= 15000ms is connected, lobby prune threshold 45000ms)
+  // 3. Mark player connectivity (<= 22000ms is connected, lobby prune threshold 60000ms)
   let anyDisconnectedInLobby = false;
   room.players.forEach((p) => {
     const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-    p.isConnected = (now - hb) <= 15000;
+    p.isConnected = (now - hb) <= 22000;
     p.isOnline = p.isConnected;
-    if (room.status === "lobby" && (now - hb) > 45000) {
+    if (room.status === "lobby" && (now - hb) > 60000) {
       anyDisconnectedInLobby = true;
     }
   });
@@ -1660,7 +1663,7 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
       const freshHeartbeats = await getPlayerHeartbeats(upperCode);
       freshRoom.players.forEach((p) => {
         const hb = Number(freshHeartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-        p.isConnected = (now - hb) <= 15000;
+        p.isConnected = (now - hb) <= 22000;
         p.isOnline = p.isConnected;
       });
 
@@ -1681,18 +1684,19 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
  * Authoritatively marks a match as finished, trims played rounds,
  * and increments room wins for the match leader(s) once with idempotency.
  */
-export function finalizeRoomMatch(room: RoomState): void {
+export async function finalizeRoomMatch(room: RoomState): Promise<void> {
   room.status = "finished";
   room.rounds = room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length));
   room.totalRounds = room.rounds.length;
 
   recordPlayedTracksInRoom(room);
-  getRoomPool(room.code)
-    .then((pool) => {
-      recordPlayedTracksInRoom(room, room.rounds, pool);
-      return saveRoomPool(room.code, pool);
-    })
-    .catch((err) => console.error("[finalizeRoomMatch] Error saving pool used keys:", err));
+  try {
+    const pool = await getRoomPool(room.code);
+    recordPlayedTracksInRoom(room, room.rounds, pool);
+    await saveRoomPool(room.code, pool);
+  } catch (err) {
+    console.error("[finalizeRoomMatch] Error saving pool used keys:", err);
+  }
 
   if (!room.matchWinnerAwarded && room.players.length > 0) {
     const isSurvival = room.gameMode === "survival";
@@ -1748,17 +1752,17 @@ export async function checkRoomStateProgression(room: RoomState, heartbeats?: Re
   if (heartbeats) {
     room.players.forEach((p) => {
       const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-      p.isConnected = (now - hb) <= 15000;
+      p.isConnected = (now - hb) <= 22000;
       p.isOnline = p.isConnected;
     });
   }
 
-  // LOBBY: prune disconnected players (>45s)
+  // LOBBY: prune disconnected players (>60s)
   if (room.status === "lobby") {
     const beforeCount = room.players.length;
     room.players = room.players.filter((p) => {
       const hb = Number(heartbeats?.[p.id] || p.lastSeen || p.joinedAt || 0);
-      return (now - hb) <= 45000;
+      return (now - hb) <= 60000;
     });
     if (room.players.length !== beforeCount) {
       changed = true;
@@ -1790,7 +1794,12 @@ export async function checkRoomStateProgression(room: RoomState, heartbeats?: Re
       if (winningCandidate && room.candidateRounds && room.candidateRounds[winningCandidate.id] && room.candidateRounds[winningCandidate.id].length > 0) {
         room.rounds = room.candidateRounds[winningCandidate.id];
       } else if (winningCandidate) {
-        room.rounds = await buildRoundsForTheme(winningCandidate.query || winningCandidate.name, room.totalRounds || 10);
+        const pool = await getRoomPool(room.code);
+        room.rounds = await buildRoundsForTheme(
+          winningCandidate.query || winningCandidate.name,
+          room.totalRounds || 10,
+          pool.usedTrackKeys || []
+        );
       }
 
       room.status = "countdown";
@@ -1882,7 +1891,7 @@ export async function checkRoomStateProgression(room: RoomState, heartbeats?: Re
         const shouldFinish = initialCount >= 2 ? alivePlayers.length <= 1 : alivePlayers.length === 0;
 
         if (shouldFinish) {
-          finalizeRoomMatch(room);
+          await finalizeRoomMatch(room);
         } else {
           // Continuous infinite survival generation
           if (room.rounds.length - room.currentRound <= 4) {
@@ -1924,7 +1933,7 @@ export async function checkRoomStateProgression(room: RoomState, heartbeats?: Re
             p.currentAnswer = null;
           });
         } else {
-          finalizeRoomMatch(room);
+          await finalizeRoomMatch(room);
         }
       }
       changed = true;
@@ -2722,7 +2731,7 @@ export async function startRoomGame(
     const now = Date.now();
     room.players.forEach((p) => {
       const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-      p.isConnected = (now - hb) <= 15000;
+      p.isConnected = (now - hb) <= 22000;
       p.isOnline = p.isConnected;
     });
 
@@ -2780,7 +2789,6 @@ export async function startRoomGame(
       room.rounds = [];
       room.answersByRound = { 1: {} };
       room.lastActive = now;
-      room.version = (room.version || 0) + 1;
 
       await saveRoom(room);
       return { success: true, room, isVoting: true };
@@ -2827,7 +2835,6 @@ export async function startRoomGame(
     room.revealEndsAt = undefined;
     room.answersByRound = { 1: {} };
     room.lastActive = now;
-    room.version = (room.version || 0) + 1;
 
     await saveRoom(room);
     return { success: true, room };
@@ -2878,7 +2885,7 @@ export async function submitPlayerAnswer(
         p.lastSeen = now;
       } else {
         const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-        p.isConnected = (now - hb) <= 18000;
+        p.isConnected = (now - hb) <= 22000;
         p.isOnline = p.isConnected;
       }
     });
@@ -3078,7 +3085,7 @@ export async function advanceRoomRound(
       const shouldFinish = initialCount >= 2 ? alivePlayers.length <= 1 : alivePlayers.length === 0;
 
       if (shouldFinish) {
-        finalizeRoomMatch(room);
+        await finalizeRoomMatch(room);
       } else {
         if (room.rounds.length - room.currentRound <= 4) {
           try {
@@ -3119,7 +3126,7 @@ export async function advanceRoomRound(
           p.currentAnswer = null;
         });
       } else {
-        finalizeRoomMatch(room);
+        await finalizeRoomMatch(room);
       }
     }
 
@@ -3205,7 +3212,7 @@ export async function rematchRoomGame(
     const now = Date.now();
     room.players.forEach((p) => {
       const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-      p.isConnected = (now - hb) <= 15000;
+      p.isConnected = (now - hb) <= 22000;
       p.isOnline = p.isConnected;
       p.score = 0;
       p.streak = 0;
@@ -3263,7 +3270,6 @@ export async function rematchRoomGame(
     room.revealEndsAt = undefined;
     room.answersByRound = { 1: {} };
     room.lastActive = now;
-    room.version = (room.version || 0) + 1;
 
     await saveRoom(room);
     return { success: true, room };

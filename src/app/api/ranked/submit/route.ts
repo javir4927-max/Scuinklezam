@@ -13,13 +13,23 @@ const NO_CACHE_HEADERS = {
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const { categoryId, score, guestNickname, guestUserId, categoryName, correctCount, artistName } = body;
+    const { categoryId, score, guestNickname, guestUserId, categoryName, correctCount, artistName, roundScores } = body;
 
     if (!categoryId || typeof score !== "number") {
       return NextResponse.json(
         { success: false, error: "Datos de partida inválidos" },
         { status: 400, headers: NO_CACHE_HEADERS }
       );
+    }
+
+    let authoritativeScore: number;
+    if (Array.isArray(roundScores) && roundScores.length > 0) {
+      const sanitized = roundScores
+        .slice(0, 10)
+        .map((p) => Math.min(100, Math.max(0, Math.round(Number(p) || 0))));
+      authoritativeScore = Math.min(1000, sanitized.reduce((a, b) => a + b, 0));
+    } else {
+      authoritativeScore = Math.min(1000, Math.max(0, Math.round(score)));
     }
 
     // Check if user is authenticated (Email session or Spotify)
@@ -30,15 +40,13 @@ export async function POST(request: Request) {
       sessionUser?.avatarUrl ||
       `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(nickname)}&backgroundColor=0B1710`;
 
-    const clampedScore = Math.min(1000, Math.max(0, Math.round(score)));
-
     // 1. Submit to general category ranking
     const result = await submitRankedScore(
       userId,
       nickname,
       avatarUrl,
       categoryId,
-      clampedScore,
+      authoritativeScore,
       categoryName,
       correctCount
     );
@@ -52,7 +60,7 @@ export async function POST(request: Request) {
         nickname,
         avatarUrl,
         targetArtist,
-        clampedScore,
+        authoritativeScore,
         correctCount
       );
     }
@@ -60,6 +68,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ...result,
+        submittedScore: authoritativeScore,
         artistResult,
       },
       { headers: NO_CACHE_HEADERS }

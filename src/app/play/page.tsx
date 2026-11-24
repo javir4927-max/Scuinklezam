@@ -775,7 +775,6 @@ function PlayArenaContent() {
           action: "update_player_profile",
           playerId,
           name: resolvedName,
-          avatarColor: userCustomization.avatarUrl || spotifyAuthUser?.avatarUrl || undefined,
           avatarUrl: userCustomization.avatarUrl || spotifyAuthUser?.avatarUrl || undefined,
           rankTier: userCustomization.rankTier,
           equippedTitle: userCustomization.equippedTitle,
@@ -937,7 +936,7 @@ function PlayArenaContent() {
       if (isFetchingRoomRef.current) return;
       isFetchingRoomRef.current = true;
       try {
-        pollCountRef.current = (pollCountRef.current + 1) % 6;
+        pollCountRef.current = (pollCountRef.current + 1) % 10;
         const useVersion = pollCountRef.current !== 0 && lastRoomVersionRef.current > 0;
         const versionParam = useVersion ? `&v=${lastRoomVersionRef.current}` : "";
         const res = await fetch(`/api/rooms/${roomCode}?playerId=${playerId}&t=${Date.now()}${versionParam}`, {
@@ -1008,6 +1007,9 @@ function PlayArenaContent() {
                 playerId,
                 name: playerName || "Jugador",
                 spotifyConnected,
+                avatarUrl: userCustomization.avatarUrl || spotifyAuthUser?.avatarUrl || undefined,
+                rankTier: userCustomization.rankTier,
+                equippedTitle: userCustomization.equippedTitle,
               }),
             })
               .then(async (r) => {
@@ -1031,18 +1033,44 @@ function PlayArenaContent() {
       } finally {
         isFetchingRoomRef.current = false;
         if (isMounted) {
-          // Adaptive polling: 1500ms in lobby or finished, 1000ms during active match
           const currentStatus = roomStatusRef.current;
-          const pollDelay = (currentStatus === "lobby" || currentStatus === "finished") ? 1500 : 1000;
+          const isHidden = typeof document !== "undefined" && document.hidden;
+          let pollDelay: number;
+          if (isHidden) {
+            pollDelay = (currentStatus === "lobby" || currentStatus === "finished") ? 8000 : 4000;
+          } else {
+            if (currentStatus === "lobby" || currentStatus === "finished") {
+              pollDelay = 2500;
+            } else if (currentStatus === "playing") {
+              pollDelay = 1500;
+            } else {
+              // countdown, voting, round_reveal
+              pollDelay = 1000;
+            }
+          }
           timerId = setTimeout(fetchRoom, pollDelay);
         }
       }
     };
 
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && !document.hidden && isMounted) {
+        if (timerId) clearTimeout(timerId);
+        fetchRoom();
+      }
+    };
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
+
     fetchRoom();
     return () => {
       isMounted = false;
       if (timerId) clearTimeout(timerId);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
     };
   }, [roomCode, playerId]);
 

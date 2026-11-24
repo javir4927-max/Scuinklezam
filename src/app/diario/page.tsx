@@ -185,6 +185,11 @@ export default function DiarioPage() {
 
   // 3. Start a round
   const startRound = (roundIdx: number) => {
+    if (roundIdx === 0) {
+      scoreRef.current = 0;
+      resultsRef.current = [];
+      answersRef.current = [];
+    }
     if (roundIdx >= rounds.length) {
       finishGame();
       return;

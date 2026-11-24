@@ -72,9 +72,6 @@ const memorySessions = global.__scuinklezamSessions;
 const memoryCustomizations = global.__scuinklezamCustomizations;
 
 export async function getUserCustomization(userId: string): Promise<UserCustomization> {
-  if (memoryCustomizations.has(userId)) {
-    return memoryCustomizations.get(userId)!;
-  }
   if (redis) {
     try {
       const raw = await redis.get<string | UserCustomization>(`scuinklezam:user_custom:${userId}`);
@@ -83,11 +80,13 @@ export async function getUserCustomization(userId: string): Promise<UserCustomiz
         memoryCustomizations.set(userId, parsed);
         return parsed;
       }
+      return {};
     } catch (err) {
       console.warn("[getUserCustomization] Redis get error:", err);
+      return memoryCustomizations.get(userId) || {};
     }
   }
-  return {};
+  return memoryCustomizations.get(userId) || {};
 }
 
 export async function setUserCustomization(userId: string, data: UserCustomization): Promise<void> {

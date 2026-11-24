@@ -12,41 +12,29 @@ const NO_CACHE_HEADERS = {
 };
 
 export async function GET() {
-  const categories = await Promise.all(
-    RANKED_CATEGORIES.map(async (c) => {
-      let plays = 0;
-      if (redis) {
-        try {
-          const underscoreVal = await redis.get<string | number>(`scuinklezam:stats:plays:${c.id}`);
-          const underscorePlays = Number(underscoreVal || 0);
-          plays = underscorePlays;
+  let countsMap: Record<string, string | number> | null = null;
+  if (redis) {
+    try {
+      countsMap = await redis.hgetall<Record<string, string | number>>("scuinklezam:stats:category_plays");
+    } catch (err) {
+      console.warn("[categories] Redis hgetall error:", err);
+    }
+  }
 
-          if (c.kind === "artist") {
-            const slug = toArtistSlug(c.query || c.name);
-            const hyphenId = `artist_${slug}`;
-            if (hyphenId !== c.id) {
-              const hyphenVal = await redis.get<string | number>(`scuinklezam:stats:plays:${hyphenId}`);
-              const hyphenPlays = Number(hyphenVal || 0);
-              plays = underscorePlays + hyphenPlays;
-            }
-
-            try {
-              const artistPlayers = Number((await redis.zcard(`scuinklezam:ranked:artist:${slug}`)) || 0);
-              plays = Math.max(plays, artistPlayers);
-            } catch {
-              // Ignore zcard errors if any
-            }
-          }
-        } catch {
-          plays = 0;
-        }
+  const categories = RANKED_CATEGORIES.map((c) => {
+    let plays = Number(countsMap?.[c.id] || 0);
+    if (c.kind === "artist") {
+      const slug = toArtistSlug(c.query || c.name);
+      const hyphenId = `artist_${slug}`;
+      if (hyphenId !== c.id && countsMap?.[hyphenId]) {
+        plays += Number(countsMap[hyphenId] || 0);
       }
-      return {
-        ...c,
-        playerCount: plays,
-      };
-    })
-  );
+    }
+    return {
+      ...c,
+      playerCount: plays,
+    };
+  });
 
   return NextResponse.json(
     {

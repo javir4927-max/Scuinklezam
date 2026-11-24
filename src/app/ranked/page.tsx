@@ -191,6 +191,7 @@ export default function RankedArenaPage() {
     finalScore: number;
     tier: RankedTier;
     rank: number;
+    bestScore?: number;
     isPersonalBest: boolean;
   } | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -200,6 +201,7 @@ export default function RankedArenaPage() {
     categoryName?: string;
     artistName?: string;
     score: number;
+    roundScores?: number[];
     correctCount: number;
     guestUserId: string;
     guestNickname: string;
@@ -208,7 +210,8 @@ export default function RankedArenaPage() {
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const advanceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const scorePopupTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const answersHistoryRef = useRef<AnswerHistoryItem[]>([]);
+  const answersByRoundRef = useRef<Map<number, AnswerHistoryItem>>(new Map());
+  const gameStateRef = useRef<"idle" | "loading" | "playing" | "reveal" | "summary">("idle");
 
   const timeLeftRef = useRef<number>(ROUND_DURATION_SEC);
   const scoreRef = useRef<number>(0);
@@ -224,11 +227,23 @@ export default function RankedArenaPage() {
   useEffect(() => {
     currentIdxRef.current = currentIdx;
   }, [currentIdx]);
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
 
   // Listen for navbar "scuinklezam_reset_ranked" event to reset all game and sheet states
   useEffect(() => {
     const handleReset = () => {
       audioPlayer.stop();
+      if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current);
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (scorePopupTimerRef.current) clearTimeout(scorePopupTimerRef.current);
+      answersByRoundRef.current = new Map();
+      currentIdxRef.current = 0;
+      timeLeftRef.current = ROUND_DURATION_SEC;
+      scoreRef.current = 0;
+      isHandlingAnswerRef.current = false;
+      gameStateRef.current = "idle";
       setGameState("idle");
       setSelectedArtistName(null);
       setArtistSheetData(null);
@@ -236,9 +251,6 @@ export default function RankedArenaPage() {
       setActiveCategory(null);
       setRankedError(null);
       setSearchFilter("");
-      if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current);
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (scorePopupTimerRef.current) clearTimeout(scorePopupTimerRef.current);
     };
 
     window.addEventListener("scuinklezam_reset_ranked", handleReset);
@@ -413,15 +425,23 @@ export default function RankedArenaPage() {
   // Launch a Ranked Run (10 Questions Exact / 1000 Pts Max)
   const handleStartRankedRun = async (cat: RankedCategory) => {
     audioPlayer.unlock();
+    if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current);
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (scorePopupTimerRef.current) clearTimeout(scorePopupTimerRef.current);
+
     setActiveCategory(cat);
+    gameStateRef.current = "loading";
     setGameState("loading");
     setScore(0);
     setStreak(0);
     setCurrentIdx(0);
+    currentIdxRef.current = 0;
+    timeLeftRef.current = ROUND_DURATION_SEC;
+    scoreRef.current = 0;
     setAnsweredIdx(null);
     setScorePopup(null);
     setSummaryData(null);
-    answersHistoryRef.current = [];
+    answersByRoundRef.current = new Map();
     isHandlingAnswerRef.current = false;
     setAnswersHistory([]);
     setPlayingPreviewUrl(null);
@@ -439,6 +459,7 @@ export default function RankedArenaPage() {
 
       if (tracks.length < 4) {
         setRankedError(`No se pudieron cargar suficientes canciones con audio disponible para "${cat.name}". Intenta con otro artista o temática.`);
+        gameStateRef.current = "idle";
         setGameState("idle");
         return;
       }
@@ -535,6 +556,9 @@ export default function RankedArenaPage() {
       }
 
       setQuestions(generated);
+      currentIdxRef.current = 0;
+      timeLeftRef.current = ROUND_DURATION_SEC;
+      gameStateRef.current = "playing";
       setGameState("playing");
       setTimeLeft(ROUND_DURATION_SEC);
       isHandlingAnswerRef.current = false;
@@ -547,6 +571,7 @@ export default function RankedArenaPage() {
       }
     } catch (err) {
       console.error("Error starting ranked run:", err);
+      gameStateRef.current = "idle";
       setGameState("idle");
     }
   };
@@ -557,6 +582,7 @@ export default function RankedArenaPage() {
     categoryName?: string;
     artistName?: string;
     score: number;
+    roundScores?: number[];
     correctCount: number;
     guestUserId: string;
     guestNickname: string;
@@ -577,17 +603,23 @@ export default function RankedArenaPage() {
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Error al conectar con el servidor.");
       }
+      const finalRank = (payload.artistName ? data.artistResult?.userRank : data.rank) || data.rank || 1;
+      const bestScore = (payload.artistName ? data.artistResult?.bestScore : data.score) ?? finalScore;
       setSummaryData({
         finalScore,
         tier,
-        rank: data.rank || 1,
+        rank: finalRank,
+        bestScore,
         isPersonalBest: data.isPersonalBest ?? true,
       });
       pendingSubmitRef.current = null;
       loadInitialData();
 
       if (payload.artistName) {
-        fetch(`/api/ranked/artist?name=${encodeURIComponent(payload.artistName)}&userId=${payload.guestUserId}&_t=${Date.now()}`)
+        fetch(
+          `/api/ranked/artist?name=${encodeURIComponent(payload.artistName)}&userId=${payload.guestUserId}&_t=${Date.now()}`,
+          { cache: "no-store" }
+        )
           .then((r) => r.json())
           .then((sheetData) => {
             if (sheetData.success) {
@@ -615,10 +647,12 @@ export default function RankedArenaPage() {
     async (idx: number) => {
       const qIdx = currentIdxRef.current;
       const currentQ = questions[qIdx];
-      if (gameState !== "playing" || !currentQ || !activeCategory) return;
-      if (isHandlingAnswerRef.current) return;
-      isHandlingAnswerRef.current = true;
+      if (gameStateRef.current !== "playing" || !currentQ || !activeCategory) return;
+      if (isHandlingAnswerRef.current || answersByRoundRef.current.has(qIdx)) return;
 
+      isHandlingAnswerRef.current = true;
+      gameStateRef.current = "reveal";
+      if (timerRef.current) clearInterval(timerRef.current);
       setGameState("reveal");
       setAnsweredIdx(idx);
 
@@ -634,23 +668,28 @@ export default function RankedArenaPage() {
 
       if (isCorrect) {
         setStreak((prev) => prev + 1);
-        setScore((prev) => prev + roundPoints);
         playCorrectSound();
       } else {
         setStreak(0);
         playWrongSound();
       }
 
-      // Record in answers history for the summary screen
+      // Record in answers map indexed by question index
       const chosenTitle = idx >= 0 && currentQ.options[idx] ? currentQ.options[idx].title : "Tiempo agotado";
-      const nextHistoryItem: AnswerHistoryItem = {
+      answersByRoundRef.current.set(qIdx, {
         track: currentQ.correctTrack,
         isCorrect,
         points: roundPoints,
         chosenTitle,
-      };
-      answersHistoryRef.current = [...answersHistoryRef.current, nextHistoryItem];
-      setAnswersHistory(answersHistoryRef.current);
+      });
+
+      const orderedHistory = Array.from(answersByRoundRef.current.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([, item]) => item);
+      const exactScore = Math.min(1000, orderedHistory.reduce((acc, item) => acc + item.points, 0));
+      scoreRef.current = exactScore;
+      setAnswersHistory(orderedHistory);
+      setScore(exactScore);
 
       // Floating arcade score animation
       if (scorePopupTimerRef.current) clearTimeout(scorePopupTimerRef.current);
@@ -674,10 +713,13 @@ export default function RankedArenaPage() {
         setScorePopup(null);
         if (qIdx + 1 < questions.length) {
           const nextIdx = qIdx + 1;
+          currentIdxRef.current = nextIdx;
+          timeLeftRef.current = ROUND_DURATION_SEC;
+          gameStateRef.current = "playing";
           setCurrentIdx(nextIdx);
           setAnsweredIdx(null);
-          setGameState("playing");
           setTimeLeft(ROUND_DURATION_SEC);
+          setGameState("playing");
           isHandlingAnswerRef.current = false;
 
           const nextTrack = questions[nextIdx].correctTrack;
@@ -688,16 +730,23 @@ export default function RankedArenaPage() {
             audioPlayer.preloadNext(questions[nextIdx + 1]?.correctTrack?.previewUrl);
           }
         } else {
-          // Finished 10 Questions Ranked Run!
+          // Finished Questions Ranked Run!
           audioPlayer.stop();
+          gameStateRef.current = "summary";
           setGameState("summary");
           isHandlingAnswerRef.current = false;
 
+          const finalHistory = Array.from(answersByRoundRef.current.entries())
+            .sort((a, b) => a[0] - b[0])
+            .map(([, item]) => item);
           const finalScore = Math.min(
             1000,
-            answersHistoryRef.current.reduce((acc, item) => acc + (Number(item.points) || 0), 0)
+            finalHistory.reduce((acc, item) => acc + (Number(item.points) || 0), 0)
           );
+          const roundScores = finalHistory.map((item) => item.points);
+          scoreRef.current = finalScore;
           setScore(finalScore);
+
           const guestId = user?.id || (typeof window !== "undefined" ? localStorage.getItem("scuinklezam_ranked_uid") : "") || `guest_${Date.now()}`;
           if (typeof window !== "undefined") {
             localStorage.setItem("scuinklezam_ranked_uid", guestId);
@@ -708,14 +757,15 @@ export default function RankedArenaPage() {
             categoryName: activeCategory.name,
             artistName: activeCategory.kind === "artist" ? (activeCategory.query || activeCategory.name) : undefined,
             score: finalScore,
-            correctCount: answersHistoryRef.current.filter((a) => a.isCorrect).length,
+            roundScores,
+            correctCount: finalHistory.filter((a) => a.isCorrect).length,
             guestUserId: guestId,
             guestNickname: user?.nickname || (typeof window !== "undefined" ? localStorage.getItem("scuinklezam_player_name") : "") || "Jugador Ranked",
           });
         }
       }, 2500);
     },
-    [gameState, questions, activeCategory, user]
+    [questions, activeCategory, user]
   );
 
   // 15s Timer decoupled from answer handler
@@ -786,9 +836,17 @@ export default function RankedArenaPage() {
               <button
                 onClick={() => {
                   audioPlayer.stop();
+                  if (timerRef.current) clearInterval(timerRef.current);
+                  if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current);
+                  if (scorePopupTimerRef.current) clearTimeout(scorePopupTimerRef.current);
+                  answersByRoundRef.current = new Map();
+                  currentIdxRef.current = 0;
+                  timeLeftRef.current = ROUND_DURATION_SEC;
+                  scoreRef.current = 0;
+                  isHandlingAnswerRef.current = false;
+                  gameStateRef.current = "idle";
                   setGameState("idle");
                   setActiveCategory(null);
-                  if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current);
                 }}
                 className="text-xs text-zinc-400 hover:text-white flex items-center gap-1.5 transition cursor-pointer"
               >
@@ -837,7 +895,7 @@ export default function RankedArenaPage() {
                   {/* Fila 1 Izquierda: Canción X/10 + Nombre categoría */}
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-xs font-bold text-white shrink-0">
-                      Canción {currentIdx + 1}/10
+                      Canción {currentIdx + 1}/{questions.length || 10}
                     </span>
                     {activeCategory?.name && (
                       <span className="text-xs text-zinc-400 truncate max-w-[42vw] sm:max-w-[200px]" title={activeCategory.name}>
@@ -1050,6 +1108,16 @@ export default function RankedArenaPage() {
                         <div className="font-display font-black text-4xl sm:text-6xl text-white tracking-tight leading-none px-1 py-1">
                           {summaryData.finalScore} <span className="text-xl sm:text-2xl text-zinc-400 font-normal">/ 1000</span>
                         </div>
+                        {summaryData.isPersonalBest ? (
+                          <div className="text-xs sm:text-sm font-bold text-amber-300 flex items-center gap-1.5">
+                            ✨ ¡Nuevo récord personal!
+                          </div>
+                        ) : summaryData.bestScore && summaryData.bestScore > summaryData.finalScore ? (
+                          <div className="text-xs sm:text-sm font-medium text-zinc-400">
+                            Tu récord en el ranking se mantiene en{" "}
+                            <span className="font-bold text-emerald-400">{summaryData.bestScore} / 1000</span>
+                          </div>
+                        ) : null}
                         <h2 className="font-display font-extrabold text-base sm:text-xl text-zinc-100 truncate">
                           {activeCategory?.name}
                         </h2>
@@ -1071,6 +1139,7 @@ export default function RankedArenaPage() {
                       <button
                         onClick={() => {
                           audioPlayer.stop();
+                          gameStateRef.current = "idle";
                           setGameState("idle");
                           handleOpenArtistSheet(activeCategory.name);
                         }}
@@ -1092,6 +1161,7 @@ export default function RankedArenaPage() {
                     <button
                       onClick={() => {
                         audioPlayer.stop();
+                        gameStateRef.current = "idle";
                         setGameState("idle");
                         setActiveCategory(null);
                         setSelectedArtistName(null);

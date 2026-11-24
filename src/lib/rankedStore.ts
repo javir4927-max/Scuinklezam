@@ -6,6 +6,7 @@ import {
   RankedTier,
   calculateTier,
   LeaderboardEntry,
+  RANKED_CATEGORIES,
 } from "./rankedTypes";
 
 // Helper to normalize artist names to clean URL/Redis slugs
@@ -205,9 +206,20 @@ export async function submitRankedScore(
       isPersonalBest = safeScore > prevCatScore;
       bestScore = Math.min(1000, Math.max(prevCatScore, safeScore));
 
-      // 1. Increment real play counts
-      await redis.incr(`scuinklezam:stats:plays:${categoryId}`);
-      await redis.incr(`scuinklezam:stats:plays:global`);
+      // 1. Increment real play counts (global + single category_plays hash)
+      await redis.incr(`scuinklezam:stats:plays:${categoryId}`).catch(() => {});
+      await redis.incr(`scuinklezam:stats:plays:global`).catch(() => {});
+      await redis.hincrby("scuinklezam:stats:category_plays", categoryId, 1);
+      if (categoryId.startsWith("artist_")) {
+        const matchingCanonical = RANKED_CATEGORIES.find((cat) => {
+          if (cat.kind !== "artist") return false;
+          const catSlug = toArtistSlug(cat.query || cat.name);
+          return categoryId === `artist_${catSlug}` || categoryId === cat.id;
+        });
+        if (matchingCanonical && matchingCanonical.id !== categoryId) {
+          await redis.hincrby("scuinklezam:stats:category_plays", matchingCanonical.id, 1);
+        }
+      }
 
       // 2. Update category leaderboard (only best score per user in sorted set)
       await redis.zadd(catKey, {
@@ -335,6 +347,7 @@ export async function getCategoryLeaderboard(
       });
 
       if (topIds && topIds.length > 0) {
+        const memberEntries: Array<{ userId: string; score: number }> = [];
         for (let i = 0; i < topIds.length; i += 2) {
           const mId = typeof topIds[i] === "object" ? (topIds[i] as any).member : topIds[i];
           const rawScore = typeof topIds[i] === "object" ? Number((topIds[i] as any).score) : Number(topIds[i + 1]);
@@ -345,26 +358,34 @@ export async function getCategoryLeaderboard(
             redis.zadd(`scuinklezam:ranked:${categoryId}`, { score: mScore, member: mId }).catch(() => {});
           }
 
-          const profileRaw = await redis.get<string | any>(`scuinklezam:user_profile:${mId}`);
-          const profile = typeof profileRaw === "string" ? JSON.parse(profileRaw) : profileRaw;
+          memberEntries.push({ userId: mId, score: mScore });
+        }
+
+        const profileKeys = memberEntries.map((m) => `scuinklezam:user_profile:${m.userId}`);
+        const profilesRaw = profileKeys.length > 0 ? await redis.mget<any[]>(...profileKeys) : [];
+
+        for (let idx = 0; idx < memberEntries.length; idx++) {
+          const m = memberEntries[idx];
+          const pRaw = profilesRaw ? profilesRaw[idx] : null;
+          const profile = typeof pRaw === "string" ? JSON.parse(pRaw) : pRaw;
 
           if (profile && profile.bestScore && Number(profile.bestScore) > 1000) {
             profile.bestScore = 1000;
-            redis.set(`scuinklezam:user_profile:${mId}`, JSON.stringify(profile)).catch(() => {});
+            redis.set(`scuinklezam:user_profile:${m.userId}`, JSON.stringify(profile)).catch(() => {});
           }
 
-          const nick = profile?.nickname || `Jugador #${(i / 2) + 1}`;
+          const nick = profile?.nickname || `Jugador #${idx + 1}`;
           const av =
             profile?.avatarUrl ||
             `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(nick)}&backgroundColor=0B1710`;
 
           entries.push({
-            userId: mId,
+            userId: m.userId,
             nickname: nick,
             avatarUrl: av,
-            score: mScore,
+            score: m.score,
             rank: entries.length + 1,
-            tier: calculateTier(mScore),
+            tier: calculateTier(m.score),
           });
         }
       }
@@ -524,13 +545,29 @@ export async function submitArtistRankedScore(
         member: userId,
       });
 
-      // 4. Save user profile for global lookups
+      // 3.5 Update unified artist meta hash for 1-command leaderboard reads
+      await redis.hset(`scuinklezam:artist_meta:${slug}`, {
+        [userId]: JSON.stringify({
+          nickname,
+          avatarUrl,
+          bestScore: finalBestScore,
+          totalPoints: newTotalPoints,
+          quizzesPlayed: newQuizzesPlayed,
+        }),
+      });
+
+      // 4. Save user profile for global lookups, preserving existing global bestScore
+      const existingProfileRaw = await redis.get<string | any>(`scuinklezam:user_profile:${userId}`);
+      const existingProfile = typeof existingProfileRaw === "string" ? JSON.parse(existingProfileRaw) : existingProfileRaw;
+      const preservedGlobalBest = Math.max(Number(existingProfile?.bestScore || 0), finalBestScore);
+
       await redis.set(
         `scuinklezam:user_profile:${userId}`,
         JSON.stringify({
           userId,
           nickname,
           avatarUrl,
+          bestScore: preservedGlobalBest,
           lastPlayed: Date.now(),
         })
       );
@@ -676,33 +713,49 @@ export async function getArtistProfileAndLeaderboard(
       });
 
       if (topIds && topIds.length > 0) {
+        const memberEntries: Array<{ userId: string; score: number }> = [];
         for (let i = 0; i < topIds.length; i += 2) {
           const mId = typeof topIds[i] === "object" ? (topIds[i] as any).member : topIds[i];
-          const mScore = typeof topIds[i] === "object" ? Number((topIds[i] as any).score) : Number(topIds[i + 1]);
+          const rawScore = typeof topIds[i] === "object" ? Number((topIds[i] as any).score) : Number(topIds[i + 1]);
+          const mScore = Math.min(1000, Math.max(0, Math.round(rawScore || 0)));
+          memberEntries.push({ userId: mId, score: mScore });
+        }
 
-          const statsKey = `scuinklezam:artist_user_stats:${slug}:${mId}`;
-          const uStats = await redis.hgetall<Record<string, string>>(statsKey);
-          let nick = uStats?.nickname;
-          let av = uStats?.avatarUrl;
+        const memberIds = memberEntries.map((m) => m.userId);
+        let metaMap: Record<string, any> | null = null;
+        try {
+          metaMap = await redis.hmget<Record<string, any>>(`scuinklezam:artist_meta:${slug}`, ...memberIds);
+        } catch (e) {
+          console.warn("[getArtistProfileAndLeaderboard] hmget error:", e);
+        }
 
-          if (!nick) {
-            const profileRaw = await redis.get<string | any>(`scuinklezam:user_profile:${mId}`);
-            const profile = typeof profileRaw === "string" ? JSON.parse(profileRaw) : profileRaw;
-            nick = profile?.nickname;
-            av = profile?.avatarUrl;
-          }
+        // Identify any members missing from artist_meta for batch fallback
+        const missingIds = memberIds.filter((id) => !metaMap || !metaMap[id]);
+        let fallbackProfiles: Record<string, any> = {};
+        if (missingIds.length > 0) {
+          try {
+            const keys = missingIds.map((id) => `scuinklezam:user_profile:${id}`);
+            const pRaws = await redis.mget<any[]>(...keys);
+            missingIds.forEach((id, idx) => {
+              const raw = pRaws ? pRaws[idx] : null;
+              fallbackProfiles[id] = typeof raw === "string" ? JSON.parse(raw) : raw;
+            });
+          } catch {}
+        }
 
-          nick = nick || `Jugador #${leaderboard.length + 1}`;
-          av = av || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(nick)}&backgroundColor=0B1710`;
+        for (let idx = 0; idx < memberEntries.length; idx++) {
+          const { userId: mId, score: mScore } = memberEntries[idx];
+          const rawMeta = metaMap ? metaMap[mId] : null;
+          const meta = typeof rawMeta === "string" ? JSON.parse(rawMeta) : rawMeta;
+          const fallback = fallbackProfiles[mId];
 
-          // Auto-migrate legacy accumulated scores in Redis sorted set and hash
-          const rawBest = Number(uStats?.bestScore || 0);
+          let nick = meta?.nickname || fallback?.nickname || `Jugador #${idx + 1}`;
+          let av = meta?.avatarUrl || fallback?.avatarUrl || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(nick)}&backgroundColor=0B1710`;
+
+          const rawBest = Number(meta?.bestScore || fallback?.bestScore || 0);
           const entryBest = Math.min(1000, rawBest || Math.min(1000, mScore));
           if (mScore > 1000 || mScore !== entryBest) {
             redis.zadd(zsetKey, { score: entryBest, member: mId }).catch(() => {});
-          }
-          if (rawBest > 1000) {
-            redis.hset(statsKey, { bestScore: entryBest }).catch(() => {});
           }
 
           leaderboard.push({
@@ -710,9 +763,9 @@ export async function getArtistProfileAndLeaderboard(
             userId: mId,
             nickname: nick,
             avatarUrl: av,
-            totalPoints: Number(uStats?.totalPoints || mScore),
+            totalPoints: Number(meta?.totalPoints || mScore),
             bestScore: entryBest,
-            quizzesPlayed: Number(uStats?.quizzesPlayed || 1),
+            quizzesPlayed: Number(meta?.quizzesPlayed || 1),
             isCurrentUser: !!userId && mId === userId,
           });
         }
@@ -721,6 +774,13 @@ export async function getArtistProfileAndLeaderboard(
         leaderboard.forEach((entry, idx) => {
           entry.rank = idx + 1;
         });
+
+        if (userId) {
+          const meInBoard = leaderboard.find((e) => e.userId === userId);
+          if (meInBoard) {
+            userRank = meInBoard.rank;
+          }
+        }
       }
     } catch (err) {
       console.warn("[getArtistProfileAndLeaderboard] Redis read error:", err);
