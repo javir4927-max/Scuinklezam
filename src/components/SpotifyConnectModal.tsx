@@ -147,24 +147,6 @@ export default function SpotifyConnectModal({
     }
   };
 
-  // Handler for 1-click mixing from stats (fallback)
-  const handleInjectQuickStats = (
-    tracks: SpotifyTrackItem[],
-    label: string,
-    artists?: string[]
-  ) => {
-    if (!tracks || tracks.length === 0) {
-      alert("Aún no hay suficientes canciones registradas en este periodo de tu cuenta.");
-      return;
-    }
-    if (onInjectTracks) {
-      onInjectTracks(tracks, label, artists);
-    } else if (onPlayPlaylist) {
-      onPlayPlaylist(tracks, label, artists);
-    }
-    onClose();
-  };
-
   // Save developer keys
   const handleSaveConfig = async () => {
     if (!clientIdInput.trim() || !clientSecretInput.trim()) return;

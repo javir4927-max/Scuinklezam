@@ -53,6 +53,19 @@ export async function getArtistFacePhoto(artistName: string): Promise<string> {
     if (!cached.includes(DEEZER_EMPTY_HASH)) return cached;
   }
 
+  // 0.5 Priority 0: PRELOADED_ARTIST_PHOTOS (0 Redis commands, 0 API latency)
+  const preloaded =
+    PRELOADED_ARTIST_PHOTOS[lower] ||
+    PRELOADED_ARTIST_PHOTOS[normalizedKey] ||
+    PRELOADED_ARTIST_PHOTOS[lowerPrimary] ||
+    PRELOADED_ARTIST_PHOTOS[normPrimary];
+  if (preloaded && !preloaded.includes(DEEZER_EMPTY_HASH)) {
+    inMemoryCache.set(lower, preloaded);
+    inMemoryCache.set(normalizedKey, preloaded);
+    inMemoryCache.set(lowerPrimary, preloaded);
+    return preloaded;
+  }
+
   // Check Upstash Redis cache (7 days)
   if (redis) {
     try {
@@ -131,19 +144,7 @@ export async function getArtistFacePhoto(artistName: string): Promise<string> {
     }
   }
 
-  // 3. Priority 3: PRELOADED_ARTIST_PHOTOS
-  if (!finalPhoto) {
-    const preloaded =
-      PRELOADED_ARTIST_PHOTOS[lower] ||
-      PRELOADED_ARTIST_PHOTOS[normalizedKey] ||
-      PRELOADED_ARTIST_PHOTOS[lowerPrimary] ||
-      PRELOADED_ARTIST_PHOTOS[normPrimary];
-    if (preloaded && !preloaded.includes(DEEZER_EMPTY_HASH)) {
-      finalPhoto = preloaded;
-    }
-  }
-
-  // 4. Priority 4: Fallback SVG / DiceBear avatar
+  // 3. Fallback SVG / DiceBear avatar
   if (!finalPhoto) {
     finalPhoto = `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(clean)}&backgroundColor=0B1710`;
   }

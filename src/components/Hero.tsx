@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import Link from "next/link";
 import { Users, Crown, Play, CheckCircle2 } from "lucide-react";
 import { playSynthNote } from "@/lib/audio";
 import { useSpotifyAuth } from "@/context/SpotifyAuthContext";
@@ -49,7 +50,7 @@ export default function Hero({ onOpenMiniQuiz }: HeroProps) {
 
         {/* CTA Group */}
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3.5">
-          <a
+          <Link
             href="/play"
             className="w-full sm:w-auto bg-emerald-950/60 border border-emerald-500/50 hover:border-emerald-400 hover:bg-emerald-900/50 text-white px-6 py-3.5 rounded-2xl shadow-[0_0_24px_rgba(16,185,129,0.2)] flex items-center justify-center gap-2.5 font-bold transition hover:scale-105"
           >
@@ -58,18 +59,18 @@ export default function Hero({ onOpenMiniQuiz }: HeroProps) {
             <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
               SALAS EN VIVO
             </span>
-          </a>
+          </Link>
 
-          <a
+          <Link
             href="/ranked"
             className="w-full sm:w-auto bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime text-black font-extrabold text-base px-7 py-3.5 rounded-2xl shadow-xl shadow-emerald-500/25 hover:scale-105 transition flex items-center justify-center gap-2.5"
           >
             <Play className="w-4 h-4 fill-current" />
             <span>Jugar Ranked Gratis</span>
-          </a>
+          </Link>
 
           {isConnected && user ? (
-            <a
+            <Link
               href="/perfil"
               className="w-full sm:w-auto glass-elevated hover:border-[#1DB954] px-5 py-3 rounded-2xl flex items-center justify-center gap-3 transition hover:scale-[1.02]"
             >
@@ -86,7 +87,7 @@ export default function Hero({ onOpenMiniQuiz }: HeroProps) {
                 <div className="text-[10px] uppercase tracking-wider text-emerald-400 font-bold">Conectado ✓</div>
                 <div className="text-sm font-bold text-white truncate max-w-[140px]">{user.displayName}</div>
               </div>
-            </a>
+            </Link>
           ) : (
             <a
               href="/api/auth/spotify/login"

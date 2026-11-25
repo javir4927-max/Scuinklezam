@@ -60,6 +60,7 @@ const memoryArtistsMeta = global.__scuinklezamMemoryArtistsMeta;
 const memoryCategoryPlays = global.__scuinklezamMemoryCategoryPlays;
 
 let popularityBackfillDone = false;
+const knownArtistMetaSlugs = new Set<string>();
 
 /**
  * Safely parses Redis values stored as JSON string or already parsed object.
@@ -325,7 +326,8 @@ export async function submitRankedScore(
   categoryId: string,
   score: number,
   categoryName?: string,
-  correctCount?: number
+  correctCount?: number,
+  isArtistRun = false
 ): Promise<{
   success: boolean;
   score: number;
@@ -358,11 +360,11 @@ export async function submitRankedScore(
       isPersonalBest = safeScore > prevBestSingle;
       newBestSingle = Math.max(prevBestSingle, safeScore);
 
-      // 2. Increment play count in category_plays Hash
-      await redis.hincrby("scuinklezam:stats:category_plays", categoryId, 1);
-
-      // 3. Increment cumulative scores in Category ZSET and Global ZSET (no 1000 cap!)
-      newCategoryTotal = Number(await redis.zincrby(catKey, safeScore, userId));
+      // 2 & 3. Only track category_plays & category ZSET when NOT an artist run (artists use scuinklezam:ranked:artist:${slug} + artists_popularity)
+      if (!isArtistRun) {
+        await redis.hincrby("scuinklezam:stats:category_plays", categoryId, 1);
+        newCategoryTotal = Number(await redis.zincrby(catKey, safeScore, userId));
+      }
       newGlobalTotal = Number(await redis.zincrby("scuinklezam:ranked:global", safeScore, userId));
 
       // 4. Increment user global stats
@@ -406,10 +408,12 @@ export async function submitRankedScore(
       );
       await redis.ltrim(`scuinklezam:user_history:${userId}`, 0, 19);
 
-      // 8. Compute user's real rank in category sorted set
-      const rankIdx = await redis.zrevrank(catKey, userId);
-      if (rankIdx !== null && rankIdx !== undefined) {
-        rank = rankIdx + 1;
+      // 8. Compute user's real rank in category sorted set (skip for artist runs)
+      if (!isArtistRun) {
+        const rankIdx = await redis.zrevrank(catKey, userId);
+        if (rankIdx !== null && rankIdx !== undefined) {
+          rank = rankIdx + 1;
+        }
       }
 
       persistedInRedis = true;
@@ -421,13 +425,19 @@ export async function submitRankedScore(
 
   // Always keep in-memory fallback synchronized when Redis is unavailable/offline
   if (!persistedInRedis) {
-    memoryCategoryPlays.set(categoryId, (memoryCategoryPlays.get(categoryId) || 0) + 1);
+    if (!isArtistRun) {
+      memoryCategoryPlays.set(categoryId, (memoryCategoryPlays.get(categoryId) || 0) + 1);
 
-    if (!memoryScores.has(categoryId)) memoryScores.set(categoryId, new Map());
-    const catMap = memoryScores.get(categoryId)!;
-    const prevCatTotal = catMap.get(userId)?.score || 0;
-    newCategoryTotal = prevCatTotal + safeScore;
-    catMap.set(userId, { score: newCategoryTotal, nickname, avatarUrl });
+      if (!memoryScores.has(categoryId)) memoryScores.set(categoryId, new Map());
+      const catMap = memoryScores.get(categoryId)!;
+      const prevCatTotal = catMap.get(userId)?.score || 0;
+      newCategoryTotal = prevCatTotal + safeScore;
+      catMap.set(userId, { score: newCategoryTotal, nickname, avatarUrl });
+
+      const sorted = Array.from(catMap.entries()).sort((a, b) => b[1].score - a[1].score);
+      const idx = sorted.findIndex(([uid]) => uid === userId);
+      rank = idx !== -1 ? idx + 1 : 1;
+    }
 
     if (!memoryScores.has("global")) memoryScores.set("global", new Map());
     const globalMap = memoryScores.get("global")!;
@@ -441,10 +451,6 @@ export async function submitRankedScore(
     isPersonalBest = safeScore > prevSingle;
     newBestSingle = Math.max(prevSingle, safeScore);
     userBestsMap.set(categoryId, newBestSingle);
-
-    const sorted = Array.from(catMap.entries()).sort((a, b) => b[1].score - a[1].score);
-    const idx = sorted.findIndex(([uid]) => uid === userId);
-    rank = idx !== -1 ? idx + 1 : 1;
 
     const mStats = memoryStats.get(userId) || { totalPlays: 0, totalPoints: 0 };
     mStats.totalPlays += 1;
@@ -608,20 +614,22 @@ export async function getUserProfileData(userId: string) {
 
   if (redis) {
     try {
-      const stats = await redis.hgetall<Record<string, string>>(`scuinklezam:user_stats:${userId}`);
+      const [stats, bests, historyRaw] = await Promise.all([
+        redis.hgetall<Record<string, string>>(`scuinklezam:user_stats:${userId}`),
+        redis.hgetall<Record<string, string>>(`scuinklezam:user_bests:${userId}`),
+        redis.lrange<string[]>(`scuinklezam:user_history:${userId}`, 0, 19),
+      ]);
       if (stats) {
         totalPlays = Number(stats.totalPlays) || 0;
         totalPoints = Number(stats.totalPoints) || 0;
       }
 
-      const bests = await redis.hgetall<Record<string, string>>(`scuinklezam:user_bests:${userId}`);
       if (bests) {
         for (const [k, v] of Object.entries(bests)) {
           personalBests[k] = Math.min(1000, Number(v));
         }
       }
 
-      const historyRaw = await redis.lrange<string[]>(`scuinklezam:user_history:${userId}`, 0, 19);
       if (historyRaw && Array.isArray(historyRaw)) {
         recentMatches = historyRaw.map((raw) => (typeof raw === "string" ? JSON.parse(raw) : raw));
       }
@@ -708,53 +716,70 @@ export async function submitArtistRankedScore(
 
   if (redis) {
     try {
-      const statsKey = `scuinklezam:artist_user_stats:${slug}:${userId}`;
+      const artistMetaKey = `scuinklezam:artist_meta:${slug}`;
       const zsetKey = `scuinklezam:ranked:artist:${slug}`;
 
-      // 1. Increment cumulative points and quizzes in Redis hash
-      const updatedPoints = await redis.hincrby(statsKey, "totalPoints", safeScore);
-      const updatedQuizzes = await redis.hincrby(statsKey, "quizzesPlayed", 1);
-      newTotalPoints = Number(updatedPoints || safeScore);
-      newQuizzesPlayed = Number(updatedQuizzes || 1);
+      // 1. Read player stats from unified artist_meta hash (fallback to legacy artist_user_stats only if missing)
+      const existingMetaRaw = await redis.hget<any>(artistMetaKey, userId);
+      let prevMeta = safeJsonParse<{
+        totalPoints?: number;
+        bestScore?: number;
+        quizzesPlayed?: number;
+      }>(existingMetaRaw);
 
-      // 2. Read previous best score (0..1000) and update personal single best
-      const prevBestRaw = await redis.hget<string>(statsKey, "bestScore");
-      const prevBest = Math.min(1000, Number(prevBestRaw || 0));
+      if (!prevMeta) {
+        const legacyStats = await redis.hgetall<Record<string, string>>(
+          `scuinklezam:artist_user_stats:${slug}:${userId}`
+        );
+        if (legacyStats && (legacyStats.totalPoints || legacyStats.quizzesPlayed || legacyStats.bestScore)) {
+          prevMeta = {
+            totalPoints: Number(legacyStats.totalPoints || 0),
+            quizzesPlayed: Number(legacyStats.quizzesPlayed || 0),
+            bestScore: Number(legacyStats.bestScore || 0),
+          };
+        }
+      }
+
+      const prevTotal = Number(prevMeta?.totalPoints || 0);
+      const prevQuizzes = Number(prevMeta?.quizzesPlayed || 0);
+      const prevBest = Math.min(1000, Number(prevMeta?.bestScore || 0));
+
+      newTotalPoints = prevTotal + safeScore;
+      newQuizzesPlayed = prevQuizzes + 1;
       finalBestScore = Math.min(1000, Math.max(prevBest, safeScore));
 
-      await redis.hset(statsKey, {
-        bestScore: finalBestScore,
-        nickname,
-        avatarUrl,
-        lastPlayed: Date.now(),
-      });
-
-      // 3. Update artist leaderboard sorted set with CUMULATIVE totalPoints!
-      await redis.zadd(zsetKey, {
-        score: newTotalPoints,
-        member: userId,
-      });
-
-      // 4. Update unified artist meta hash for 1-command leaderboard reads
-      await redis.hset(`scuinklezam:artist_meta:${slug}`, {
-        [userId]: JSON.stringify({
-          nickname,
-          avatarUrl,
-          totalPoints: newTotalPoints,
-          bestScore: finalBestScore,
-          quizzesPlayed: newQuizzesPlayed,
+      // 2. Write unified artist_meta + artist ZSET + popularity in parallel (+ catalog meta only once per warm slug)
+      const writePromises: Promise<any>[] = [
+        redis.hset(artistMetaKey, {
+          [userId]: JSON.stringify({
+            nickname,
+            avatarUrl,
+            totalPoints: newTotalPoints,
+            bestScore: finalBestScore,
+            quizzesPlayed: newQuizzesPlayed,
+          }),
         }),
-      });
+        redis.zadd(zsetKey, {
+          score: newTotalPoints,
+          member: userId,
+        }),
+        redis.zincrby("scuinklezam:ranked:artists_popularity", 1, slug),
+      ];
 
-      // 5. Increment global artist popularity (+1 total match played) & store compact catalog meta if missing
-      await redis.zincrby("scuinklezam:ranked:artists_popularity", 1, slug);
-      const metaExists = await redis.hexists("scuinklezam:ranked:artists_meta", slug);
-      if (!metaExists) {
-        const meta = await resolveArtistCatalogMeta(cleanName, slug);
-        await redis.hset("scuinklezam:ranked:artists_meta", {
-          [slug]: JSON.stringify(meta),
-        });
+      if (!knownArtistMetaSlugs.has(slug)) {
+        const metaExists = await redis.hexists("scuinklezam:ranked:artists_meta", slug);
+        if (!metaExists) {
+          const meta = await resolveArtistCatalogMeta(cleanName, slug);
+          writePromises.push(
+            redis.hset("scuinklezam:ranked:artists_meta", {
+              [slug]: JSON.stringify(meta),
+            })
+          );
+        }
+        knownArtistMetaSlugs.add(slug);
       }
+
+      await Promise.all(writePromises);
 
       // 6. Preserve user_profile without overwriting totalPoints or downgrading bestScore
       if (!skipUserProfileWrite) {
@@ -927,27 +952,45 @@ export async function getArtistProfileAndLeaderboard(
   if (redis) {
     try {
       const zsetKey = `scuinklezam:ranked:artist:${slug}`;
-      const statsKey = userId ? `scuinklezam:artist_user_stats:${slug}:${userId}` : null;
+      const artistMetaKey = `scuinklezam:artist_meta:${slug}`;
 
-      // Parallelize independent initial reads (zcard, top 50 zrange, and user stats/rank if userId)
-      const [zcardRes, topIds, uStats, rankIdx] = await Promise.all([
+      // Parallelize independent initial reads (zcard, top 50 zrange, and user meta/rank if userId)
+      const [zcardRes, topIds, userMetaRaw, rankIdx] = await Promise.all([
         redis.zcard(zsetKey),
         redis.zrange<any[]>(zsetKey, 0, 49, {
           rev: true,
           withScores: true,
         }),
-        statsKey ? redis.hgetall<Record<string, string>>(statsKey) : Promise.resolve(null),
+        userId ? redis.hget<any>(artistMetaKey, userId) : Promise.resolve(null),
         userId ? redis.zrevrank(zsetKey, userId) : Promise.resolve(null),
       ]);
 
       totalPlayers = zcardRes || 0;
-      if (uStats) {
-        userTotalPoints = Number(uStats.totalPoints || 0);
-        userQuizzesPlayed = Number(uStats.quizzesPlayed || 0);
-        userBestScore = Math.min(1000, Number(uStats.bestScore || 0));
-      }
       if (rankIdx !== null && rankIdx !== undefined) {
         userRank = rankIdx + 1;
+      }
+
+      if (userId) {
+        const parsedUserMeta = safeJsonParse<{
+          totalPoints?: number;
+          quizzesPlayed?: number;
+          bestScore?: number;
+        }>(userMetaRaw);
+
+        if (parsedUserMeta) {
+          userTotalPoints = Number(parsedUserMeta.totalPoints || 0);
+          userQuizzesPlayed = Number(parsedUserMeta.quizzesPlayed || 0);
+          userBestScore = Math.min(1000, Number(parsedUserMeta.bestScore || 0));
+        } else if (rankIdx !== null && rankIdx !== undefined) {
+          const legacyStats = await redis.hgetall<Record<string, string>>(
+            `scuinklezam:artist_user_stats:${slug}:${userId}`
+          );
+          if (legacyStats) {
+            userTotalPoints = Number(legacyStats.totalPoints || 0);
+            userQuizzesPlayed = Number(legacyStats.quizzesPlayed || 0);
+            userBestScore = Math.min(1000, Number(legacyStats.bestScore || 0));
+          }
+        }
       }
 
       if (topIds && topIds.length > 0) {

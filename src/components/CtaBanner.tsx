@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import Link from "next/link";
 
 interface CtaBannerProps {
   onOpenMiniQuiz: (topic?: string) => void;
@@ -17,12 +18,12 @@ export default function CtaBanner({ onOpenMiniQuiz }: CtaBannerProps) {
           Más de 500.000 apasionados de la música ya están compitiendo. Tu primera ronda de Spotify empieza en menos de 5 segundos. 100% gratis e ilimitado.
         </p>
         <div className="mt-8 flex flex-wrap justify-center gap-4">
-          <a
+          <Link
             href="/ranked"
             className="px-8 py-4 rounded-full bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime text-black font-extrabold text-sm hover:scale-105 transition shadow-xl"
           >
             Entrar a la Arena Ranked (Gratis)
-          </a>
+          </Link>
           <a
             href="/api/auth/spotify/login"
             className="px-6 py-4 rounded-full glass-elevated text-white font-bold text-sm hover:border-[#1DB954] transition flex items-center gap-2"

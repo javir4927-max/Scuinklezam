@@ -63,7 +63,8 @@ export async function POST(request: Request) {
       canonicalCategoryId,
       authoritativeScore,
       canonicalArtistName || categoryName,
-      correctCount
+      correctCount,
+      Boolean(canonicalArtistName)
     );
 
     // 2. If this run is for a specific artist, also update the artist ranking (cumulative totalPoints, quizzes, bestScore, popularity)

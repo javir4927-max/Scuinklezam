@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import Link from "next/link";
 import { Play, Pause, Volume2, Timer, Sparkles, Heart, ExternalLink, Crown, Check, X, Music2 } from "lucide-react";
 import { playSynthNote } from "@/lib/audio";
 import { playCorrectSound, playWrongSound } from "@/lib/soundEffects";
@@ -725,12 +726,13 @@ export default function MiniQuizModal({
               >
                 Jugar de Nuevo
               </button>
-              <a
+              <Link
                 href="/ranked"
+                onClick={handleClose}
                 className="flex-1 py-3 rounded-xl bg-gradient-to-r from-goblinPrimary via-goblinClover to-goblinLime text-black font-extrabold text-xs text-center shadow-lg shadow-emerald-500/30 hover:scale-[1.02] transition block"
               >
                 Ir a la Arena Ranked Oficial →
-              </a>
+              </Link>
             </div>
           </div>
         )}

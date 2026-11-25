@@ -266,13 +266,10 @@ export async function saveRoomPool(code: string, pool: RoomPoolData): Promise<vo
 export async function checkRoomUnchanged(
   code: string,
   clientVersion: number,
-  activePlayerId?: string
-): Promise<{ unchanged: boolean; version?: number }> {
+  activePlayerId?: string,
+  touchHeartbeat = false
+): Promise<{ unchanged: boolean; notFound?: boolean; version?: number }> {
   const upperCode = code.toUpperCase().trim();
-  if (activePlayerId) {
-    await updatePlayerHeartbeat(upperCode, activePlayerId).catch(() => {});
-  }
-  if (!clientVersion || clientVersion <= 0) return { unchanged: false };
 
   let meta: RoomMeta | null | undefined = null;
   if (redis) {
@@ -289,10 +286,18 @@ export async function checkRoomUnchanged(
     meta = inMemoryRoomMetas.get(upperCode);
   }
 
-  if (meta && meta.v === clientVersion && (meta.end === 0 || Date.now() < meta.end)) {
+  if (!meta) {
+    return { unchanged: false, notFound: true };
+  }
+
+  if (touchHeartbeat && activePlayerId && meta.s !== "finished") {
+    await updatePlayerHeartbeat(upperCode, activePlayerId).catch(() => {});
+  }
+
+  if (clientVersion > 0 && meta.v === clientVersion && (meta.end === 0 || Date.now() < meta.end)) {
     return { unchanged: true, version: meta.v };
   }
-  return { unchanged: false, version: meta?.v };
+  return { unchanged: false, version: meta.v };
 }
 
 // Upstash Redis configuration
@@ -348,7 +353,7 @@ export async function withRoomLock<T>(code: string, fn: () => Promise<T>): Promi
   const token = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
   const lockTimeoutMs = 8000;
   const maxWaitMs = 5000;
-  const retryIntervalMs = 40;
+  const retryIntervalMs = 150;
 
   const startTime = Date.now();
   let acquired = false;
@@ -418,7 +423,7 @@ export async function updatePlayerHeartbeat(code: string, playerId: string, forc
   const throttleKey = `${upperCode}:${playerId}`;
   const lastWrite = lastRedisHbWrite.get(throttleKey) || 0;
 
-  if (redis && (force || now - lastWrite >= 7000)) {
+  if (redis && (force || now - lastWrite >= 12000)) {
     lastRedisHbWrite.set(throttleKey, now);
     try {
       const hbKey = `room:${upperCode}:heartbeats`;
@@ -1521,8 +1526,6 @@ export async function getRawRoom(code: string): Promise<RoomState | null> {
     try {
       const remote = await redis.get<RoomState>(`${ROOM_KEY_PREFIX}${upperCode}`);
       if (remote) return remote;
-      const alt = await redis.get<RoomState>(`room:${upperCode}`);
-      if (alt) return alt;
     } catch (err) {
       console.error(`[Upstash Redis] Error retrieving raw room ${upperCode}:`, err);
     }
@@ -1623,25 +1626,25 @@ export async function createRoom(
 export async function getRoom(code: string, activePlayerId?: string): Promise<RoomState | null> {
   const upperCode = code.toUpperCase().trim();
 
-  // 1. Update heartbeat in independent Redis Hash without modifying room:${code}
-  if (activePlayerId) {
-    await updatePlayerHeartbeat(upperCode, activePlayerId);
-  }
-
-  // 2. Read room state read-only
+  // 1. Read room state read-only first so 404/finished rooms never trigger heartbeat writes
   const room = await getRawRoom(upperCode);
   if (!room) return null;
+
+  // 2. Update heartbeat in independent Redis Hash only when requested and match is not finished
+  if (activePlayerId && room.status !== "finished") {
+    await updatePlayerHeartbeat(upperCode, activePlayerId);
+  }
 
   const now = Date.now();
   const heartbeats = await getPlayerHeartbeats(upperCode);
 
-  // 3. Mark player connectivity (<= 22000ms is connected, lobby prune threshold 60000ms)
+  // 3. Mark player connectivity (<= 35000ms is connected, lobby prune threshold 75000ms)
   let anyDisconnectedInLobby = false;
   room.players.forEach((p) => {
     const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-    p.isConnected = (now - hb) <= 22000;
+    p.isConnected = (now - hb) <= 35000;
     p.isOnline = p.isConnected;
-    if (room.status === "lobby" && (now - hb) > 60000) {
+    if (room.status === "lobby" && (now - hb) > 75000) {
       anyDisconnectedInLobby = true;
     }
   });
@@ -1663,7 +1666,7 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
       const freshHeartbeats = await getPlayerHeartbeats(upperCode);
       freshRoom.players.forEach((p) => {
         const hb = Number(freshHeartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-        p.isConnected = (now - hb) <= 22000;
+        p.isConnected = (now - hb) <= 35000;
         p.isOnline = p.isConnected;
       });
 
@@ -1809,17 +1812,17 @@ export async function checkRoomStateProgression(room: RoomState, heartbeats?: Re
   if (heartbeats) {
     room.players.forEach((p) => {
       const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-      p.isConnected = (now - hb) <= 22000;
+      p.isConnected = (now - hb) <= 35000;
       p.isOnline = p.isConnected;
     });
   }
 
-  // LOBBY: prune disconnected players (>60s)
+  // LOBBY: prune disconnected players (>75s)
   if (room.status === "lobby") {
     const beforeCount = room.players.length;
     room.players = room.players.filter((p) => {
       const hb = Number(heartbeats?.[p.id] || p.lastSeen || p.joinedAt || 0);
-      return (now - hb) <= 60000;
+      return (now - hb) <= 75000;
     });
     if (room.players.length !== beforeCount) {
       changed = true;
@@ -1859,6 +1862,7 @@ export async function checkRoomStateProgression(room: RoomState, heartbeats?: Re
         );
       }
 
+      room.candidateRounds = undefined;
       room.status = "countdown";
       room.countdownStartTime = now;
       room.countdownEndsAt = now + 5000; // 5s countdown
@@ -2793,7 +2797,7 @@ export async function startRoomGame(
     const now = Date.now();
     room.players.forEach((p) => {
       const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-      p.isConnected = (now - hb) <= 22000;
+      p.isConnected = (now - hb) <= 35000;
       p.isOnline = p.isConnected;
     });
 
@@ -2900,10 +2904,10 @@ export async function submitPlayerAnswer(
       return { success: false, pointsEarned: 0, isCorrect: false, room };
     }
 
-    // Refresh heartbeats and connectivity
+    // Refresh heartbeats and connectivity (skip HGETALL in 1-player rooms)
     await updatePlayerHeartbeat(code, playerId);
     const now = Date.now();
-    const heartbeats = await getPlayerHeartbeats(code);
+    const heartbeats = room.players.length > 1 ? await getPlayerHeartbeats(code) : null;
 
     room.players.forEach((p) => {
       if (p.id === playerId) {
@@ -2911,8 +2915,8 @@ export async function submitPlayerAnswer(
         p.isOnline = true;
         p.lastSeen = now;
       } else {
-        const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-        p.isConnected = (now - hb) <= 22000;
+        const hb = Number(heartbeats?.[p.id] || p.lastSeen || p.joinedAt || 0);
+        p.isConnected = (now - hb) <= 35000;
         p.isOnline = p.isConnected;
       }
     });
@@ -3238,7 +3242,7 @@ export async function rematchRoomGame(
     const now = Date.now();
     room.players.forEach((p) => {
       const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
-      p.isConnected = (now - hb) <= 22000;
+      p.isConnected = (now - hb) <= 35000;
       p.isOnline = p.isConnected;
     });
 

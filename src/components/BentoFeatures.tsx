@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import Link from "next/link";
 import { Crown, Play, Pause, Heart } from "lucide-react";
 import { playSynthNote } from "@/lib/audio";
 import { spotifyPlayer } from "@/lib/spotifyPlayer";
@@ -142,12 +143,12 @@ export default function BentoFeatures({ onOpenMiniQuiz }: BentoFeaturesProps) {
           <div className="mt-6 space-y-2.5">
             {isConnected && playlists && playlists.length > 0 ? (
               <div className="space-y-2">
-                <a
+                <Link
                   href="/play"
                   className="block w-full text-center py-3 rounded-2xl bg-gradient-to-r from-goblinPrimary to-goblinLime text-black font-extrabold text-sm shadow-lg shadow-emerald-500/20 hover:scale-[1.02] transition"
                 >
                   Jugar con mis Canciones Favoritas →
-                </a>
+                </Link>
                 <div className="text-xs text-emerald-400 font-semibold text-center">
                   {playlists.length} playlists sincronizadas y listas para jugar
                 </div>
@@ -262,12 +263,12 @@ export default function BentoFeatures({ onOpenMiniQuiz }: BentoFeaturesProps) {
               Al finalizar cada ronda puedes consultar la lista de Spotify. Vuelve a escuchar el fragmento y guarda el tema con un solo toque en tus Me Gusta.
             </p>
             <div className="flex gap-2">
-              <a
+              <Link
                 href="/play"
                 className="inline-block px-5 py-2.5 rounded-full bg-gradient-to-r from-goblinPrimary to-goblinLime text-black font-extrabold text-xs shadow-lg shadow-emerald-500/25 hover:scale-105 transition"
               >
                 Lanzar Arena de Quiz Musical →
-              </a>
+              </Link>
             </div>
           </div>
 

@@ -7,12 +7,22 @@ import {
   SpotifyPlaylistItem,
 } from "@/lib/spotifyTypes";
 
+export interface EmailAuthUser {
+  id: string;
+  email: string;
+  nickname: string;
+  avatarUrl?: string;
+}
+
 interface SpotifyAuthContextType {
   isLoading: boolean;
   isConnected: boolean;
   user: SpotifyUserProfile | null;
   stats: SpotifyUserStats | null;
   playlists: SpotifyPlaylistItem[];
+  emailUser: EmailAuthUser | null;
+  refreshEmailUser: () => Promise<void>;
+  logoutEmailUser: () => Promise<void>;
   refreshSession: () => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -23,6 +33,9 @@ const SpotifyAuthContext = createContext<SpotifyAuthContextType>({
   user: null,
   stats: null,
   playlists: [],
+  emailUser: null,
+  refreshEmailUser: async () => {},
+  logoutEmailUser: async () => {},
   refreshSession: async () => {},
   logout: async () => {},
 });
@@ -33,6 +46,25 @@ export function SpotifyAuthProvider({ children }: { children: React.ReactNode })
   const [user, setUser] = useState<SpotifyUserProfile | null>(null);
   const [stats, setStats] = useState<SpotifyUserStats | null>(null);
   const [playlists, setPlaylists] = useState<SpotifyPlaylistItem[]>([]);
+  const [emailUser, setEmailUser] = useState<EmailAuthUser | null>(null);
+
+  const fetchEmailUser = useCallback(async () => {
+    try {
+      const res = await fetch("/api/auth/user/me", { cache: "no-store" });
+      if (!res.ok) {
+        setEmailUser(null);
+        return;
+      }
+      const data = await res.json();
+      if (data.authenticated && data.user) {
+        setEmailUser(data.user);
+      } else {
+        setEmailUser(null);
+      }
+    } catch {
+      setEmailUser(null);
+    }
+  }, []);
 
   const fetchSession = useCallback(async () => {
     try {
@@ -73,14 +105,26 @@ export function SpotifyAuthProvider({ children }: { children: React.ReactNode })
 
   useEffect(() => {
     fetchSession();
+    fetchEmailUser();
 
     if (typeof window !== "undefined") {
-      const urlParams = new URLSearchParams(window.location.search);
-      if (urlParams.get("spotify") === "connected") {
-        fetchSession();
-      }
+      const handleProfileUpdate = () => {
+        fetchEmailUser();
+      };
+      window.addEventListener("scuinklezam_profile_updated", handleProfileUpdate);
+      return () => window.removeEventListener("scuinklezam_profile_updated", handleProfileUpdate);
     }
-  }, [fetchSession]);
+  }, [fetchSession, fetchEmailUser]);
+
+  const logoutEmailUser = useCallback(async () => {
+    try {
+      await fetch("/api/auth/user/logout", { method: "POST" });
+    } catch {
+      // ignore
+    } finally {
+      setEmailUser(null);
+    }
+  }, []);
 
   const logout = useCallback(async () => {
     try {
@@ -103,6 +147,9 @@ export function SpotifyAuthProvider({ children }: { children: React.ReactNode })
         user,
         stats,
         playlists,
+        emailUser,
+        refreshEmailUser: fetchEmailUser,
+        logoutEmailUser,
         refreshSession: fetchSession,
         logout,
       }}

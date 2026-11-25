@@ -27,7 +27,7 @@ export async function GET(request: Request) {
       { success: true, name, url: photoUrl },
       {
         headers: {
-          "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+          "Cache-Control": "public, max-age=86400, s-maxage=604800, stale-while-revalidate=2592000",
         },
       }
     );
@@ -37,7 +37,7 @@ export async function GET(request: Request) {
   return NextResponse.redirect(photoUrl, {
     status: 307,
     headers: {
-      "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+      "Cache-Control": "public, max-age=86400, s-maxage=604800, stale-while-revalidate=2592000",
     },
   });
 }

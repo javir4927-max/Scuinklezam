@@ -481,6 +481,8 @@ function PlayArenaContent() {
   const clockOffsetRef = useRef<number>(0);
   const lastRoomVersionRef = useRef<number>(0);
   const pollCountRef = useRef<number>(0);
+  const lastHeartbeatSentAtRef = useRef<number>(0);
+  const lastUserActivityRef = useRef<number>(Date.now());
   const prevStatusRef = useRef<string>("");
   const prevRoundRef = useRef<number>(0);
   const currentRoundRef = useRef<number>(1);
@@ -932,24 +934,43 @@ function PlayArenaContent() {
 
     let isMounted = true;
     let timerId: NodeJS.Timeout | null = null;
+    let stopPolling = false;
+    let pausedForIdle = false;
 
     const fetchRoom = async () => {
-      if (isFetchingRoomRef.current) return;
+      if (!isMounted || stopPolling || isFetchingRoomRef.current) return;
       isFetchingRoomRef.current = true;
       try {
-        pollCountRef.current = (pollCountRef.current + 1) % 10;
-        const useVersion = pollCountRef.current !== 0 && lastRoomVersionRef.current > 0;
+        pollCountRef.current = (pollCountRef.current + 1) % 15;
+        const isLobbyStatus = roomStatusRef.current === "lobby";
+        const useVersion =
+          lastRoomVersionRef.current > 0 &&
+          (!isLobbyStatus || pollCountRef.current !== 0);
         const versionParam = useVersion ? `&v=${lastRoomVersionRef.current}` : "";
-        const res = await fetch(`/api/rooms/${roomCode}?playerId=${playerId}&t=${Date.now()}${versionParam}`, {
-          cache: "no-store",
-          headers: {
-            "Cache-Control": "no-cache",
-          },
-        });
+
+        const shouldSendHb =
+          roomStatusRef.current !== "finished" &&
+          Date.now() - lastHeartbeatSentAtRef.current >= 15000;
+        if (shouldSendHb) {
+          lastHeartbeatSentAtRef.current = Date.now();
+        }
+        const hbParam = shouldSendHb ? "&hb=1" : "";
+
+        const res = await fetch(
+          `/api/rooms/${roomCode}?playerId=${playerId}&t=${Date.now()}${versionParam}${hbParam}`,
+          {
+            cache: "no-store",
+            headers: {
+              "Cache-Control": "no-cache",
+            },
+          }
+        );
         if (!res.ok) {
           if (res.status === 404 && isMounted) {
+            stopPolling = true;
             setErrorMessage("La sala no existe o ha expirado.");
             setRoom(null);
+            setRoomCode("");
           }
           return;
         }
@@ -974,6 +995,7 @@ function PlayArenaContent() {
           const stillInRoom = currentRoom.players.some((p) => p.id === playerId);
 
           if (wasKicked) {
+            stopPolling = true;
             audioPlayer.stop();
             setRoom(null);
             setRoomCode("");
@@ -1033,34 +1055,57 @@ function PlayArenaContent() {
         // network retry
       } finally {
         isFetchingRoomRef.current = false;
-        if (isMounted) {
+        if (isMounted && !stopPolling) {
           const currentStatus = roomStatusRef.current;
           const isHidden = typeof document !== "undefined" && document.hidden;
-          let pollDelay: number;
-          if (isHidden) {
-            pollDelay = (currentStatus === "lobby" || currentStatus === "finished") ? 8000 : 4000;
+          const isIdleOver15m =
+            (currentStatus === "lobby" || currentStatus === "finished") &&
+            Date.now() - lastUserActivityRef.current > 15 * 60 * 1000;
+
+          if (isIdleOver15m) {
+            pausedForIdle = true;
           } else {
-            if (currentStatus === "lobby" || currentStatus === "finished") {
-              pollDelay = 2500;
+            let pollDelay: number;
+            if (isHidden) {
+              pollDelay = (currentStatus === "lobby" || currentStatus === "finished") ? 20000 : 6000;
+            } else if (currentStatus === "lobby") {
+              pollDelay = 3500;
+            } else if (currentStatus === "finished") {
+              pollDelay = 5000;
             } else if (currentStatus === "playing") {
-              pollDelay = 1500;
+              pollDelay = hasSubmittedRef.current ? 1500 : 2500;
             } else {
               // countdown, voting, round_reveal
-              pollDelay = 1000;
+              pollDelay = 1200;
             }
+            timerId = setTimeout(fetchRoom, pollDelay);
           }
-          timerId = setTimeout(fetchRoom, pollDelay);
         }
       }
     };
 
-    const handleVisibilityChange = () => {
-      if (typeof document !== "undefined" && !document.hidden && isMounted) {
+    const handleUserActivity = () => {
+      lastUserActivityRef.current = Date.now();
+      if (pausedForIdle && isMounted && !stopPolling) {
+        pausedForIdle = false;
         if (timerId) clearTimeout(timerId);
         fetchRoom();
       }
     };
 
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && !document.hidden && isMounted && !stopPolling) {
+        lastUserActivityRef.current = Date.now();
+        pausedForIdle = false;
+        if (timerId) clearTimeout(timerId);
+        fetchRoom();
+      }
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("pointerdown", handleUserActivity, { passive: true });
+      window.addEventListener("keydown", handleUserActivity, { passive: true });
+    }
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", handleVisibilityChange);
     }
@@ -1068,14 +1113,19 @@ function PlayArenaContent() {
     fetchRoom();
     return () => {
       isMounted = false;
+      stopPolling = true;
       if (timerId) clearTimeout(timerId);
+      if (typeof window !== "undefined") {
+        window.removeEventListener("pointerdown", handleUserActivity);
+        window.removeEventListener("keydown", handleUserActivity);
+      }
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", handleVisibilityChange);
       }
     };
   }, [roomCode, playerId]);
 
-  // 3.5s Reveal timer to progress to next round cleanly and idempotently
+  // 3.5s Reveal timer to progress to next round cleanly and idempotently (host leads, guests stagger +1800ms)
   useEffect(() => {
     if (!room || room.status !== "round_reveal" || !roomCode) {
       if (nextRoundTimerRef.current) {
@@ -1088,6 +1138,8 @@ function PlayArenaContent() {
     const now = Date.now() + clockOffsetRef.current;
     const endsAt = room.revealEndsAt || (room.revealStartTime ? room.revealStartTime + REVEAL_DURATION_MS : now + REVEAL_DURATION_MS);
     const delay = Math.max(200, Math.min(REVEAL_DURATION_MS, endsAt - now));
+    const isHostPlayer = room.hostId === playerId;
+    const effectiveDelay = isHostPlayer ? delay : delay + 1800;
     const roundToAdvance = room.currentRound;
 
     nextRoundTimerRef.current = setTimeout(async () => {
@@ -1115,7 +1167,7 @@ function PlayArenaContent() {
       } catch (err) {
         console.error("Failed to advance round:", err);
       }
-    }, delay);
+    }, effectiveDelay);
 
     return () => {
       if (nextRoundTimerRef.current) {
@@ -1123,7 +1175,7 @@ function PlayArenaContent() {
         nextRoundTimerRef.current = null;
       }
     };
-  }, [room?.status, room?.currentRound, room?.revealEndsAt, roomCode, playerId]);
+  }, [room?.status, room?.currentRound, room?.revealEndsAt, room?.hostId, roomCode, playerId]);
 
 
   // Smooth local ticker to update seconds on screen between polling cycles

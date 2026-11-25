@@ -76,22 +76,25 @@ export async function GET() {
   const { dateKey, dayNumber, yesterdayDateKey } = getMadridDateInfo();
 
   try {
-    // 1. Check if challenge already exists for dateKey
+    // 1. Check RAM cache before hitting Redis (daily challenge is immutable all day)
     let rounds: DailyRound[] | null = null;
 
-    if (redis) {
+    if (memoryChallenges.has(dateKey)) {
+      rounds = memoryChallenges.get(dateKey)!;
+    }
+
+    if (!rounds && redis) {
       try {
         const raw = await redis.get<string | DailyRound[]>(`scuinklezam:daily:challenge:${dateKey}`);
         if (raw) {
           rounds = typeof raw === "string" ? JSON.parse(raw) : raw;
+          if (rounds && rounds.length >= 5) {
+            memoryChallenges.set(dateKey, rounds);
+          }
         }
       } catch (err) {
         console.warn("[GET /api/daily] Redis get challenge error:", err);
       }
-    }
-
-    if (!rounds && memoryChallenges.has(dateKey)) {
-      rounds = memoryChallenges.get(dateKey)!;
     }
 
     // 2. If not generated, create 5 verified rounds

@@ -47,23 +47,28 @@ export async function GET(request: Request, { params }: RouteParams) {
   const { searchParams } = new URL(request.url);
   const playerId = searchParams.get("playerId") || searchParams.get("p") || undefined;
   const clientVersion = Number(searchParams.get("v") || "0");
+  const shouldHeartbeat = searchParams.get("hb") === "1";
 
-  if (clientVersion > 0) {
-    const check = await checkRoomUnchanged(code, clientVersion, playerId);
-    if (check.unchanged) {
-      return NextResponse.json(
-        {
-          success: true,
-          unchanged: true,
-          version: check.version,
-          serverTime: Date.now(),
-        },
-        { headers: NO_CACHE_HEADERS }
-      );
-    }
+  const check = await checkRoomUnchanged(code, clientVersion, playerId, shouldHeartbeat);
+  if (check.notFound === true) {
+    return NextResponse.json(
+      { success: false, error: "Sala no encontrada o inactiva.", serverTime: Date.now() },
+      { status: 404, headers: NO_CACHE_HEADERS }
+    );
+  }
+  if (check.unchanged) {
+    return NextResponse.json(
+      {
+        success: true,
+        unchanged: true,
+        version: check.version,
+        serverTime: Date.now(),
+      },
+      { headers: NO_CACHE_HEADERS }
+    );
   }
 
-  const room = await getRoom(code, playerId);
+  const room = await getRoom(code, shouldHeartbeat ? playerId : undefined);
 
   if (!room) {
     return NextResponse.json(

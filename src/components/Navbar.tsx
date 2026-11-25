@@ -42,36 +42,14 @@ export default function Navbar({
   const [spotifyWrappedModalOpen, setSpotifyWrappedModalOpen] = useState(false);
   const [globalLeaderboardOpen, setGlobalLeaderboardOpen] = useState(false);
   const [isDevUser, setIsDevUser] = useState(false);
-  const [emailUser, setEmailUser] = useState<{ id: string; email: string; nickname: string; avatarUrl?: string } | null>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
-  const { isConnected: realConnected, user: realUser, logout } = useSpotifyAuth();
-
-  const loadEmailUser = async () => {
-    try {
-      const res = await fetch("/api/auth/user/me");
-      const data = await res.json();
-      if (data.authenticated && data.user) {
-        setEmailUser(data.user);
-      } else {
-        setEmailUser(null);
-      }
-    } catch {
-      setEmailUser(null);
-    }
-  };
+  const { isConnected: realConnected, user: realUser, emailUser, logoutEmailUser, logout } = useSpotifyAuth();
 
   useEffect(() => {
     if (typeof window !== "undefined" && window.location.search.includes("dev_user=1")) {
       setIsDevUser(true);
     }
-    loadEmailUser();
-
-    const handleProfileUpdate = () => {
-      loadEmailUser();
-    };
-    window.addEventListener("scuinklezam_profile_updated", handleProfileUpdate);
-    return () => window.removeEventListener("scuinklezam_profile_updated", handleProfileUpdate);
   }, []);
 
   const isConnected = realConnected || isDevUser || Boolean(emailUser);
@@ -85,10 +63,7 @@ export default function Navbar({
 
   const handleUserLogout = async () => {
     if (emailUser) {
-      try {
-        await fetch("/api/auth/user/logout", { method: "POST" });
-      } catch {}
-      setEmailUser(null);
+      await logoutEmailUser();
     }
     logout();
   };

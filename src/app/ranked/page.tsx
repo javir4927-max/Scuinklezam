@@ -254,8 +254,8 @@ export default function RankedArenaPage() {
     return () => window.removeEventListener("scuinklezam_reset_ranked", handleReset);
   }, []);
 
-  // Fetch real categories and current user session
-  const loadInitialData = async () => {
+  // Fetch real categories (separated from user session check to avoid redundant auth calls)
+  const loadCategories = async () => {
     const reqId = ++categoriesReqIdRef.current;
     try {
       const catRes = await fetch(`/api/ranked/categories?t=${Date.now()}`, { cache: "no-store" });
@@ -276,7 +276,10 @@ export default function RankedArenaPage() {
         setLoadingCategories(false);
       }
     }
+  };
 
+  // Fetch current authenticated user session once on mount or after login
+  const loadUser = async () => {
     try {
       const userRes = await fetch("/api/auth/user/me", { cache: "no-store" });
       if (userRes.ok) {
@@ -289,7 +292,8 @@ export default function RankedArenaPage() {
   };
 
   useEffect(() => {
-    loadInitialData();
+    loadCategories();
+    loadUser();
     return () => {
       audioPlayer.stop();
       if (timerRef.current) clearInterval(timerRef.current);
@@ -694,7 +698,7 @@ export default function RankedArenaPage() {
         isPersonalBest: data.isPersonalBest ?? true,
       });
       pendingSubmitRef.current = null;
-      await loadInitialData();
+      await loadCategories();
 
       if (payload.artistName) {
         fetch(
@@ -928,7 +932,6 @@ export default function RankedArenaPage() {
                   gameStateRef.current = "idle";
                   setGameState("idle");
                   setActiveCategory(null);
-                  loadInitialData();
                 }}
                 className="text-xs text-zinc-400 hover:text-white flex items-center gap-1.5 transition cursor-pointer"
               >
@@ -1230,7 +1233,6 @@ export default function RankedArenaPage() {
                           gameStateRef.current = "idle";
                           setGameState("idle");
                           handleOpenArtistSheet(activeCategory.name);
-                          loadInitialData();
                         }}
                         className="w-full py-2.5 rounded-xl bg-emerald-950/80 hover:bg-emerald-900 text-goblinLime font-bold text-xs border border-emerald-500/30 transition flex items-center justify-center gap-2 cursor-pointer"
                       >
@@ -1255,7 +1257,6 @@ export default function RankedArenaPage() {
                         setActiveCategory(null);
                         setSelectedArtistName(null);
                         setArtistSheetData(null);
-                        loadInitialData();
                       }}
                       className="w-full py-2 text-xs text-zinc-400 hover:text-white transition cursor-pointer text-center"
                     >
@@ -1407,7 +1408,6 @@ export default function RankedArenaPage() {
                   onClick={() => {
                     setSelectedArtistName(null);
                     setArtistSheetError(null);
-                    loadInitialData();
                   }}
                   className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs transition cursor-pointer"
                 >
@@ -1434,7 +1434,6 @@ export default function RankedArenaPage() {
                   onClick={() => {
                     setSelectedArtistName(null);
                     setArtistSheetData(null);
-                    loadInitialData();
                   }}
                   className="flex items-center gap-2 text-xs font-bold text-zinc-400 hover:text-white transition mb-6 px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 w-fit cursor-pointer"
                 >
@@ -2464,7 +2463,7 @@ export default function RankedArenaPage() {
       <UserAuthModal
         isOpen={authModalOpen}
         onClose={() => setAuthModalOpen(false)}
-        onSuccess={() => loadInitialData()}
+        onSuccess={() => loadUser()}
       />
     </div>
   );
