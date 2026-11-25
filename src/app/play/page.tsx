@@ -916,14 +916,15 @@ function PlayArenaContent() {
   // 2. Auto-join room or Auto-create room from URL parameters
   const createQuery = searchParams.get("create");
   const artistQuery = searchParams.get("artist");
+  const themeQuery = searchParams.get("theme");
 
   useEffect(() => {
     if (initialRoomQuery && playerId && !room) {
       handleJoinRoom(initialRoomQuery.toUpperCase());
     } else if ((createQuery === "true" || artistQuery) && playerId && !room) {
-      handleCreateRoom(artistQuery || undefined);
+      handleCreateRoom(artistQuery || themeQuery || undefined);
     }
-  }, [initialRoomQuery, createQuery, artistQuery, playerId]);
+  }, [initialRoomQuery, createQuery, artistQuery, themeQuery, playerId]);
 
   // 3. Real-time Room Polling Engine (Adaptive polling with strict anti-cache)
   useEffect(() => {
@@ -1338,6 +1339,16 @@ function PlayArenaContent() {
     };
   }, []);
 
+  // Reset podium Play/Pause icon automatically when 30s preview finishes or audio stops
+  useEffect(() => {
+    const unsub = audioPlayer.subscribe((state) => {
+      if (!state.isPlaying) {
+        setPlayingPodioUrl(null);
+      }
+    });
+    return () => unsub();
+  }, []);
+
   // 6. Keyboard Shortcuts for Quiz Options [1, 2, 3, 4]
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1355,7 +1366,7 @@ function PlayArenaContent() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [room?.status, selectedOption, roomCode, playerId, room?.players]);
+  }, [room?.status, room?.currentRound, selectedOption, selectedFriend, roomCode, playerId, room?.players]);
 
   // Beacon for page leave / close
   useEffect(() => {
@@ -1541,6 +1552,7 @@ function PlayArenaContent() {
 
   // Start Ranked Match
   const handleStartGame = async () => {
+    setErrorMessage(null);
     unlockAudioElement();
     if (!roomCode || isStartingGame) return;
     setIsStartingGame(true);
@@ -3803,6 +3815,63 @@ function PlayArenaContent() {
               </div>
             )}
 
+            {/* Who Listens Mode Bonus Question: Guess Friend */}
+            {room.gameMode === "who_listens" && (
+              <div className="p-4 rounded-2xl bg-[#0B1710] border border-purple-500/30 space-y-2.5">
+                <div className="text-xs font-bold text-purple-300 flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <UserCheck className="w-4 h-4 text-purple-400" />
+                    <span>Bonus: ¿Quién crees que añadió esta canción? (+50 pts)</span>
+                  </div>
+                  {room.status === "round_reveal" && (
+                    <span className="text-[10px] uppercase font-black tracking-wider text-emerald-400">
+                      Resultado revelado
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {room.players.map((p) => {
+                    const isOwner = p.id === currentRound.contributedByPlayerId;
+                    const isSelected = selectedFriend === p.id;
+                    const isReveal = room.status === "round_reveal";
+                    const disabled = selectedOption !== null || isReveal;
+
+                    let btnStyle = "bg-black/50 text-zinc-300 border-emerald-500/20 hover:border-emerald-500/40";
+                    if (isReveal) {
+                      if (isOwner) {
+                        btnStyle = "bg-gradient-to-r from-purple-600 to-emerald-500 text-black font-black border-goblinLime shadow-lg shadow-emerald-500/20 scale-105";
+                      } else if (isSelected) {
+                        btnStyle = "bg-rose-950/50 text-rose-300 border-rose-500/50 line-through opacity-60";
+                      } else {
+                        btnStyle = "bg-black/30 text-zinc-600 border-white/5 opacity-50";
+                      }
+                    } else if (isSelected) {
+                      btnStyle = "bg-gradient-to-r from-purple-500 to-emerald-400 text-black font-black border-goblinLime shadow-md";
+                    }
+
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        disabled={disabled}
+                        onClick={() => setSelectedFriend(p.id)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition border flex items-center gap-1.5 ${btnStyle} ${
+                          disabled ? "cursor-default" : "cursor-pointer"
+                        }`}
+                      >
+                        <span>{p.name}</span>
+                        {isReveal && isOwner && (
+                          <span className="px-1.5 py-0.2 rounded-full bg-black/60 text-goblinLime text-[10px] font-black">
+                            ✓ Era suyo
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* 4 Quiz Options Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 sm:gap-4">
               {currentRound.options.map((opt, optIdx) => {
@@ -3928,63 +3997,6 @@ function PlayArenaContent() {
                 );
               })}
             </div>
-
-            {/* Who Listens Mode Bonus Question: Guess Friend */}
-            {room.gameMode === "who_listens" && (
-              <div className="p-4 rounded-2xl bg-[#0B1710] border border-purple-500/30 space-y-2.5">
-                <div className="text-xs font-bold text-purple-300 flex items-center justify-between">
-                  <div className="flex items-center gap-1.5">
-                    <UserCheck className="w-4 h-4 text-purple-400" />
-                    <span>Bonus: ¿Quién crees que añadió esta canción? (+50 pts)</span>
-                  </div>
-                  {room.status === "round_reveal" && (
-                    <span className="text-[10px] uppercase font-black tracking-wider text-emerald-400">
-                      Resultado revelado
-                    </span>
-                  )}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {room.players.map((p) => {
-                    const isOwner = p.id === currentRound.contributedByPlayerId;
-                    const isSelected = selectedFriend === p.id;
-                    const isReveal = room.status === "round_reveal";
-                    const disabled = selectedOption !== null || isReveal;
-
-                    let btnStyle = "bg-black/50 text-zinc-300 border-emerald-500/20 hover:border-emerald-500/40";
-                    if (isReveal) {
-                      if (isOwner) {
-                        btnStyle = "bg-gradient-to-r from-purple-600 to-emerald-500 text-black font-black border-goblinLime shadow-lg shadow-emerald-500/20 scale-105";
-                      } else if (isSelected) {
-                        btnStyle = "bg-rose-950/50 text-rose-300 border-rose-500/50 line-through opacity-60";
-                      } else {
-                        btnStyle = "bg-black/30 text-zinc-600 border-white/5 opacity-50";
-                      }
-                    } else if (isSelected) {
-                      btnStyle = "bg-gradient-to-r from-purple-500 to-emerald-400 text-black font-black border-goblinLime shadow-md";
-                    }
-
-                    return (
-                      <button
-                        key={p.id}
-                        type="button"
-                        disabled={disabled}
-                        onClick={() => setSelectedFriend(p.id)}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition border flex items-center gap-1.5 ${btnStyle} ${
-                          disabled ? "cursor-default" : "cursor-pointer"
-                        }`}
-                      >
-                        <span>{p.name}</span>
-                        {isReveal && isOwner && (
-                          <span className="px-1.5 py-0.2 rounded-full bg-black/60 text-goblinLime text-[10px] font-black">
-                            ✓ Era suyo
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
 
             {/* Live Synchronized Leaderboard & Status of all Players */}
             <div className="glass-card rounded-2xl p-4 border border-emerald-500/20">

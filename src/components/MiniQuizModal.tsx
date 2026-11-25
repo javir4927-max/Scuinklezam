@@ -75,11 +75,15 @@ export default function MiniQuizModal({
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const advanceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const loadedPoolRef = useRef<SpotifyTrackItem[]>(FALLBACK_SPOTIFY_TRACKS);
 
   // Subscribe to central AudioPlayer state changes
   useEffect(() => {
     const unsub = audioPlayer.subscribe((state) => {
       setAudioState(state);
+      if (!state.isPlaying) {
+        setPlayingPreviewUrl(null);
+      }
     });
     return () => unsub();
   }, []);
@@ -98,6 +102,7 @@ export default function MiniQuizModal({
       (t) => t.previewUrl && t.previewUrl.startsWith("http")
     );
     const catalog = validPool.length >= 4 ? validPool : FALLBACK_SPOTIFY_TRACKS;
+    loadedPoolRef.current = catalog;
     const shuffled = [...catalog].sort(() => 0.5 - Math.random());
     const count = Math.min(10, shuffled.length);
     const generated: QuizRoundData[] = [];
@@ -715,7 +720,7 @@ export default function MiniQuizModal({
 
             <div className="pt-2 flex flex-col sm:flex-row gap-2">
               <button
-                onClick={() => buildRounds(FALLBACK_SPOTIFY_TRACKS)}
+                onClick={() => buildRounds(loadedPoolRef.current)}
                 className="flex-1 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-emerald-300 font-bold text-xs transition cursor-pointer"
               >
                 Jugar de Nuevo

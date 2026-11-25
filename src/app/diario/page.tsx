@@ -166,6 +166,16 @@ export default function DiarioPage() {
     };
   }, []);
 
+  // Subscribe to AudioPlayer to reset pause icon when 30s preview ends or stops
+  useEffect(() => {
+    const unsub = audioPlayer.subscribe((state) => {
+      if (!state.isPlaying) {
+        setActivePreviewTrack(null);
+      }
+    });
+    return () => unsub();
+  }, []);
+
   // 2. Midnight countdown
   useEffect(() => {
     function updateMidnight() {
