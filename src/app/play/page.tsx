@@ -455,26 +455,38 @@ function PlayArenaContent() {
   const [savingAll, setSavingAll] = useState<boolean>(false);
   const [isRematching, setIsRematching] = useState<boolean>(false);
   const [playingPodioUrl, setPlayingPodioUrl] = useState<string | null>(null);
+  const [pendingHostAction, setPendingHostAction] = useState<{
+    type: "transfer" | "kick";
+    targetId: string;
+    targetName: string;
+  } | null>(null);
+  const [isExecutingHostAction, setIsExecutingHostAction] = useState<boolean>(false);
 
   const [userCustomization, setUserCustomization] = useState<{
     avatarUrl?: string;
     rankTier?: string;
-    equippedTitle?: string;
+    equippedTitle?: string | null;
   }>({});
 
   useEffect(() => {
-    fetch("/api/user/profile")
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.success && d.authenticated) {
-          setUserCustomization({
-            avatarUrl: d.customization?.customAvatarUrl || d.user?.avatarUrl,
-            rankTier: d.highestTier || "Bronce",
-            equippedTitle: d.customization?.equippedTitle || undefined,
-          });
-        }
-      })
-      .catch(() => {});
+    const loadUserProfile = () => {
+      fetch(`/api/user/profile?_t=${Date.now()}`, { cache: "no-store" })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.success && d.authenticated) {
+            setUserCustomization({
+              avatarUrl: d.customization?.customAvatarUrl || d.user?.avatarUrl,
+              rankTier: d.highestTier || "Bronce",
+              equippedTitle: d.customization?.equippedTitle ?? null,
+            });
+          }
+        })
+        .catch(() => {});
+    };
+
+    loadUserProfile();
+    window.addEventListener("scuinklezam_profile_updated", loadUserProfile);
+    return () => window.removeEventListener("scuinklezam_profile_updated", loadUserProfile);
   }, []);
 
   // Audio & Timer Refs
@@ -800,17 +812,18 @@ function PlayArenaContent() {
 
     const targetAvatar = userCustomization.avatarUrl || spotifyAuthUser?.avatarUrl || undefined;
     const targetRank = userCustomization.rankTier || undefined;
-    const targetTitle = userCustomization.equippedTitle || undefined;
+    const targetTitle = userCustomization.equippedTitle !== undefined ? userCustomization.equippedTitle : undefined;
 
     const needsSync =
       (targetAvatar && me.avatarUrl !== targetAvatar) ||
       (targetRank && me.rankTier !== targetRank) ||
-      (targetTitle && me.equippedTitle !== targetTitle);
+      (targetTitle !== undefined && (targetTitle ?? null) !== (me.equippedTitle ?? null));
 
     if (needsSync) {
       fetch(`/api/rooms/${roomCode}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({
           action: "update_player_profile",
           playerId,
@@ -822,7 +835,11 @@ function PlayArenaContent() {
         .then(async (r) => {
           if (r.ok) {
             const d = await r.json();
-            if (d.success && d.room) setRoom(d.room);
+            if (d.serverTime) clockOffsetRef.current = d.serverTime - Date.now();
+            if (d.success && d.room) {
+              lastRoomVersionRef.current = d.room.version || 0;
+              setRoom(d.room);
+            }
           }
         })
         .catch(() => {});
@@ -1956,6 +1973,69 @@ function PlayArenaContent() {
     }
   };
 
+  const handleRemoveArtist = async (idxToRemove: number) => {
+    if (!room || !roomCode || !playerId) return;
+    const me = room.players.find((p) => p.id === playerId);
+    if (!me) return;
+
+    const previousArtists = [...me.favoriteArtists];
+    const updated = previousArtists.filter((_, i) => i !== idxToRemove);
+
+    setRoom((prev) =>
+      prev
+        ? {
+            ...prev,
+            players: prev.players.map((p) =>
+              p.id === playerId ? { ...p, favoriteArtists: updated } : p
+            ),
+          }
+        : prev
+    );
+
+    try {
+      const res = await fetch(`/api/rooms/${roomCode}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          action: "update_taste",
+          playerId,
+          favoriteArtists: updated,
+        }),
+      });
+      const data = await res.json();
+      if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
+      if (data.success && data.room) {
+        lastRoomVersionRef.current = data.room.version || 0;
+        setRoom(data.room);
+      } else {
+        setRoom((prev) =>
+          prev
+            ? {
+                ...prev,
+                players: prev.players.map((p) =>
+                  p.id === playerId ? { ...p, favoriteArtists: previousArtists } : p
+                ),
+              }
+            : prev
+        );
+        setErrorMessage(data.error || "No se pudo eliminar el artista.");
+      }
+    } catch {
+      setRoom((prev) =>
+        prev
+          ? {
+              ...prev,
+              players: prev.players.map((p) =>
+                p.id === playerId ? { ...p, favoriteArtists: previousArtists } : p
+              ),
+            }
+          : prev
+      );
+      setErrorMessage("Error de conexión al eliminar el artista.");
+    }
+  };
+
   const handleArtistKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -2116,45 +2196,30 @@ function PlayArenaContent() {
     }
   };
 
-  // Kick Player from Room (Host only)
-  const handleKickPlayer = async (targetId: string, targetName: string) => {
+  // Kick Player from Room (Host only - opens confirmation modal)
+  const handleKickPlayer = (targetId: string, targetName: string) => {
     if (!roomCode) return;
-    if (!confirm(`¿Estás seguro de que quieres expulsar a ${targetName} de la sala?`)) return;
-
-    try {
-      const res = await fetch(`/api/rooms/${roomCode}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "kick_player",
-          playerId,
-          targetPlayerId: targetId,
-        }),
-      });
-      const data = await res.json();
-      if (data.serverTime) clockOffsetRef.current = data.serverTime - Date.now();
-      if (data.success && data.room) {
-        lastRoomVersionRef.current = data.room.version || 0;
-        setRoom(data.room);
-      } else {
-        setErrorMessage(data.error || "No se pudo expulsar al jugador.");
-      }
-    } catch {
-      setErrorMessage("Error de conexión al expulsar al jugador.");
-    }
+    setPendingHostAction({ type: "kick", targetId, targetName });
   };
 
-  // Transfer Host rights to another player
-  const handleTransferHost = async (targetId: string, targetName: string) => {
+  // Transfer Host rights to another player (Host only - opens confirmation modal)
+  const handleTransferHost = (targetId: string, targetName: string) => {
     if (!roomCode) return;
-    if (!confirm(`¿Quieres ceder el liderazgo de la sala (Anfitrión) a ${targetName}?`)) return;
+    setPendingHostAction({ type: "transfer", targetId, targetName });
+  };
+
+  const handleConfirmHostAction = async () => {
+    if (!roomCode || !pendingHostAction || isExecutingHostAction) return;
+    const { type, targetId } = pendingHostAction;
+    setIsExecutingHostAction(true);
 
     try {
       const res = await fetch(`/api/rooms/${roomCode}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({
-          action: "transfer_host",
+          action: type === "transfer" ? "transfer_host" : "kick_player",
           playerId,
           targetPlayerId: targetId,
         }),
@@ -2164,11 +2229,24 @@ function PlayArenaContent() {
       if (data.success && data.room) {
         lastRoomVersionRef.current = data.room.version || 0;
         setRoom(data.room);
+        setErrorMessage(null);
       } else {
-        setErrorMessage(data.error || "No se pudo transferir el anfitrión.");
+        setErrorMessage(
+          data.error ||
+            (type === "transfer"
+              ? "No se pudo transferir el anfitrión."
+              : "No se pudo expulsar al jugador.")
+        );
       }
     } catch {
-      setErrorMessage("Error de conexión al transferir anfitrión.");
+      setErrorMessage(
+        type === "transfer"
+          ? "Error de conexión al transferir anfitrión."
+          : "Error de conexión al expulsar al jugador."
+      );
+    } finally {
+      setIsExecutingHostAction(false);
+      setPendingHostAction(null);
     }
   };
 
@@ -2193,7 +2271,7 @@ function PlayArenaContent() {
 
   // Current Player & Host status
   const currentMe = room?.players.find((p) => p.id === playerId);
-  const isHost = currentMe?.isHost ?? false;
+  const isHost = Boolean(room && (room.hostId === playerId || currentMe?.isHost));
   const currentRound = room?.rounds[room.currentRound - 1];
   const isSurvival = room?.gameMode === "survival";
   const survivalPhase = isSurvival && room ? getSurvivalPhaseInfo(room.currentRound - 1) : null;
@@ -2606,7 +2684,7 @@ function PlayArenaContent() {
                             disabled={!isHost}
                             onClick={() => isHost && handleChangeSettings({ totalRounds: num })}
                             className={`px-2.5 py-1 rounded-lg font-bold transition ${
-                              room.totalRounds === num
+                              ([5, 10, 15, 20].includes(room.totalRounds) ? room.totalRounds : 10) === num
                                 ? "bg-goblinPrimary text-black"
                                 : "bg-white/[0.05] text-zinc-400 hover:text-white"
                             } ${!isHost ? "cursor-default opacity-80" : "cursor-pointer"}`}
@@ -2967,19 +3045,10 @@ function PlayArenaContent() {
                             />
                             <span>{artist}</span>
                             <button
-                              onClick={() => {
-                                const updated = currentMe.favoriteArtists.filter((_, i) => i !== idx);
-                                fetch(`/api/rooms/${roomCode}`, {
-                                  method: "PATCH",
-                                  headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({
-                                    action: "update_taste",
-                                    playerId,
-                                    favoriteArtists: updated,
-                                  }),
-                                });
-                              }}
-                              className="text-zinc-400 hover:text-red-400 ml-1 cursor-pointer flex items-center"
+                              type="button"
+                              onClick={() => handleRemoveArtist(idx)}
+                              title={`Quitar ${artist}`}
+                              className="text-zinc-400 hover:text-red-400 ml-1 p-0.5 cursor-pointer flex items-center"
                             >
                               <X className="w-3.5 h-3.5" />
                             </button>
@@ -3164,6 +3233,9 @@ function PlayArenaContent() {
                                   <div className="min-w-0">
                                     <div className="font-bold text-xs text-white truncate flex items-center gap-2">
                                       <span className="truncate">{pl.name}</span>
+                                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-white/10 text-zinc-200 font-semibold shrink-0">
+                                        {pl.type === "album" ? "Álbum" : "Playlist"}
+                                      </span>
                                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-semibold shrink-0">
                                         {pl.trackCount} temas
                                       </span>
@@ -3366,16 +3438,18 @@ function PlayArenaContent() {
                               {isHost && player.id !== playerId && (
                                 <div className="flex items-center gap-1 ml-1 pl-1.5 border-l border-emerald-500/20">
                                   <button
+                                    type="button"
                                     onClick={() => handleTransferHost(player.id, player.name)}
                                     title="Ceder Anfitrión (Hacer Host)"
-                                    className="p-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 text-xs transition cursor-pointer"
+                                    className="p-1.5 min-w-[28px] min-h-[28px] flex items-center justify-center rounded-lg bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 text-xs transition cursor-pointer"
                                   >
                                     <Crown className="w-3.5 h-3.5" />
                                   </button>
                                   <button
+                                    type="button"
                                     onClick={() => handleKickPlayer(player.id, player.name)}
                                     title="Expulsar Jugador (Kick)"
-                                    className="p-1 rounded-lg bg-red-500/15 hover:bg-red-500/30 text-red-400 font-bold text-xs transition cursor-pointer flex items-center justify-center"
+                                    className="p-1.5 min-w-[28px] min-h-[28px] flex items-center justify-center rounded-lg bg-red-500/15 hover:bg-red-500/30 text-red-400 font-bold text-xs transition cursor-pointer"
                                   >
                                     <X className="w-3.5 h-3.5" />
                                   </button>
@@ -3907,10 +3981,24 @@ function PlayArenaContent() {
                         type="button"
                         disabled={disabled}
                         onClick={() => setSelectedFriend(p.id)}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition border flex items-center gap-1.5 ${btnStyle} ${
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition border flex items-center gap-2 ${btnStyle} ${
                           disabled ? "cursor-default" : "cursor-pointer"
                         }`}
                       >
+                        {p.avatarUrl ? (
+                          <img
+                            src={p.avatarUrl}
+                            alt={p.name}
+                            className={`w-5 h-5 rounded-full object-cover shrink-0 ${getRankFrameClasses(p.rankTier)}`}
+                          />
+                        ) : (
+                          <span
+                            className={`w-5 h-5 rounded-full flex items-center justify-center font-bold text-[9px] text-black shrink-0 ${getRankFrameClasses(p.rankTier)}`}
+                            style={{ backgroundColor: p.avatarColor }}
+                          >
+                            {p.name.substring(0, 2).toUpperCase()}
+                          </span>
+                        )}
                         <span>{p.name}</span>
                         {isReveal && isOwner && (
                           <span className="px-1.5 py-0.2 rounded-full bg-black/60 text-goblinLime text-[10px] font-black">
@@ -4139,6 +4227,7 @@ function PlayArenaContent() {
                             )}
                             {isHost && p.id !== playerId && (
                               <button
+                                type="button"
                                 onClick={() => handleKickPlayer(p.id, p.name)}
                                 title="Expulsar jugador de la partida"
                                 className="text-[10px] text-red-400 hover:text-red-300 font-bold px-1 hover:bg-red-500/20 rounded cursor-pointer"
@@ -4671,6 +4760,77 @@ function PlayArenaContent() {
                 <br />
                 <code className="text-goblinLime">npx cloudflared tunnel --url http://localhost:3000</code>
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* HOST ACTION CONFIRMATION MODAL (Transfer Host / Kick Player) */}
+      {pendingHostAction && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-fadeIn">
+          <div className="w-full max-w-md bg-[#060D09] border border-emerald-500/30 rounded-3xl p-6 shadow-2xl space-y-5 animate-scaleUp">
+            <div className="flex items-start gap-3">
+              <div
+                className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 border ${
+                  pendingHostAction.type === "transfer"
+                    ? "bg-amber-500/15 border-amber-500/30 text-amber-300"
+                    : "bg-red-500/15 border-red-500/30 text-red-400"
+                }`}
+              >
+                {pendingHostAction.type === "transfer" ? (
+                  <Crown className="w-5 h-5" />
+                ) : (
+                  <AlertTriangle className="w-5 h-5" />
+                )}
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-display font-black text-lg text-white">
+                  {pendingHostAction.type === "transfer"
+                    ? "Ceder liderazgo de la sala"
+                    : "Expulsar jugador de la sala"}
+                </h3>
+                <p className="text-xs text-zinc-300 leading-relaxed">
+                  {pendingHostAction.type === "transfer" ? (
+                    <>
+                      ¿Quieres transferir la corona de anfitrión a{" "}
+                      <strong className="text-goblinLime">{pendingHostAction.targetName}</strong>?
+                      Podrá controlar los ajustes e iniciar la partida.
+                    </>
+                  ) : (
+                    <>
+                      ¿Seguro que quieres expulsar a{" "}
+                      <strong className="text-rose-300">{pendingHostAction.targetName}</strong> de la
+                      sala?
+                    </>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-emerald-500/15">
+              <button
+                type="button"
+                disabled={isExecutingHostAction}
+                onClick={() => setPendingHostAction(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-zinc-300 hover:text-white bg-white/[0.06] hover:bg-white/10 transition cursor-pointer disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={isExecutingHostAction}
+                onClick={handleConfirmHostAction}
+                className={`px-4 py-2 rounded-xl text-xs font-black transition cursor-pointer flex items-center gap-1.5 disabled:opacity-50 ${
+                  pendingHostAction.type === "transfer"
+                    ? "bg-amber-400 hover:bg-amber-300 text-black"
+                    : "bg-red-500 hover:bg-red-400 text-white"
+                }`}
+              >
+                {isExecutingHostAction && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>
+                  {pendingHostAction.type === "transfer" ? "Ceder Anfitrión" : "Expulsar"}
+                </span>
+              </button>
             </div>
           </div>
         </div>

@@ -6,6 +6,11 @@ import { redis } from "@/lib/roomStore";
 
 export const dynamic = "force-dynamic";
 
+const NO_CACHE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+  Pragma: "no-cache",
+};
+
 const TIER_RANK_WEIGHT: Record<RankedTierName, number> = {
   Maestro: 6,
   Diamante: 5,
@@ -20,10 +25,13 @@ export async function GET() {
     const user = await getSessionUser();
 
     if (!user) {
-      return NextResponse.json({
-        success: true,
-        authenticated: false,
-      });
+      return NextResponse.json(
+        {
+          success: true,
+          authenticated: false,
+        },
+        { headers: NO_CACHE_HEADERS }
+      );
     }
 
     const data = await getUserProfileData(user.id);
@@ -73,28 +81,31 @@ export async function GET() {
       unlockedTitles.push(`Fan de ${bestCatName}`);
     }
 
-    return NextResponse.json({
-      success: true,
-      authenticated: true,
-      user,
-      stats: {
-        ...data,
-        bestCategoryName: bestCatName || "Ninguno aún",
+    return NextResponse.json(
+      {
+        success: true,
+        authenticated: true,
+        user,
+        stats: {
+          ...data,
+          bestCategoryName: bestCatName || "Ninguno aún",
+        },
+        customization: {
+          customAvatarUrl: customization.customAvatarUrl
+            ? resolvePublicAvatarUrl(user.id, customization, user.avatarUrl)
+            : null,
+          equippedTitle: customization.equippedTitle || null,
+        },
+        highestTier,
+        unlockedTitles,
       },
-      customization: {
-        customAvatarUrl: customization.customAvatarUrl
-          ? resolvePublicAvatarUrl(user.id, customization, user.avatarUrl)
-          : null,
-        equippedTitle: customization.equippedTitle || null,
-      },
-      highestTier,
-      unlockedTitles,
-    });
+      { headers: NO_CACHE_HEADERS }
+    );
   } catch (err: any) {
     console.error("[api/user/profile error]:", err);
     return NextResponse.json(
       { success: false, error: err?.message || "Error al cargar perfil" },
-      { status: 500 }
+      { status: 500, headers: NO_CACHE_HEADERS }
     );
   }
 }
@@ -105,7 +116,7 @@ export async function PATCH(req: Request) {
     if (!user) {
       return NextResponse.json(
         { success: false, error: "No autenticado" },
-        { status: 401 }
+        { status: 401, headers: NO_CACHE_HEADERS }
       );
     }
 
@@ -124,7 +135,7 @@ export async function PATCH(req: Request) {
             success: false,
             error: "Formato de imagen no permitido. Usa una foto recortada o un avatar de la lista.",
           },
-          { status: 400 }
+          { status: 400, headers: NO_CACHE_HEADERS }
         );
       }
 
@@ -134,7 +145,7 @@ export async function PATCH(req: Request) {
             success: false,
             error: "La imagen es demasiado grande (máximo 65KB).",
           },
-          { status: 400 }
+          { status: 400, headers: NO_CACHE_HEADERS }
         );
       }
     } else if (customAvatarUrl !== null && customAvatarUrl !== undefined) {
@@ -172,15 +183,18 @@ export async function PATCH(req: Request) {
       }
     }
 
-    return NextResponse.json({
-      success: true,
-      customization: updated,
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        customization: updated,
+      },
+      { headers: NO_CACHE_HEADERS }
+    );
   } catch (err: any) {
     console.error("[PATCH /api/user/profile] error:", err);
     return NextResponse.json(
       { success: false, error: err?.message || "Error al guardar personalización" },
-      { status: 500 }
+      { status: 500, headers: NO_CACHE_HEADERS }
     );
   }
 }

@@ -41,9 +41,10 @@ export async function parseSpotifyTarget(rawInput: string): Promise<ParsedSpotif
     }
   }
 
-  // Web URL (accepts language prefixes like /intl-es/album/...)
-  const webMatch = clean.match(/(?:open\.spotify\.com|spotify\.com)(?:\/[a-zA-Z]{2}(?:-[a-zA-Z]{2})?)?\/(playlist|album|artist)\/([a-zA-Z0-9]{22})/i) ||
-                   clean.match(/(?:open\.spotify\.com|spotify\.com)(?:\/[a-zA-Z]{2}(?:-[a-zA-Z]{2})?)?\/(playlist|album|artist)\/([a-zA-Z0-9]+)/i);
+  // Web URL (accepts language/locale prefixes like /intl-es/album/...)
+  const webMatch =
+    clean.match(/(?:open\.spotify\.com|spotify\.com)(?:\/intl-[a-zA-Z0-9-]+|\/[a-zA-Z]{2}(?:-[a-zA-Z]{2})?)?\/(playlist|album|artist)\/([a-zA-Z0-9]{22})/i) ||
+    clean.match(/(?:open\.spotify\.com|spotify\.com)(?:\/intl-[a-zA-Z0-9-]+|\/[a-zA-Z]{2}(?:-[a-zA-Z]{2})?)?\/(playlist|album|artist)\/([a-zA-Z0-9]+)/i);
   if (webMatch && webMatch[1] && webMatch[2]) {
     return {
       type: webMatch[1].toLowerCase() as "playlist" | "album" | "artist",
@@ -72,7 +73,7 @@ export async function parseSpotifyTarget(rawInput: string): Promise<ParsedSpotif
 }
 
 /**
- * Unified fast Spotify collection importer with anti-timeout (6500ms budget).
+ * Unified fast Spotify collection importer with anti-timeout (7800ms budget).
  */
 export async function importSpotifyCollection(rawInput: string): Promise<ImportedCollectionResult> {
   const target = await parseSpotifyTarget(rawInput);
@@ -92,6 +93,7 @@ export async function importSpotifyCollection(rawInput: string): Promise<Importe
   const { id, type } = target;
   let collectionName = type === "album" ? "Álbum de Spotify" : type === "artist" ? "Artista de Spotify" : "Playlist de Spotify";
   let collectionImage = "";
+  let albumArtist = "";
   let rawCandidates: any[] = [];
 
   // --- 1A. Try Authenticated User API (auto-refreshes on 401) ---
@@ -104,6 +106,9 @@ export async function importSpotifyCollection(rawInput: string): Promise<Importe
       collectionImage = data.images?.[0]?.url || "";
 
       if (type === "album") {
+        albumArtist = Array.isArray(data.artists)
+          ? data.artists.map((a: any) => a?.name).filter(Boolean).join(", ")
+          : "";
         const albumData = { id: data.id, name: data.name, images: data.images || [] };
         rawCandidates = (data.tracks?.items || [])
           .filter((t: any) => t && t.id && t.name)
@@ -138,6 +143,10 @@ export async function importSpotifyCollection(rawInput: string): Promise<Importe
           collectionImage = data.images?.[0]?.url || collectionImage;
 
           if (type === "album") {
+            const parsedArtists = Array.isArray(data.artists)
+              ? data.artists.map((a: any) => a?.name).filter(Boolean).join(", ")
+              : "";
+            if (parsedArtists) albumArtist = parsedArtists;
             const albumData = { id: data.id, name: data.name, images: data.images || [] };
             rawCandidates = (data.tracks?.items || [])
               .filter((t: any) => t && t.id && t.name)
@@ -160,7 +169,7 @@ export async function importSpotifyCollection(rawInput: string): Promise<Importe
   // --- 2. Fallback to Public Embed (cache: "no-store") ---
   if (rawCandidates.length === 0) {
     try {
-      // First try oEmbed for authoritative title & cover
+      // First try oEmbed for authoritative title, artist & cover
       try {
         const oembedRes = await fetch(`https://open.spotify.com/oembed?url=https://open.spotify.com/${type}/${id}`, {
           cache: "no-store",
@@ -170,6 +179,9 @@ export async function importSpotifyCollection(rawInput: string): Promise<Importe
           const odata = await oembedRes.json();
           if (odata.title) collectionName = odata.title;
           if (odata.thumbnail_url) collectionImage = odata.thumbnail_url;
+          if (odata.author_name && !albumArtist) {
+            albumArtist = String(odata.author_name).replace(/\u00a0/g, " ").trim();
+          }
         }
       } catch {}
 
@@ -200,13 +212,29 @@ export async function importSpotifyCollection(rawInput: string): Promise<Importe
                 "";
             }
 
+            const entityArtists = Array.isArray(entity.artists)
+              ? entity.artists.map((a: any) => a?.name || a?.profile?.name).filter(Boolean).join(", ")
+              : "";
+            const entitySub = (entity.subtitle || "").replace(/\u00a0/g, " ").trim();
+            if (entityArtists) {
+              albumArtist = entityArtists;
+            } else if (entitySub && !albumArtist) {
+              albumArtist = entitySub;
+            }
+
             const rawTrackList = entity.trackList || [];
             rawCandidates = rawTrackList.map((item: any) => {
-              const cleanArtist = (item.subtitle || entity.subtitle || "Artista").replace(/\u00a0/g, " ").trim();
+              const itemArtists = Array.isArray(item.artists)
+                ? item.artists.map((a: any) => a?.name || a?.profile?.name).filter(Boolean).join(", ")
+                : "";
+              const cleanArtist = (itemArtists || item.subtitle || albumArtist || "")
+                .replace(/\u00a0/g, " ")
+                .trim();
               return {
                 id: item.id || item.uri?.split(":").pop() || Math.random().toString(36).substring(2, 9),
                 name: (item.title || "Canción").replace(/\u00a0/g, " ").trim(),
-                artists: [{ name: cleanArtist }],
+                artists: cleanArtist ? [{ name: cleanArtist }] : [],
+                subtitle: cleanArtist,
                 album: {
                   name: entity.name || collectionName,
                   images: collectionImage ? [{ url: collectionImage }] : [],
@@ -221,16 +249,23 @@ export async function importSpotifyCollection(rawInput: string): Promise<Importe
     } catch {}
   }
 
-  // --- 3. Extra fallback for Albums via iTunes Search & Lookup if no tracks found ---
+  // --- 3. Extra fallback for Albums via iTunes Search & Lookup and Deezer if no tracks found ---
   if (rawCandidates.length === 0 && type === "album" && collectionName && collectionName !== "Álbum de Spotify") {
+    const albumQuery = `${collectionName} ${albumArtist}`.trim();
     try {
       const itunesSearch = await fetch(
-        `https://itunes.apple.com/search?term=${encodeURIComponent(collectionName)}&entity=album&country=ES&limit=3`,
+        `https://itunes.apple.com/search?term=${encodeURIComponent(albumQuery)}&entity=album&country=ES&limit=5`,
         { signal: AbortSignal.timeout(2500) }
       );
       if (itunesSearch.ok) {
         const sData = await itunesSearch.json();
-        const matchedCollection = sData.results?.[0];
+        const albumsList = sData.results || [];
+        const matchedCollection =
+          (albumArtist
+            ? albumsList.find((c: any) =>
+                String(c?.artistName || "").toLowerCase().includes(albumArtist.toLowerCase())
+              )
+            : null) || albumsList[0];
         if (matchedCollection?.collectionId) {
           const lookupRes = await fetch(
             `https://itunes.apple.com/lookup?id=${matchedCollection.collectionId}&entity=song`,
@@ -242,6 +277,9 @@ export async function importSpotifyCollection(rawInput: string): Promise<Importe
             if (songs.length > 0) {
               if (!collectionImage && matchedCollection.artworkUrl100) {
                 collectionImage = matchedCollection.artworkUrl100.replace("100x100bb", "600x600bb");
+              }
+              if (!albumArtist && matchedCollection.artistName) {
+                albumArtist = matchedCollection.artistName;
               }
               rawCandidates = songs.map((s: any) => ({
                 id: String(s.trackId),
@@ -259,6 +297,54 @@ export async function importSpotifyCollection(rawInput: string): Promise<Importe
         }
       }
     } catch {}
+
+    if (rawCandidates.length === 0) {
+      try {
+        const dzSearch = await fetch(
+          `https://api.deezer.com/search/album?q=${encodeURIComponent(albumQuery)}&limit=5`,
+          { signal: AbortSignal.timeout(2500) }
+        );
+        if (dzSearch.ok) {
+          const dzData = await dzSearch.json();
+          const albumsList = dzData.data || [];
+          const targetAlbum =
+            (albumArtist
+              ? albumsList.find((a: any) =>
+                  String(a?.artist?.name || "").toLowerCase().includes(albumArtist.toLowerCase())
+                )
+              : null) || albumsList[0];
+          if (targetAlbum?.id) {
+            const dzTracksRes = await fetch(
+              `https://api.deezer.com/album/${targetAlbum.id}/tracks?limit=50`,
+              { signal: AbortSignal.timeout(2500) }
+            );
+            if (dzTracksRes.ok) {
+              const dzTracksData = await dzTracksRes.json();
+              const dzTracks = (dzTracksData.data || []).filter((t: any) => t && t.title);
+              if (dzTracks.length > 0) {
+                if (!collectionImage && (targetAlbum.cover_xl || targetAlbum.cover_big || targetAlbum.cover_medium)) {
+                  collectionImage = targetAlbum.cover_xl || targetAlbum.cover_big || targetAlbum.cover_medium;
+                }
+                if (!albumArtist && targetAlbum.artist?.name) {
+                  albumArtist = targetAlbum.artist.name;
+                }
+                rawCandidates = dzTracks.map((t: any) => ({
+                  id: String(t.id),
+                  name: t.title,
+                  artists: [{ name: t.artist?.name || albumArtist || "Artista" }],
+                  album: {
+                    name: targetAlbum.title || collectionName,
+                    images: collectionImage ? [{ url: collectionImage }] : [],
+                  },
+                  preview_url: t.preview || null,
+                  duration_ms: t.duration ? t.duration * 1000 : 30000,
+                }));
+              }
+            }
+          }
+        }
+      } catch {}
+    }
   }
 
   if (rawCandidates.length === 0) {
@@ -274,9 +360,9 @@ export async function importSpotifyCollection(rawInput: string): Promise<Importe
     };
   }
 
-  // --- 4. Parallel audio resolution with 6500ms time budget anti-504 ---
+  // --- 4. Parallel audio resolution with 7800ms time budget anti-504 ---
   const startTime = Date.now();
-  const TIME_BUDGET_MS = 6500;
+  const TIME_BUDGET_MS = 7800;
   const targetTracks = rawCandidates.slice(0, 30);
   const resolvedTracks: SpotifyTrackItem[] = [];
 
@@ -293,8 +379,9 @@ export async function importSpotifyCollection(rawInput: string): Promise<Importe
       chunk.map(async (item: any) => {
         const trackTitle = item.name || item.title || "Canción";
         const trackArtist =
-          item.artists?.map((a: any) => a.name).join(", ") ||
+          item.artists?.map((a: any) => a.name).filter(Boolean).join(", ") ||
           item.subtitle ||
+          albumArtist ||
           (type === "artist" ? collectionName : "Artista");
         const trackId = item.id || item.uri?.split(":").pop() || Math.random().toString(36).substring(2, 9);
         let previewUrl = item.preview_url || item.audioPreview?.url || null;

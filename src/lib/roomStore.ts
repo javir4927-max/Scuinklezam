@@ -37,6 +37,12 @@ export type GameMode =
 
 export type GuessType = "song" | "artist" | "both";
 
+const ALLOWED_ROUNDS = [5, 10, 15, 20] as const;
+
+function normalizeTotalRounds(n?: number): number {
+  return ALLOWED_ROUNDS.includes(n as (typeof ALLOWED_ROUNDS)[number]) ? (n as number) : 10;
+}
+
 export interface PlayerAnswerRecord {
   roundIndex: number;
   optionIndex: number;
@@ -1690,7 +1696,7 @@ export async function getRoom(code: string, activePlayerId?: string): Promise<Ro
 export async function finalizeRoomMatch(room: RoomState): Promise<void> {
   room.status = "finished";
   room.rounds = room.rounds.slice(0, Math.min(room.currentRound, room.rounds.length));
-  room.totalRounds = room.rounds.length;
+  room.totalRounds = normalizeTotalRounds(room.totalRounds);
 
   recordPlayedTracksInRoom(room);
   try {
@@ -1957,7 +1963,6 @@ export async function checkRoomStateProgression(room: RoomState, heartbeats?: Re
             try {
               const nextBatch = await generateSurvivalBatch(room, 10);
               room.rounds.push(...nextBatch);
-              room.totalRounds = room.rounds.length;
             } catch (err) {
               console.error("[Survival progression] Error generating next batch:", err);
             }
@@ -2284,7 +2289,7 @@ export async function updatePlayerProfile(
     avatarColor?: string;
     avatarUrl?: string;
     rankTier?: string;
-    equippedTitle?: string;
+    equippedTitle?: string | null;
   }
 ): Promise<{ success: boolean; room?: RoomState; error?: string }> {
   return await withRoomLock(code, async () => {
@@ -2317,7 +2322,7 @@ export async function updatePlayerProfile(
       player.rankTier = profile.rankTier;
     }
     if (profile.equippedTitle !== undefined) {
-      player.equippedTitle = profile.equippedTitle;
+      player.equippedTitle = profile.equippedTitle ? profile.equippedTitle : undefined;
     }
 
     room.lastActive = Date.now();
@@ -2534,11 +2539,12 @@ export async function changeRoomSettings(
   return await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
     if (!room) return { success: false, error: "Sala no encontrada." };
-    if (room.hostId !== hostId) return { success: false, error: "No autorizado." };
+    const caller = room.players.find((p) => p.id === hostId);
+    if (room.hostId !== hostId && !caller?.isHost) return { success: false, error: "No autorizado." };
 
     if (settings.gameMode) room.gameMode = settings.gameMode;
     if (settings.guessType) room.guessType = settings.guessType;
-    if (settings.totalRounds) room.totalRounds = settings.totalRounds;
+    if (settings.totalRounds !== undefined) room.totalRounds = normalizeTotalRounds(settings.totalRounds);
     if (settings.name) room.name = settings.name.trim();
     if (typeof settings.blindMode === "boolean") room.blindMode = settings.blindMode;
 
@@ -2557,11 +2563,12 @@ export async function generateRoundsForRoom(
 ): Promise<{ rounds: RoundData[]; roundDuration: number }> {
   const pool = await getRoomPool(room.code);
   const usedKeys = pool.usedTrackKeys || room.usedTrackKeys || [];
+  const targetTotalRounds = normalizeTotalRounds(room.totalRounds);
 
   // 1. GAME MODE: VOTE
   if (room.gameMode === "vote") {
     const theme = room.winningTheme || "Top 50 España";
-    const rounds = await buildRoundsForTheme(theme, room.totalRounds || 10, usedKeys);
+    const rounds = await buildRoundsForTheme(theme, targetTotalRounds, usedKeys);
     return { rounds, roundDuration: ROUND_DURATION_SEC };
   }
 
@@ -2576,9 +2583,9 @@ export async function generateRoundsForRoom(
         topPool.push(...r.value);
       }
     }
-    const validPool = topPool.length >= room.totalRounds ? topPool : [...topPool, ...FALLBACK_SPOTIFY_TRACKS];
+    const validPool = topPool.length >= targetTotalRounds ? topPool : [...topPool, ...FALLBACK_SPOTIFY_TRACKS];
     const targetCandidates = orderPoolBySessionMemory(validPool, (t) => getTrackKey(t), usedKeys);
-    const verifiedTargets = await collectVerifiedTargets(targetCandidates, room.totalRounds, validPool);
+    const verifiedTargets = await collectVerifiedTargets(targetCandidates, targetTotalRounds, validPool);
     const usedDistractorKeys = new Set<string>();
 
     const rounds: RoundData[] = await Promise.all(
@@ -2634,9 +2641,9 @@ export async function generateRoundsForRoom(
         randomPool.push(...r.value);
       }
     }
-    const validPool = randomPool.length >= room.totalRounds ? randomPool : [...randomPool, ...FALLBACK_SPOTIFY_TRACKS];
+    const validPool = randomPool.length >= targetTotalRounds ? randomPool : [...randomPool, ...FALLBACK_SPOTIFY_TRACKS];
     const targetCandidates = orderPoolBySessionMemory(validPool, (t) => getTrackKey(t), usedKeys);
-    const verifiedTargets = await collectVerifiedTargets(targetCandidates, room.totalRounds, validPool);
+    const verifiedTargets = await collectVerifiedTargets(targetCandidates, targetTotalRounds, validPool);
     const usedDistractorKeys = new Set<string>();
 
     const rounds: RoundData[] = await Promise.all(
@@ -2691,13 +2698,13 @@ export async function generateRoundsForRoom(
   const { buckets, allPoolTracks } = await buildPlayerTrackBuckets(room, usedKeys, pool);
   const interleaved = interleavePlayerBucketsFairly(buckets);
 
-  const poolTracks = allPoolTracks.length >= room.totalRounds
+  const poolTracks = allPoolTracks.length >= targetTotalRounds
     ? allPoolTracks
     : [...allPoolTracks, ...FALLBACK_SPOTIFY_TRACKS];
 
   const verifiedTargetObjects = await collectVerifiedTargetObjects(
     interleaved,
-    room.totalRounds,
+    targetTotalRounds,
     poolTracks
   );
   const smoothedTargets = smoothVerifiedOrder(verifiedTargetObjects);
@@ -2790,7 +2797,8 @@ export async function startRoomGame(
   const prepResult = await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
     if (!room) return { success: false, error: "Sala no encontrada." };
-    if (room.hostId !== hostId) return { success: false, error: "Solo el anfitrión puede iniciar la partida." };
+    const caller = room.players.find((p) => p.id === hostId);
+    if (room.hostId !== hostId && !caller?.isHost) return { success: false, error: "Solo el anfitrión puede iniciar la partida." };
 
     // Synchronize heartbeats
     const heartbeats = await getPlayerHeartbeats(code);
@@ -2852,9 +2860,6 @@ export async function startRoomGame(
 
     room.rounds = rounds;
     room.roundDuration = roundDuration;
-    if (room.gameMode === "survival") {
-      room.totalRounds = rounds.length;
-    }
     room.currentRound = 1;
     room.status = "countdown";
     const now = Date.now();
@@ -3136,7 +3141,6 @@ export async function advanceRoomRound(
           try {
             const nextBatch = await generateSurvivalBatch(room, 10);
             room.rounds.push(...nextBatch);
-            room.totalRounds = room.rounds.length;
           } catch (err) {
             console.error("[Survival] Error generating next batch:", err);
           }
@@ -3188,7 +3192,8 @@ export async function resetRoomToLobby(code: string, hostId: string): Promise<{ 
   return await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
     if (!room) return { success: false, error: "Sala no encontrada." };
-    if (room.hostId !== hostId) return { success: false, error: "Solo el anfitrión puede reiniciar la sala." };
+    const caller = room.players.find((p) => p.id === hostId);
+    if (room.hostId !== hostId && !caller?.isHost) return { success: false, error: "Solo el anfitrión puede reiniciar la sala." };
 
     const pool = await getRoomPool(code);
     if (room.rounds && room.rounds.length > 0) {
@@ -3197,6 +3202,7 @@ export async function resetRoomToLobby(code: string, hostId: string): Promise<{ 
     }
 
     room.status = "lobby";
+    room.totalRounds = normalizeTotalRounds(room.totalRounds);
     room.currentRound = 1;
     room.rounds = [];
     room.roundStartTime = 0;
@@ -3228,7 +3234,8 @@ export async function rematchRoomGame(
   const prepResult = await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
     if (!room) return { success: false, error: "Sala no encontrada." };
-    if (room.hostId !== hostId) return { success: false, error: "Solo el anfitrión puede reiniciar la partida." };
+    const caller = room.players.find((p) => p.id === hostId);
+    if (room.hostId !== hostId && !caller?.isHost) return { success: false, error: "Solo el anfitrión puede reiniciar la partida." };
 
     // Record played tracks in room LRU memory
     const pool = await getRoomPool(code);
@@ -3285,9 +3292,6 @@ export async function rematchRoomGame(
 
     room.rounds = rounds;
     room.roundDuration = roundDuration;
-    if (room.gameMode === "survival") {
-      room.totalRounds = rounds.length;
-    }
     room.currentRound = 1;
     room.status = "countdown";
     const now = Date.now();
@@ -3316,7 +3320,8 @@ export async function kickPlayer(
   return await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
     if (!room) return { success: false, error: "Sala no encontrada." };
-    if (room.hostId !== hostId) return { success: false, error: "Solo el anfitrión puede expulsar jugadores." };
+    const caller = room.players.find((p) => p.id === hostId);
+    if (room.hostId !== hostId && !caller?.isHost) return { success: false, error: "Solo el anfitrión puede expulsar jugadores." };
     if (targetPlayerId === hostId) return { success: false, error: "El anfitrión no puede expulsarse a sí mismo." };
 
     await removePlayerHeartbeat(code, targetPlayerId);
@@ -3357,16 +3362,22 @@ export async function transferHost(
   return await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
     if (!room) return { success: false, error: "Sala no encontrada." };
-    if (room.hostId !== hostId) return { success: false, error: "Solo el anfitrión puede transferir la sala." };
+
+    const caller = room.players.find((p) => p.id === hostId);
+    if (room.hostId !== hostId && !caller?.isHost) {
+      return { success: false, error: "Solo el anfitrión puede transferir la sala." };
+    }
 
     const target = room.players.find((p) => p.id === targetPlayerId);
     if (!target) return { success: false, error: "Jugador no encontrado en la sala." };
 
-    const prevHost = room.players.find((p) => p.id === hostId);
-    if (prevHost) prevHost.isHost = false;
-
-    target.isHost = true;
+    room.players.forEach((p) => {
+      p.isHost = p.id === targetPlayerId;
+    });
     room.hostId = targetPlayerId;
+    if (room.name.startsWith("Sala de ") || !room.name) {
+      room.name = `Sala de ${target.name}`;
+    }
 
     room.lastActive = Date.now();
     await saveRoom(room);

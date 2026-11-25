@@ -62,8 +62,10 @@ export default function ProfilePage() {
   const [isCustomizingOpen, setIsCustomizingOpen] = useState(false);
   const [customAvatarCandidate, setCustomAvatarCandidate] = useState<string | null>(null);
   const [equippedTitleCandidate, setEquippedTitleCandidate] = useState<string | null>(null);
+  const [avatarModified, setAvatarModified] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [spotifyModalOpen, setSpotifyModalOpen] = useState(false);
@@ -122,6 +124,8 @@ export default function ProfilePage() {
           dataUrl = canvas.toDataURL("image/jpeg", 0.75);
         }
         setCustomAvatarCandidate(dataUrl);
+        setAvatarModified(true);
+        setSaveError(null);
       };
       img.src = event.target?.result as string;
     };
@@ -130,18 +134,24 @@ export default function ProfilePage() {
 
   const handleSaveCustomization = async () => {
     setIsSaving(true);
+    setSaveError(null);
     try {
+      const payload: { equippedTitle: string | null; customAvatarUrl?: string | null } = {
+        equippedTitle: equippedTitleCandidate,
+      };
+      if (avatarModified) {
+        payload.customAvatarUrl = customAvatarCandidate;
+      }
       const res = await fetch("/api/user/profile", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          customAvatarUrl: customAvatarCandidate,
-          equippedTitle: equippedTitleCandidate,
-        }),
+        cache: "no-store",
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (data.success) {
+      if (res.ok && data.success) {
         setSaveSuccess(true);
+        setAvatarModified(false);
         try {
           await refreshSession();
         } catch {}
@@ -153,9 +163,12 @@ export default function ProfilePage() {
           setIsCustomizingOpen(false);
           fetchProfile();
         }, 600);
+      } else {
+        setSaveError(data?.error || "No se pudo guardar la personalización.");
       }
     } catch (err) {
       console.error("Error saving customization:", err);
+      setSaveError("Error de conexión al guardar la personalización.");
     } finally {
       setIsSaving(false);
     }
@@ -228,6 +241,8 @@ export default function ProfilePage() {
                     onClick={() => {
                       setCustomAvatarCandidate(customization?.customAvatarUrl || user.avatarUrl);
                       setEquippedTitleCandidate(customization?.equippedTitle || null);
+                      setAvatarModified(false);
+                      setSaveError(null);
                       setIsCustomizingOpen(true);
                     }}
                     className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center shadow-lg border border-black/60 transition cursor-pointer"
@@ -265,6 +280,8 @@ export default function ProfilePage() {
                   onClick={() => {
                     setCustomAvatarCandidate(customization?.customAvatarUrl || user.avatarUrl);
                     setEquippedTitleCandidate(customization?.equippedTitle || null);
+                    setAvatarModified(false);
+                    setSaveError(null);
                     setIsCustomizingOpen(true);
                   }}
                   className="bg-emerald-500/10 hover:bg-emerald-500/20 text-goblinLime border border-emerald-500/30 rounded-xl px-4 py-2.5 text-xs font-bold transition flex items-center gap-2 cursor-pointer shadow-sm"
@@ -568,7 +585,11 @@ export default function ProfilePage() {
                 </label>
                 <button
                   type="button"
-                  onClick={() => setCustomAvatarCandidate(null)}
+                  onClick={() => {
+                    setCustomAvatarCandidate(null);
+                    setAvatarModified(true);
+                    setSaveError(null);
+                  }}
                   className="text-[10px] text-zinc-400 hover:text-rose-300 underline cursor-pointer"
                 >
                   Restaurar foto original
@@ -589,7 +610,11 @@ export default function ProfilePage() {
                     <button
                       key={preset.id}
                       type="button"
-                      onClick={() => setCustomAvatarCandidate(preset.url)}
+                      onClick={() => {
+                        setCustomAvatarCandidate(preset.url);
+                        setAvatarModified(true);
+                        setSaveError(null);
+                      }}
                       className={`p-1 rounded-xl border transition flex flex-col items-center gap-1 cursor-pointer ${
                         isSelected
                           ? "border-goblinLime bg-emerald-500/20 shadow-md shadow-emerald-500/20 scale-105"
@@ -640,6 +665,12 @@ export default function ProfilePage() {
                 })}
               </div>
             </div>
+
+            {saveError && (
+              <p className="text-xs font-semibold text-rose-400 bg-rose-950/50 border border-rose-500/30 rounded-xl px-3 py-2">
+                {saveError}
+              </p>
+            )}
 
             {/* Actions */}
             <div className="pt-2 flex items-center justify-end gap-3 border-t border-emerald-500/15">

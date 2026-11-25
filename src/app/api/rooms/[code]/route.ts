@@ -374,7 +374,12 @@ export async function PATCH(request: Request, { params }: RouteParams) {
           avatarColor: typeof body.avatarColor === "string" ? body.avatarColor : undefined,
           avatarUrl: typeof body.avatarUrl === "string" ? body.avatarUrl : undefined,
           rankTier: typeof body.rankTier === "string" ? body.rankTier : undefined,
-          equippedTitle: typeof body.equippedTitle === "string" ? body.equippedTitle : undefined,
+          equippedTitle:
+            body.equippedTitle === null
+              ? null
+              : typeof body.equippedTitle === "string"
+                ? body.equippedTitle
+                : undefined,
         });
         if (!updateResult.success) {
           return NextResponse.json(
