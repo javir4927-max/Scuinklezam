@@ -75,7 +75,8 @@ export async function POST(request: Request) {
         avatarUrl,
         canonicalArtistName,
         authoritativeScore,
-        correctCount
+        correctCount,
+        true
       );
     }
 

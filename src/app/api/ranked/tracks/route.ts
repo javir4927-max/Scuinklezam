@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
-import { searchVerifiedTracks, searchItunesCatalog, searchStrictArtistTracks } from "@/lib/musicService";
+import { searchVerifiedTracks, searchStrictArtistTracks, resolveAudioStream } from "@/lib/musicService";
 import { RANKED_CATEGORIES, toArtistSlug, getCanonicalArtistName } from "@/lib/rankedTypes";
 import { SpotifyTrackItem, getFallbackArtwork } from "@/lib/spotifyTypes";
-import { normalizeSongTitle, getTrackTopic, isStrictArtistMatch, hasNonLatinCharacters, isDottedAcronym, deepNormalize } from "@/lib/songMatching";
+import {
+  normalizeSongTitle,
+  isStrictArtistMatch,
+  hasNonLatinCharacters,
+  deepNormalize,
+  ARTIST_COLLAB_REGEX,
+} from "@/lib/songMatching";
 import { getSpotifyAppToken } from "@/lib/spotifyAppToken";
 
 export const dynamic = "force-dynamic";
@@ -45,18 +51,14 @@ const THEME_ARTIST_POOLS: Record<string, string[]> = {
   ],
 };
 
-/**
- * Queries a deep pool of 60 to 100 songs for a specific artist combining
- * iTunes Search API (ES + US), Deezer API (top=50), and Spotify Catalog (limit=30),
- * filtered by primary artist and verified audio previews, deduplicated by normalized title.
- */
-async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrackItem[]> {
-  const clean = getCanonicalArtistName(artistName.split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)/i)[0].trim());
+function getArtistSearchTerms(artistName: string): { clean: string; slug: string; searchTerms: string[] } {
+  const clean = getCanonicalArtistName(
+    artistName.split(/[/,&]|(\s+feat\.?\s+)|(\s+ft\.?\s+)/i)[0].trim()
+  );
   const slug = toArtistSlug(clean);
-  const isLatin = !hasNonLatinCharacters(clean);
   let searchTerms = [clean];
   if (slug === "cruzzi") {
-    searchTerms = ["Cruz Cafune", "Cruzzi"];
+    searchTerms = ["Cruzzi", "Cruz Cafuné", "Cruz Cafune"];
   } else if (slug === "feid") {
     searchTerms = ["Feid", "Ferxxo"];
   } else if (slug === "kanye-west") {
@@ -64,21 +66,34 @@ async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrac
   } else if (slug === "abhir") {
     searchTerms = ["Abhir", "Abhir Hathi"];
   }
+  return { clean, slug, searchTerms };
+}
+
+/**
+ * Queries a deep pool of 20 to 100 songs for a specific artist combining
+ * iTunes Search API (ES + US), Deezer API (top=50 across aliases), and Spotify Catalog (top-tracks + artist search),
+ * rescuing missing Spotify preview URLs via resolveAudioStream and filtering strictly by artist match.
+ */
+async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrackItem[]> {
+  const { clean, searchTerms } = getArtistSearchTerms(artistName);
+  const isLatin = !hasNonLatinCharacters(clean);
 
   // 1. Fetch iTunes Search API limit=80 country=ES and country=US with attribute=artistTerm
   const itunesPromises = searchTerms.flatMap((term) => [
     fetch(
       `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&entity=song&attribute=artistTerm&country=ES&limit=80`,
-      { headers: { "User-Agent": "Scuinklezam/1.0" }, cache: "no-store" }
-    ).then((r) => r.json()).catch(() => ({ results: [] })),
+      { headers: { "User-Agent": "Scuinklezam/1.0" }, cache: "no-store", signal: AbortSignal.timeout(3500) }
+    ).then((r) => (r.ok ? r.json() : { results: [] })).catch(() => ({ results: [] })),
     fetch(
       `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&entity=song&attribute=artistTerm&country=US&limit=80`,
-      { headers: { "User-Agent": "Scuinklezam/1.0" }, cache: "no-store" }
-    ).then((r) => r.json()).catch(() => ({ results: [] })),
+      { headers: { "User-Agent": "Scuinklezam/1.0" }, cache: "no-store", signal: AbortSignal.timeout(3500) }
+    ).then((r) => (r.ok ? r.json() : { results: [] })).catch(() => ({ results: [] })),
   ]);
 
-  // 2. Fetch Deezer Artist Top 50 with cache: 'no-store'
+  // 2. Fetch Deezer Artist Top 50 across ALL searchTerms (accumulating aliases without duplicate artistId)
   const deezerPromise = (async () => {
+    const allDzTracks: any[] = [];
+    const seenArtistIds = new Set<number | string>();
     try {
       for (const term of searchTerms) {
         const aRes = await fetch(
@@ -86,78 +101,131 @@ async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrac
           {
             headers: { "User-Agent": "Scuinklezam/1.0" },
             cache: "no-store",
+            signal: AbortSignal.timeout(3500),
           }
-        ).then((r) => r.json());
+        )
+          .then((r) => (r.ok ? r.json() : { data: [] }))
+          .catch(() => ({ data: [] }));
 
         const matchingArtists = (aRes?.data || [])
-          .filter((a: any) => isStrictArtistMatch(a.name, term))
+          .filter((a: any) => isStrictArtistMatch(a.name, term) || isStrictArtistMatch(a.name, clean))
           .sort((a: any, b: any) => (b.nb_fan || 0) - (a.nb_fan || 0));
 
         const matched = matchingArtists[0];
-
         const artistId = matched?.id;
-        if (artistId) {
+        if (artistId && !seenArtistIds.has(artistId)) {
+          seenArtistIds.add(artistId);
           const topRes = await fetch(
             `https://api.deezer.com/artist/${artistId}/top?limit=50`,
             {
               headers: { "User-Agent": "Scuinklezam/1.0" },
               cache: "no-store",
+              signal: AbortSignal.timeout(3500),
             }
-          ).then((r) => r.json());
+          )
+            .then((r) => (r.ok ? r.json() : { data: [] }))
+            .catch(() => ({ data: [] }));
+
           if (topRes?.data && Array.isArray(topRes.data) && topRes.data.length > 0) {
-            return topRes.data as any[];
+            allDzTracks.push(...topRes.data);
           }
         }
       }
     } catch (e) {
       console.warn("[ranked/tracks] Deezer track search failed:", e);
     }
-    return [] as any[];
+    return allDzTracks;
   })();
 
-  // 3. Fetch Spotify Tracks via App Token
+  // 3. Fetch Spotify Tracks via App Token (top-tracks AND artist:"..." search in parallel)
   const spotifyPromise = (async () => {
     try {
       const token = await getSpotifyAppToken();
       if (!token) return [];
 
       let targetArtistId: string | null = null;
+      let matchedSpotifyName: string | null = null;
       try {
-        for (const term of searchTerms) {
-          const aRes = await fetch(
-            `https://api.spotify.com/v1/search?q=${encodeURIComponent(term)}&type=artist&limit=5`,
-            {
-              headers: { Authorization: `Bearer ${token}` },
-              cache: "no-store",
+        const artistSearchResponses = await Promise.all(
+          searchTerms.map(async (term) => {
+            try {
+              const aRes = await fetch(
+                `https://api.spotify.com/v1/search?q=${encodeURIComponent(term)}&type=artist&limit=5`,
+                {
+                  headers: { Authorization: `Bearer ${token}` },
+                  cache: "no-store",
+                  signal: AbortSignal.timeout(3500),
+                }
+              );
+              if (!aRes.ok) return [];
+              const aData = await aRes.json();
+              return (aData?.artists?.items || []).filter(
+                (a: any) => isStrictArtistMatch(a.name, term) || isStrictArtistMatch(a.name, clean)
+              );
+            } catch {
+              return [];
             }
-          );
-          if (aRes.ok) {
-            const aData = await aRes.json();
-            const matchingArtists = (aData?.artists?.items || [])
-              .filter((a: any) => isStrictArtistMatch(a.name, term) || isStrictArtistMatch(a.name, clean))
-              .sort((a: any, b: any) => (b.followers?.total || 0) - (a.followers?.total || 0));
-            if (matchingArtists[0]?.id) {
-              targetArtistId = matchingArtists[0].id;
-              break;
-            }
-          }
+          })
+        );
+
+        const allMatchedArtists = artistSearchResponses
+          .flat()
+          .sort((a: any, b: any) => (b.followers?.total || 0) - (a.followers?.total || 0));
+
+        if (allMatchedArtists[0]?.id) {
+          targetArtistId = allMatchedArtists[0].id;
+          matchedSpotifyName = allMatchedArtists[0].name || null;
         }
       } catch {
         // Fallback to direct query below
       }
 
-      const tracksUrl = targetArtistId
-        ? `https://api.spotify.com/v1/artists/${targetArtistId}/top-tracks?market=ES`
-        : `https://api.spotify.com/v1/search?q=artist:"${encodeURIComponent(clean)}"&type=track&market=ES&limit=30`;
+      const trackSearchTerms = new Set<string>([clean]);
+      if (matchedSpotifyName && deepNormalize(matchedSpotifyName) !== deepNormalize(clean)) {
+        trackSearchTerms.add(matchedSpotifyName);
+      }
 
-      const sRes = await fetch(tracksUrl, {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-      if (!sRes.ok) return [];
-      const sData = await sRes.json();
-      const items = Array.isArray(sData?.tracks) ? sData.tracks : (sData?.tracks?.items || []);
-      return items as any[];
+      const fetchUrls: string[] = [];
+      if (targetArtistId) {
+        fetchUrls.push(`https://api.spotify.com/v1/artists/${targetArtistId}/top-tracks?market=ES`);
+      }
+      for (const ts of Array.from(trackSearchTerms)) {
+        fetchUrls.push(
+          `https://api.spotify.com/v1/search?q=artist:"${encodeURIComponent(ts)}"&type=track&market=ES&limit=30`
+        );
+      }
+
+      const responses = await Promise.all(
+        fetchUrls.map(async (url) => {
+          try {
+            const sRes = await fetch(url, {
+              headers: { Authorization: `Bearer ${token}` },
+              cache: "no-store",
+              signal: AbortSignal.timeout(3500),
+            });
+            if (!sRes.ok) return [];
+            const sData = await sRes.json();
+            return Array.isArray(sData?.tracks) ? sData.tracks : (sData?.tracks?.items || []);
+          } catch {
+            return [];
+          }
+        })
+      );
+
+      const mergedSp: any[] = [];
+      const seenSpIds = new Set<string>();
+      for (const list of responses) {
+        for (const item of list) {
+          if (!item?.id || seenSpIds.has(item.id)) continue;
+          const hasMatchingArtist =
+            Array.isArray(item.artists) &&
+            item.artists.some((a: any) => isStrictArtistMatch(a.name, clean));
+          if (!hasMatchingArtist) continue;
+          seenSpIds.add(item.id);
+          mergedSp.push(item);
+        }
+      }
+      return mergedSp;
     } catch {
       return [];
     }
@@ -184,36 +252,47 @@ async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrac
     }
   }
 
-  // Count solo tracks per artistId to detect and isolate dominant real artist
-  const itunesSoloCountByArtistId = new Map<number | string, number>();
+  // Count solo tracks per artistId grouped by exact normalized name (deepNormalize(it.artistName))
+  // so official aliases (e.g. Cruzzi vs Cruz Cafune) are preserved while homonyms get filtered
+  const itunesSoloCountByNormName = new Map<string, Map<number | string, number>>();
   for (const it of itunesCandidates) {
+    const rawArtistName = it.artistName || "";
     const isSolo =
-      deepNormalize(it.artistName || "") === deepNormalize(clean) &&
-      isDottedAcronym(it.artistName || "") === isDottedAcronym(clean);
-    if (isSolo && it.artistId) {
-      itunesSoloCountByArtistId.set(it.artistId, (itunesSoloCountByArtistId.get(it.artistId) || 0) + 1);
+      Boolean(it.artistId) &&
+      !ARTIST_COLLAB_REGEX.test(rawArtistName) &&
+      isStrictArtistMatch(rawArtistName, clean);
+    if (isSolo) {
+      const normName = deepNormalize(rawArtistName);
+      if (normName) {
+        if (!itunesSoloCountByNormName.has(normName)) {
+          itunesSoloCountByNormName.set(normName, new Map());
+        }
+        const idMap = itunesSoloCountByNormName.get(normName)!;
+        idMap.set(it.artistId, (idMap.get(it.artistId) || 0) + 1);
+      }
     }
   }
 
-  let itunesDominantArtistId: any = null;
-  let maxItunesSolo = -1;
-  itunesSoloCountByArtistId.forEach((count, id) => {
-    if (count > maxItunesSolo) {
-      maxItunesSolo = count;
-      itunesDominantArtistId = id;
+  const itunesMinoritySoloIds = new Set<any>();
+  itunesSoloCountByNormName.forEach((idMap) => {
+    if (idMap.size > 1) {
+      let dominantId: any = null;
+      let maxCount = -1;
+      idMap.forEach((count, id) => {
+        if (count > maxCount) {
+          maxCount = count;
+          dominantId = id;
+        }
+      });
+      idMap.forEach((_count, id) => {
+        if (id !== dominantId) {
+          itunesMinoritySoloIds.add(id);
+        }
+      });
     }
   });
 
-  const itunesMinoritySoloIds = new Set<any>();
-  if (itunesSoloCountByArtistId.size > 1) {
-    itunesSoloCountByArtistId.forEach((count, id) => {
-      if (id !== itunesDominantArtistId) {
-        itunesMinoritySoloIds.add(id);
-      }
-    });
-  }
-
-  // Add iTunes tracks (excluding minority artistId)
+  // Add iTunes tracks (excluding minority homonym artistId)
   for (const it of itunesCandidates) {
     if (it.artistId && itunesMinoritySoloIds.has(it.artistId)) continue;
     const itTit = it.trackName || "";
@@ -271,13 +350,15 @@ async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrac
     }
   }
 
-  // Add Spotify tracks (if preview_url is available)
+  // Add Spotify tracks that already have preview_url
   for (const sp of spTracks) {
     if (!sp.preview_url || typeof sp.preview_url !== "string" || !sp.preview_url.startsWith("http")) continue;
     const hasMatchingArtist = sp.artists?.some((a: any) => isStrictArtistMatch(a.name, clean));
     if (!hasMatchingArtist) continue;
     const spTit = sp.name || "";
     if (/karaoke|tribute|cover/i.test(spTit)) continue;
+    const artistNames = sp.artists?.map((a: any) => a.name).join(", ") || clean;
+    if (isLatin && (hasNonLatinCharacters(spTit) || hasNonLatinCharacters(artistNames))) continue;
 
     const norm = normalizeSongTitle(spTit);
     if (!norm) continue;
@@ -288,13 +369,76 @@ async function fetchDeepArtistTrackPool(artistName: string): Promise<SpotifyTrac
         id: `sp_${sp.id}`,
         uri: sp.uri || `spotify:track:${sp.id}`,
         title: spTit,
-        artist: sp.artists?.map((a: any) => a.name).join(", ") || clean,
+        artist: artistNames,
         album: sp.album?.name || "Single",
         artworkUrl: artwork,
         spotifyUrl: sp.external_urls?.spotify || `https://open.spotify.com/track/${sp.id}`,
         previewUrl: sp.preview_url,
         durationMs: sp.duration_ms || 30000,
       });
+    }
+  }
+
+  // Rescue Spotify tracks when preview_url is null if pool < 20
+  if (pool.size < 20 && spTracks.length > 0) {
+    const rescueCandidates: Array<{ sp: any; norm: string; artistNames: string }> = [];
+    const seenRescueNorms = new Set<string>();
+
+    for (const sp of spTracks) {
+      if (rescueCandidates.length >= 15) break;
+      if (!sp?.name || !Array.isArray(sp.artists)) continue;
+      const hasMatchingArtist = sp.artists.some((a: any) => isStrictArtistMatch(a.name, clean));
+      if (!hasMatchingArtist) continue;
+
+      const spTit = sp.name || "";
+      if (/karaoke|tribute|cover/i.test(spTit)) continue;
+      const artistNames = sp.artists.map((a: any) => a.name).join(", ");
+      if (isLatin && (hasNonLatinCharacters(spTit) || hasNonLatinCharacters(artistNames))) continue;
+
+      const norm = normalizeSongTitle(spTit);
+      if (!norm || pool.has(norm) || seenRescueNorms.has(norm)) continue;
+
+      seenRescueNorms.add(norm);
+      rescueCandidates.push({ sp, norm, artistNames });
+    }
+
+    for (let i = 0; i < rescueCandidates.length; i += 5) {
+      const batch = rescueCandidates.slice(i, i + 5);
+      const resolvedBatch = await Promise.all(
+        batch.map(async ({ sp, norm, artistNames }) => {
+          try {
+            const resolved = await resolveAudioStream(sp.name, artistNames || clean);
+            return { sp, norm, artistNames, resolved };
+          } catch {
+            return { sp, norm, artistNames, resolved: null };
+          }
+        })
+      );
+
+      for (const { sp, norm, artistNames, resolved } of resolvedBatch) {
+        if (
+          resolved?.previewUrl &&
+          resolved.previewUrl.startsWith("http") &&
+          !pool.has(norm) &&
+          isStrictArtistMatch(artistNames || clean, clean)
+        ) {
+          const artwork =
+            sp.album?.images?.[0]?.url ||
+            resolved.artworkUrl ||
+            getFallbackArtwork(sp.name, clean);
+          pool.set(norm, {
+            id: `sp_${sp.id}`,
+            uri: sp.uri || `spotify:track:${sp.id}`,
+            title: sp.name,
+            artist: artistNames || clean,
+            album: sp.album?.name || "Single",
+            artworkUrl: artwork,
+            spotifyUrl: sp.external_urls?.spotify || `https://open.spotify.com/track/${sp.id}`,
+            previewUrl: resolved.previewUrl,
+            durationMs: sp.duration_ms || 30000,
+          });
+        }
+      }
     }
   }
 
@@ -349,43 +493,76 @@ export async function GET(request: Request) {
     categoryId === "theme_top_espana" ||
     categoryId === "theme_under_espana";
 
-  try {
-    // 1. Case: Specific Artist (predefined category or custom search)
-    const artistQuery = customArtist || (cat?.kind === "artist" ? cat.query : "");
-    if (artistQuery) {
-      const cleanArtist = artistQuery.trim();
+  // 1. Case: Specific Artist (predefined category or custom search)
+  // NEVER fall through to thematic pools, searchVerifiedTracks, or SPANISH_FALLBACK_TRACKS
+  const artistQuery = customArtist || (cat?.kind === "artist" ? cat.query : "");
+  if (artistQuery) {
+    const cleanArtist = artistQuery.trim();
+    try {
       const deepPool = await fetchDeepArtistTrackPool(cleanArtist);
+      const merged: SpotifyTrackItem[] = [...deepPool];
 
-      if (deepPool.length >= 10) {
+      if (merged.length < 10) {
+        const { searchTerms } = getArtistSearchTerms(cleanArtist);
+        const termResults = await Promise.all(
+          searchTerms.map((term) => searchStrictArtistTracks(term, 35))
+        );
+        for (const directTracks of termResults) {
+          for (const t of directTracks) {
+            const norm = normalizeSongTitle(t.title);
+            if (
+              t.previewUrl &&
+              norm &&
+              !merged.some((x) => normalizeSongTitle(x.title) === norm)
+            ) {
+              merged.push(t);
+            }
+          }
+        }
+      }
+
+      const strictFiltered = merged.filter(
+        (t) =>
+          Boolean(t.previewUrl && t.previewUrl.startsWith("http")) &&
+          isStrictArtistMatch(t.artist, cleanArtist)
+      );
+
+      if (strictFiltered.length >= 4) {
         return NextResponse.json(
           {
             success: true,
-            tracks: deepPool,
-            poolSize: deepPool.length,
+            tracks: strictFiltered,
+            poolSize: strictFiltered.length,
             artist: cleanArtist,
           },
           { headers: NO_CACHE_HEADERS }
         );
       }
 
-      // Complement with iTunes search if deep pool was small
-      const directTracks = await searchStrictArtistTracks(cleanArtist, 35);
-      const verified = directTracks.filter((t) => t.previewUrl);
-      const merged = [...deepPool];
-      for (const t of verified) {
-        const norm = normalizeSongTitle(t.title);
-        if (!merged.some((x) => normalizeSongTitle(x.title) === norm)) {
-          merged.push(t);
-        }
-      }
-
-      if (merged.length >= 8) {
-        return NextResponse.json(
-          { success: true, tracks: merged, poolSize: merged.length, artist: cleanArtist },
-          { headers: NO_CACHE_HEADERS }
-        );
-      }
+      return NextResponse.json(
+        {
+          success: false,
+          tracks: [],
+          poolSize: 0,
+          error: `No se encontraron suficientes canciones con audio disponible para "${cleanArtist}".`,
+        },
+        { status: 200, headers: NO_CACHE_HEADERS }
+      );
+    } catch (err) {
+      console.warn(`[ranked/tracks] artist track pool failed for ${cleanArtist}:`, err);
+      return NextResponse.json(
+        {
+          success: false,
+          tracks: [],
+          poolSize: 0,
+          error: `No se encontraron suficientes canciones con audio disponible para "${cleanArtist}".`,
+        },
+        { status: 200, headers: NO_CACHE_HEADERS }
+      );
     }
+  }
+
+  try {
 
     // 2. Case: Thematic Pool
     if (THEME_ARTIST_POOLS[categoryId]) {

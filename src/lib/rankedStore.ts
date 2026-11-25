@@ -329,6 +329,7 @@ export async function submitRankedScore(
 ): Promise<{
   success: boolean;
   score: number;
+  bestScore: number;
   totalScore: number;
   globalTotal: number;
   rank: number;
@@ -340,6 +341,7 @@ export async function submitRankedScore(
 }> {
   const safeScore = Math.min(1000, Math.max(0, Math.round(score)));
   let isPersonalBest = true;
+  let newBestSingle = safeScore;
   let newCategoryTotal = safeScore;
   let newGlobalTotal = safeScore;
   let rank = 1;
@@ -354,7 +356,7 @@ export async function submitRankedScore(
       const prevBestRaw = await redis.hget<string>(`scuinklezam:user_bests:${userId}`, categoryId);
       const prevBestSingle = Math.min(1000, Number(prevBestRaw || 0));
       isPersonalBest = safeScore > prevBestSingle;
-      const newBestSingle = Math.max(prevBestSingle, safeScore);
+      newBestSingle = Math.max(prevBestSingle, safeScore);
 
       // 2. Increment play count in category_plays Hash
       await redis.hincrby("scuinklezam:stats:category_plays", categoryId, 1);
@@ -437,7 +439,8 @@ export async function submitRankedScore(
     const userBestsMap = memoryPersonalBests.get(userId)!;
     const prevSingle = Math.min(1000, userBestsMap.get(categoryId) || 0);
     isPersonalBest = safeScore > prevSingle;
-    userBestsMap.set(categoryId, Math.max(prevSingle, safeScore));
+    newBestSingle = Math.max(prevSingle, safeScore);
+    userBestsMap.set(categoryId, newBestSingle);
 
     const sorted = Array.from(catMap.entries()).sort((a, b) => b[1].score - a[1].score);
     const idx = sorted.findIndex(([uid]) => uid === userId);
@@ -463,6 +466,7 @@ export async function submitRankedScore(
   return {
     success: true,
     score: safeScore,
+    bestScore: newBestSingle,
     totalScore: newCategoryTotal,
     globalTotal: newGlobalTotal,
     rank,
@@ -679,7 +683,8 @@ export async function submitArtistRankedScore(
   avatarUrl: string,
   artistName: string,
   score: number,
-  correctCount?: number
+  correctCount?: number,
+  skipUserProfileWrite = false
 ): Promise<{
   success: boolean;
   totalPoints: number;
@@ -752,23 +757,28 @@ export async function submitArtistRankedScore(
       }
 
       // 6. Preserve user_profile without overwriting totalPoints or downgrading bestScore
-      const existingProfileRaw = await redis.get<string | any>(`scuinklezam:user_profile:${userId}`);
-      const existingProfile =
-        typeof existingProfileRaw === "string" ? JSON.parse(existingProfileRaw) : existingProfileRaw;
-      const preservedGlobalBest = Math.max(Math.min(1000, Number(existingProfile?.bestScore || 0)), finalBestScore);
+      if (!skipUserProfileWrite) {
+        const existingProfileRaw = await redis.get<string | any>(`scuinklezam:user_profile:${userId}`);
+        const existingProfile =
+          typeof existingProfileRaw === "string" ? JSON.parse(existingProfileRaw) : existingProfileRaw;
+        const preservedGlobalBest = Math.max(
+          Math.min(1000, Number(existingProfile?.bestScore || 0)),
+          finalBestScore
+        );
 
-      await redis.set(
-        `scuinklezam:user_profile:${userId}`,
-        JSON.stringify({
-          ...(existingProfile || {}),
-          userId,
-          nickname,
-          avatarUrl,
-          totalPoints: existingProfile?.totalPoints ?? newTotalPoints,
-          bestScore: preservedGlobalBest,
-          lastPlayed: Date.now(),
-        })
-      );
+        await redis.set(
+          `scuinklezam:user_profile:${userId}`,
+          JSON.stringify({
+            ...(existingProfile || {}),
+            userId,
+            nickname,
+            avatarUrl,
+            totalPoints: existingProfile?.totalPoints ?? newTotalPoints,
+            bestScore: preservedGlobalBest,
+            lastPlayed: Date.now(),
+          })
+        );
+      }
 
       // 7. Get user's updated rank in artist sorted set
       const rankIdx = await redis.zrevrank(zsetKey, userId);
@@ -917,28 +927,28 @@ export async function getArtistProfileAndLeaderboard(
   if (redis) {
     try {
       const zsetKey = `scuinklezam:ranked:artist:${slug}`;
-      totalPlayers = (await redis.zcard(zsetKey)) || 0;
+      const statsKey = userId ? `scuinklezam:artist_user_stats:${slug}:${userId}` : null;
 
-      // User stats
-      if (userId) {
-        const statsKey = `scuinklezam:artist_user_stats:${slug}:${userId}`;
-        const uStats = await redis.hgetall<Record<string, string>>(statsKey);
-        if (uStats) {
-          userTotalPoints = Number(uStats.totalPoints || 0);
-          userQuizzesPlayed = Number(uStats.quizzesPlayed || 0);
-          userBestScore = Math.min(1000, Number(uStats.bestScore || 0));
-        }
-        const rankIdx = await redis.zrevrank(zsetKey, userId);
-        if (rankIdx !== null && rankIdx !== undefined) {
-          userRank = rankIdx + 1;
-        }
+      // Parallelize independent initial reads (zcard, top 50 zrange, and user stats/rank if userId)
+      const [zcardRes, topIds, uStats, rankIdx] = await Promise.all([
+        redis.zcard(zsetKey),
+        redis.zrange<any[]>(zsetKey, 0, 49, {
+          rev: true,
+          withScores: true,
+        }),
+        statsKey ? redis.hgetall<Record<string, string>>(statsKey) : Promise.resolve(null),
+        userId ? redis.zrevrank(zsetKey, userId) : Promise.resolve(null),
+      ]);
+
+      totalPlayers = zcardRes || 0;
+      if (uStats) {
+        userTotalPoints = Number(uStats.totalPoints || 0);
+        userQuizzesPlayed = Number(uStats.quizzesPlayed || 0);
+        userBestScore = Math.min(1000, Number(uStats.bestScore || 0));
       }
-
-      // Leaderboard Top 50 sorted descending by totalPoints
-      const topIds = await redis.zrange<any[]>(zsetKey, 0, 49, {
-        rev: true,
-        withScores: true,
-      });
+      if (rankIdx !== null && rankIdx !== undefined) {
+        userRank = rankIdx + 1;
+      }
 
       if (topIds && topIds.length > 0) {
         const memberEntries = parseZRangeWithScores(topIds).map((e) => ({

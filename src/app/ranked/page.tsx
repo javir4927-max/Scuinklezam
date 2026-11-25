@@ -298,6 +298,20 @@ export default function RankedArenaPage() {
     };
   }, []);
 
+  // Reset pause icon when 30s preview finishes or audio stops
+  useEffect(() => {
+    const unsubscribe = audioPlayer.subscribe((state) => {
+      if (!state.isPlaying) {
+        setPlayingPreviewUrl(null);
+      } else if (gameStateRef.current === "summary" && state.url) {
+        setPlayingPreviewUrl(state.url);
+      }
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
   // Close live search dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -401,7 +415,14 @@ export default function RankedArenaPage() {
     setLoadingLeaderboard(true);
     setLeaderboardEntries([]);
     try {
-      const res = await fetch(`/api/ranked/leaderboard?category=${cat.id}&userId=${user?.id || ""}`);
+      const effectiveUid =
+        user?.id ||
+        (typeof window !== "undefined" ? localStorage.getItem("scuinklezam_ranked_uid") : "") ||
+        "";
+      const res = await fetch(
+        `/api/ranked/leaderboard?category=${cat.id}&userId=${effectiveUid}&t=${Date.now()}`,
+        { cache: "no-store" }
+      );
       const data = await res.json();
       if (data.success && Array.isArray(data.entries)) {
         setLeaderboardEntries(data.entries);
@@ -660,7 +681,7 @@ export default function RankedArenaPage() {
 
       const authoritativeScore = data.submittedScore ?? finalScore;
       const finalRank = (payload.artistName ? data.artistResult?.userRank : data.rank) || data.rank || 1;
-      const bestScore = (payload.artistName ? data.artistResult?.bestScore : data.score) ?? authoritativeScore;
+      const bestScore = (payload.artistName ? data.artistResult?.bestScore : data.bestScore) ?? authoritativeScore;
       const totalPoints =
         (payload.artistName ? data.artistResult?.totalPoints : data.totalScore) ?? authoritativeScore;
       const tier = (payload.artistName ? data.artistResult?.tier : data.tier) || calculateTier(totalPoints);
@@ -1168,7 +1189,7 @@ export default function RankedArenaPage() {
 
                       <div className="space-y-1.5">
                         <div className="font-display font-black text-4xl sm:text-6xl text-white tracking-tight leading-none px-1 py-1">
-                          +{summaryData.finalScore} <span className="text-xl sm:text-2xl text-zinc-400 font-normal">/ 1000</span>
+                          {summaryData.finalScore} <span className="text-xl sm:text-2xl text-zinc-400 font-normal">/ 1000</span>
                         </div>
                         <div className="text-xs sm:text-sm font-bold text-emerald-300 flex items-center gap-1.5 flex-wrap">
                           <span>Total acumulado: {(summaryData.totalPoints ?? summaryData.finalScore).toLocaleString()} pts</span>

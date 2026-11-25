@@ -404,7 +404,11 @@ export default function ProfilePage() {
                         </div>
 
                         <Link
-                          href={`/ranked`}
+                          href={
+                            catId.startsWith("artist_") || cat?.kind === "artist"
+                              ? `/ranked?artist=${encodeURIComponent(name)}`
+                              : `/ranked?theme=${encodeURIComponent(name)}`
+                          }
                           className="p-2 rounded-xl bg-white/[0.05] hover:bg-emerald-500/20 text-zinc-300 hover:text-white transition shrink-0"
                           title="Volver a jugar"
                         >
