@@ -1741,6 +1741,63 @@ export async function finalizeRoomMatch(room: RoomState): Promise<void> {
 }
 
 /**
+ * Resets all per-match player stats cleanly for a brand-new game or rematch.
+ */
+function resetRoomPlayersForNewMatch(room: RoomState): void {
+  room.matchWinnerAwarded = false;
+  room.initialPlayerCount = room.players.length;
+  room.players.forEach((p) => {
+    p.score = 0;
+    p.streak = 0;
+    p.maxStreak = 0;
+    p.lives = 3;
+    p.maxLives = 3;
+    p.isEliminated = false;
+    p.eliminatedAtRound = null;
+    p.healedThisRound = false;
+    p.lostLifeThisRound = false;
+    p.currentAnswer = null;
+    p.answersByRound = {};
+    p.votedTheme = null;
+  });
+}
+
+/**
+ * Returns true when a survival match should end (last player standing in >=2-player rooms, or 0 alive solo).
+ */
+function shouldFinishSurvivalMatch(room: RoomState): boolean {
+  const initialCount = Math.max(room.initialPlayerCount || 0, room.players.length);
+  const alivePlayers = room.players.filter((p) => !p.isEliminated);
+  return initialCount >= 2 ? alivePlayers.length <= 1 : alivePlayers.length === 0;
+}
+
+/**
+ * Configures democratic voting state with 4 random candidates and 10s timer.
+ */
+function initializeVotingPhase(room: RoomState, now: number): void {
+  const candidates: VotingCandidate[] = fisherYatesShuffle(DEMOCRATIC_VOTING_CATALOG)
+    .slice(0, 4)
+    .map((item) => ({
+      id: item.id,
+      name: item.name,
+      description: item.description,
+      query: item.query,
+      icon: item.icon,
+      votes: [],
+    }));
+
+  room.votingCandidates = candidates;
+  room.candidateRounds = {};
+  room.status = "voting";
+  room.votingStartTime = now;
+  room.votingEndsAt = now + 10000;
+  room.currentRound = 1;
+  room.rounds = [];
+  room.answersByRound = { 1: {} };
+  room.lastActive = now;
+}
+
+/**
  * Progresses room state authoritatively based on timestamps and player responses.
  * Strictly guarantees rooms NEVER loop back to "lobby" automatically.
  */
@@ -1886,9 +1943,7 @@ export async function checkRoomStateProgression(room: RoomState, heartbeats?: Re
       room.revealEndsAt = undefined;
 
       if (room.gameMode === "survival") {
-        const initialCount = room.initialPlayerCount || room.players.length;
-        const alivePlayers = room.players.filter((p) => !p.isEliminated);
-        const shouldFinish = initialCount >= 2 ? alivePlayers.length <= 1 : alivePlayers.length === 0;
+        const shouldFinish = shouldFinishSurvivalMatch(room);
 
         if (shouldFinish) {
           await finalizeRoomMatch(room);
@@ -2085,11 +2140,18 @@ export async function leaveRoom(
         activeEligible.length > 0 &&
         activeEligible.every((p) => p.currentAnswer !== null || Boolean(roundMap[p.id]));
 
-      if (room.status === "playing" && allAnswered) {
+      const survivalLastStanding =
+        room.gameMode === "survival" &&
+        Math.max(room.initialPlayerCount || 0, room.players.length) >= 2 &&
+        room.players.filter((p) => !p.isEliminated).length <= 1;
+
+      if (room.status === "playing" && (allAnswered || survivalLastStanding)) {
         const now = Date.now();
         room.status = "round_reveal";
         room.revealStartTime = now;
         room.revealEndsAt = now + REVEAL_DURATION_MS;
+        room.roundStartTime = 0;
+        room.roundEndsAt = undefined;
       }
     }
 
@@ -2750,52 +2812,14 @@ export async function startRoomGame(
       }
     }
 
-    // Reset players for new match
-    room.matchWinnerAwarded = false;
-    room.players.forEach((p) => {
-      p.score = 0;
-      p.streak = 0;
-      p.maxStreak = 0;
-      p.lives = 3;
-      p.maxLives = 3;
-      p.isEliminated = false;
-      p.eliminatedAtRound = null;
-      p.healedThisRound = false;
-      p.lostLifeThisRound = false;
-      p.currentAnswer = null;
-      p.answersByRound = {};
-      p.votedTheme = null;
-    });
+    // Reset players and initialPlayerCount for new match (snapshot & vote mode)
+    resetRoomPlayersForNewMatch(room);
 
     // 1. GAME MODE: VOTE
     if (room.gameMode === "vote") {
-      const candidates: VotingCandidate[] = fisherYatesShuffle(DEMOCRATIC_VOTING_CATALOG)
-        .slice(0, 4)
-        .map((item) => ({
-          id: item.id,
-          name: item.name,
-          description: item.description,
-          query: item.query,
-          icon: item.icon,
-          votes: [],
-        }));
-
-      room.votingCandidates = candidates;
-      room.candidateRounds = {};
-      room.status = "voting";
-      room.votingStartTime = now;
-      room.votingEndsAt = now + 10000; // 10s voting
-      room.currentRound = 1;
-      room.rounds = [];
-      room.answersByRound = { 1: {} };
-      room.lastActive = now;
-
+      initializeVotingPhase(room, now);
       await saveRoom(room);
       return { success: true, room, isVoting: true };
-    }
-
-    if (room.gameMode === "survival") {
-      room.initialPlayerCount = room.players.length;
     }
 
     room.lastActive = now;
@@ -2818,6 +2842,9 @@ export async function startRoomGame(
   return await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
     if (!room) return { success: false, error: "Sala no encontrada tras generar rondas." };
+
+    // Guarantee atomic persisted reset after re-reading room from Redis
+    resetRoomPlayersForNewMatch(room);
 
     room.rounds = rounds;
     room.roundDuration = roundDuration;
@@ -3041,6 +3068,22 @@ export async function submitPlayerAnswer(
       room.revealEndsAt = now + REVEAL_DURATION_MS;
       room.roundStartTime = 0;
       room.roundEndsAt = undefined;
+
+      // Penalize any alive player who did not answer (e.g. disconnected in survival mode)
+      if (room.gameMode === "survival") {
+        room.players.forEach((p) => {
+          if (!p.isEliminated && !p.currentAnswer && !roundMap[p.id]) {
+            p.streak = 0;
+            p.lives = Math.max(0, p.lives - 1);
+            p.lostLifeThisRound = true;
+            p.healedThisRound = false;
+            if (p.lives === 0) {
+              p.isEliminated = true;
+              p.eliminatedAtRound = room.currentRound;
+            }
+          }
+        });
+      }
     }
 
     room.lastActive = Date.now();
@@ -3080,9 +3123,7 @@ export async function advanceRoomRound(
     room.revealEndsAt = undefined;
 
     if (room.gameMode === "survival") {
-      const initialCount = room.initialPlayerCount || room.players.length;
-      const alivePlayers = room.players.filter((p) => !p.isEliminated);
-      const shouldFinish = initialCount >= 2 ? alivePlayers.length <= 1 : alivePlayers.length === 0;
+      const shouldFinish = shouldFinishSurvivalMatch(room);
 
       if (shouldFinish) {
         await finalizeRoomMatch(room);
@@ -3152,7 +3193,6 @@ export async function resetRoomToLobby(code: string, hostId: string): Promise<{ 
     }
 
     room.status = "lobby";
-    room.matchWinnerAwarded = false;
     room.currentRound = 1;
     room.rounds = [];
     room.roundStartTime = 0;
@@ -3163,20 +3203,7 @@ export async function resetRoomToLobby(code: string, hostId: string): Promise<{ 
     room.countdownEndsAt = undefined;
     room.answersByRound = { 1: {} };
 
-    room.players.forEach((p) => {
-      p.score = 0;
-      p.streak = 0;
-      p.maxStreak = 0;
-      p.lives = 3;
-      p.maxLives = 3;
-      p.isEliminated = false;
-      p.eliminatedAtRound = null;
-      p.healedThisRound = false;
-      p.lostLifeThisRound = false;
-      p.currentAnswer = null;
-      p.answersByRound = {};
-      p.votedTheme = null;
-    });
+    resetRoomPlayersForNewMatch(room);
 
     room.lastActive = Date.now();
     await saveRoom(room);
@@ -3206,26 +3233,13 @@ export async function rematchRoomGame(
       await saveRoomPool(code, pool);
     }
 
-    // Reset players for rematch
-    room.matchWinnerAwarded = false;
+    // Sync heartbeats and reset players/initialPlayerCount for rematch
     const heartbeats = await getPlayerHeartbeats(code);
     const now = Date.now();
     room.players.forEach((p) => {
       const hb = Number(heartbeats[p.id] || p.lastSeen || p.joinedAt || 0);
       p.isConnected = (now - hb) <= 22000;
       p.isOnline = p.isConnected;
-      p.score = 0;
-      p.streak = 0;
-      p.maxStreak = 0;
-      p.lives = 3;
-      p.maxLives = 3;
-      p.isEliminated = false;
-      p.eliminatedAtRound = null;
-      p.healedThisRound = false;
-      p.lostLifeThisRound = false;
-      p.currentAnswer = null;
-      p.answersByRound = {};
-      p.votedTheme = null;
     });
 
     const connectedPlayers = room.players.filter((p) => p.isConnected !== false);
@@ -3233,8 +3247,13 @@ export async function rematchRoomGame(
       return { success: false, error: "No hay jugadores conectados en la sala." };
     }
 
-    if (room.gameMode === "survival") {
-      room.initialPlayerCount = room.players.length;
+    resetRoomPlayersForNewMatch(room);
+
+    // Rematch in vote mode starts a fresh democratic voting phase
+    if (room.gameMode === "vote") {
+      initializeVotingPhase(room, now);
+      await saveRoom(room);
+      return { success: true, room, isVoting: true };
     }
 
     room.lastActive = now;
@@ -3245,6 +3264,9 @@ export async function rematchRoomGame(
   if (!prepResult.success) {
     return { success: false, error: prepResult.error };
   }
+  if (prepResult.isVoting) {
+    return { success: true, room: prepResult.room };
+  }
 
   // Phase 2: Generate rounds outside lock
   const { rounds, roundDuration } = await generateRoundsForRoom(prepResult.snapshotRoom!);
@@ -3253,6 +3275,9 @@ export async function rematchRoomGame(
   return await withRoomLock(code, async () => {
     const room = await getRawRoom(code);
     if (!room) return { success: false, error: "Sala no encontrada tras generar rondas." };
+
+    // Guarantee atomic persisted reset after re-reading room from Redis
+    resetRoomPlayersForNewMatch(room);
 
     room.rounds = rounds;
     room.roundDuration = roundDuration;
